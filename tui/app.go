@@ -3678,19 +3678,29 @@ func (d *diffViewer) visibleRowCapacity() int {
 }
 
 func (d *diffViewer) scrollBy(delta int) {
-	screenOffset := d.cursor.Row - d.scroll
-	if visible := d.visibleRowCapacity(); screenOffset < 0 || screenOffset >= visible {
-		screenOffset = 0
-	}
-
 	d.scroll += delta
 	d.clampScroll()
-	d.cursor.Row = d.scroll + screenOffset
-	if _, ok := d.stickyFileHeader(); ok && screenOffset == 0 && d.cursor.Row+1 < len(d.rows) {
+	d.clampCursorToVisibleRows()
+	d.cursorGoal = d.cursor.Col
+}
+
+func (d *diffViewer) clampCursorToVisibleRows() {
+	visible := d.visibleRowCapacity()
+	if visible <= 0 {
+		d.clampCursor()
+		return
+	}
+	if d.cursor.Row < d.scroll {
+		d.cursor.Row = d.scroll
+	}
+	lastVisible := d.scroll + visible - 1
+	if d.cursor.Row > lastVisible {
+		d.cursor.Row = lastVisible
+	}
+	if _, ok := d.stickyFileHeader(); ok && d.cursor.Row == d.scroll && d.scroll > 0 && d.cursor.Row+1 < len(d.rows) {
 		d.cursor.Row++
 	}
 	d.clampCursor()
-	d.cursorGoal = d.cursor.Col
 }
 
 func (d *diffViewer) halfPage() int {

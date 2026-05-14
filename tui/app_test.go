@@ -1918,40 +1918,66 @@ func TestDiffViewerCtrlDDoesNotQuit(t *testing.T) {
 
 func TestDiffViewerMouseWheelScrolls(t *testing.T) {
 	tests := []struct {
-		name   string
-		start  int
-		mouse  vaxis.Mouse
-		want   int
-		keys   string
-		noKeys bool
+		name       string
+		start      int
+		cursor     int
+		mouse      vaxis.Mouse
+		want       int
+		wantCursor int
+		keys       string
+		noKeys     bool
 	}{
 		{
-			name:  "wheel down scrolls down",
-			start: 10,
-			mouse: vaxis.Mouse{Button: vaxis.MouseWheelDown},
-			want:  11,
-			keys:  "g",
+			name:       "wheel down scrolls down",
+			start:      10,
+			cursor:     14,
+			mouse:      vaxis.Mouse{Button: vaxis.MouseWheelDown},
+			want:       11,
+			wantCursor: 14,
+			keys:       "g",
 		},
 		{
-			name:  "wheel up scrolls up",
-			start: 10,
-			mouse: vaxis.Mouse{Button: vaxis.MouseWheelUp},
-			want:  9,
-			keys:  "g",
+			name:       "wheel up scrolls up",
+			start:      10,
+			cursor:     14,
+			mouse:      vaxis.Mouse{Button: vaxis.MouseWheelUp},
+			want:       9,
+			wantCursor: 14,
+			keys:       "g",
 		},
 		{
-			name:  "wheel up clamps at top",
-			start: 1,
-			mouse: vaxis.Mouse{Button: vaxis.MouseWheelUp},
-			want:  0,
+			name:       "wheel up clamps at top",
+			start:      1,
+			cursor:     1,
+			mouse:      vaxis.Mouse{Button: vaxis.MouseWheelUp},
+			want:       0,
+			wantCursor: 1,
 		},
 		{
-			name:   "non-wheel mouse does not scroll",
-			start:  10,
-			mouse:  vaxis.Mouse{Button: vaxis.MouseNoButton, EventType: vaxis.EventMotion},
-			want:   10,
-			keys:   "g",
-			noKeys: true,
+			name:       "wheel down moves cursor only to keep it visible",
+			start:      10,
+			cursor:     10,
+			mouse:      vaxis.Mouse{Button: vaxis.MouseWheelDown},
+			want:       11,
+			wantCursor: 11,
+		},
+		{
+			name:       "wheel up moves cursor only to keep it visible",
+			start:      10,
+			cursor:     18,
+			mouse:      vaxis.Mouse{Button: vaxis.MouseWheelUp},
+			want:       9,
+			wantCursor: 17,
+		},
+		{
+			name:       "non-wheel mouse does not scroll",
+			start:      10,
+			cursor:     14,
+			mouse:      vaxis.Mouse{Button: vaxis.MouseNoButton, EventType: vaxis.EventMotion},
+			want:       10,
+			wantCursor: 14,
+			keys:       "g",
+			noKeys:     true,
 		},
 	}
 
@@ -1959,6 +1985,7 @@ func TestDiffViewerMouseWheelScrolls(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			viewer := newTestDiffViewer(100, 10)
 			viewer.scroll = tt.start
+			viewer.cursor.Row = tt.cursor
 			if tt.keys != "" {
 				viewer.keys.Set(tt.keys, time.Now())
 			}
@@ -1975,6 +2002,9 @@ func TestDiffViewerMouseWheelScrolls(t *testing.T) {
 			}
 			if viewer.scroll != tt.want {
 				t.Fatalf("scroll = %d, want %d", viewer.scroll, tt.want)
+			}
+			if viewer.cursor.Row != tt.wantCursor {
+				t.Fatalf("cursor row = %d, want %d", viewer.cursor.Row, tt.wantCursor)
 			}
 			if tt.noKeys {
 				if viewer.keys.Pending() != tt.keys {
