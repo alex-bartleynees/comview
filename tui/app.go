@@ -92,10 +92,12 @@ type textSelection struct {
 }
 
 type mouseDragState struct {
-	Active  bool
-	Started bool
-	Mouse   vaxis.Mouse
-	Anchor  selectionPoint
+	Active    bool
+	Started   bool
+	Mouse     vaxis.Mouse
+	Row       int
+	Anchor    selectionPoint
+	HasAnchor bool
 }
 
 type viewMode int
@@ -828,7 +830,12 @@ func (d *diffViewer) paintHorizontalScrollbar(win vaxis.Window) {
 func (d *diffViewer) startSelection(mouse vaxis.Mouse) Command {
 	point, ok := d.selectionPoint(mouse)
 	if !ok {
-		d.mouseDrag = mouseDragState{}
+		d.keys.Clear()
+		d.mouseDrag = mouseDragState{
+			Active: true,
+			Mouse:  mouse,
+			Row:    d.mouseDocumentRow(mouse),
+		}
 		if d.selection.Active {
 			d.exitVisualMode()
 			return CommandRedraw
@@ -850,9 +857,11 @@ func (d *diffViewer) startSelection(mouse vaxis.Mouse) Command {
 
 	d.exitVisualMode()
 	d.mouseDrag = mouseDragState{
-		Active: true,
-		Mouse:  mouse,
-		Anchor: point,
+		Active:    true,
+		Mouse:     mouse,
+		Row:       point.Row,
+		Anchor:    point,
+		HasAnchor: true,
 	}
 	return CommandRedraw
 }
@@ -934,14 +943,18 @@ func (d *diffViewer) selectRow(row int) Command {
 
 func (d *diffViewer) extendSelection(mouse vaxis.Mouse) Command {
 	point, ok := d.selectionPoint(mouse)
-	if !ok {
-		return CommandNone
-	}
 
 	if d.mouseDrag.Active {
+		if !ok {
+			return CommandNone
+		}
 		if !d.mouseDrag.Started {
 			if !d.mouseDragExceeded(mouse) {
 				return CommandNone
+			}
+			if !d.mouseDrag.HasAnchor {
+				d.mouseDrag.Anchor = d.dragAnchor(point)
+				d.mouseDrag.HasAnchor = true
 			}
 			d.mouseDrag.Started = true
 			d.selection = textSelection{
@@ -957,6 +970,9 @@ func (d *diffViewer) extendSelection(mouse vaxis.Mouse) Command {
 		return CommandRedraw
 	}
 
+	if !ok {
+		return CommandNone
+	}
 	if !d.selection.Dragging {
 		return CommandNone
 	}
@@ -998,7 +1014,7 @@ func (d *diffViewer) finishSelection(mouse vaxis.Mouse) Command {
 }
 
 func (d *diffViewer) selectionPoint(mouse vaxis.Mouse) (selectionPoint, bool) {
-	row := d.scroll + mouse.Row
+	row := d.mouseDocumentRow(mouse)
 	if mouse.Row < 0 || mouse.Row >= d.visibleRowCapacity() || row < 0 || row >= len(d.rows) {
 		return selectionPoint{}, false
 	}
@@ -1015,6 +1031,25 @@ func (d *diffViewer) selectionPoint(mouse vaxis.Mouse) (selectionPoint, bool) {
 		docCol = end
 	}
 	return selectionPoint{Row: row, Col: docCol}, true
+}
+
+func (d *diffViewer) mouseDocumentRow(mouse vaxis.Mouse) int {
+	return d.scroll + mouse.Row
+}
+
+func (d *diffViewer) dragAnchor(point selectionPoint) selectionPoint {
+	start, end, ok := codeRange(d.rows[point.Row])
+	if !ok {
+		return point
+	}
+	switch {
+	case point.Row > d.mouseDrag.Row:
+		return selectionPoint{Row: point.Row, Col: start}
+	case point.Row < d.mouseDrag.Row:
+		return selectionPoint{Row: point.Row, Col: maxInt(start, end-1)}
+	default:
+		return point
+	}
 }
 
 func (d *diffViewer) mouseDragExceeded(mouse vaxis.Mouse) bool {

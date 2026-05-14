@@ -1230,6 +1230,126 @@ func TestDiffViewerCellDragStartsSelection(t *testing.T) {
 	}
 }
 
+func TestDiffViewerDragFromHunkHeaderIntoCodeStartsSelection(t *testing.T) {
+	hunk := diff.Row{
+		Kind:   diff.RowHunk,
+		Text:   "@@ -1 +1 @@ func main()",
+		Prefix: "@@ -1 +1 @@",
+		Code:   " func main()",
+	}
+	code := diff.Row{Kind: diff.RowContext, Text: "abcdef", Code: "abcdef"}
+	viewer := &diffViewer{rows: []diff.Row{hunk, code}}
+	viewer.Layout(Tight(Size{Width: 80, Height: 10}))
+
+	cmd, err := viewer.HandleEvent(vaxis.Mouse{
+		Button:    vaxis.MouseLeftButton,
+		EventType: vaxis.EventPress,
+		Row:       0,
+		Col:       textCellWidth(hunk.Prefix) + 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd != CommandNone {
+		t.Fatalf("press command = %v, want %v", cmd, CommandNone)
+	}
+	if viewer.selection.Active {
+		t.Fatalf("selection active after hunk press: %+v", viewer.selection)
+	}
+
+	cmd, err = viewer.HandleEvent(vaxis.Mouse{
+		Button:    vaxis.MouseLeftButton,
+		EventType: vaxis.EventMotion,
+		Row:       1,
+		Col:       1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd != CommandRedraw {
+		t.Fatalf("motion command = %v, want %v", cmd, CommandRedraw)
+	}
+	if !viewer.selection.Active {
+		t.Fatal("selection inactive after dragging into code")
+	}
+	if got, want := viewer.ClipboardText(), "ab"; got != want {
+		t.Fatalf("clipboard text = %q, want %q", got, want)
+	}
+
+	cmd, err = viewer.HandleEvent(vaxis.Mouse{
+		Button:    vaxis.MouseLeftButton,
+		EventType: vaxis.EventMotion,
+		Row:       1,
+		Col:       2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd != CommandRedraw {
+		t.Fatalf("second motion command = %v, want %v", cmd, CommandRedraw)
+	}
+	if got, want := viewer.ClipboardText(), "abc"; got != want {
+		t.Fatalf("clipboard text = %q, want %q", got, want)
+	}
+}
+
+func TestDiffViewerDragFromHunkHeaderUpIntoCodeStartsAtEndOfLine(t *testing.T) {
+	code := diff.Row{Kind: diff.RowContext, Text: "abcdef", Code: "abcdef"}
+	hunk := diff.Row{
+		Kind:   diff.RowHunk,
+		Text:   "@@ -1 +1 @@ func main()",
+		Prefix: "@@ -1 +1 @@",
+		Code:   " func main()",
+	}
+	viewer := &diffViewer{rows: []diff.Row{code, hunk}}
+	viewer.Layout(Tight(Size{Width: 80, Height: 10}))
+
+	cmd, err := viewer.HandleEvent(vaxis.Mouse{
+		Button:    vaxis.MouseLeftButton,
+		EventType: vaxis.EventPress,
+		Row:       1,
+		Col:       textCellWidth(hunk.Prefix) + 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd != CommandNone {
+		t.Fatalf("press command = %v, want %v", cmd, CommandNone)
+	}
+
+	cmd, err = viewer.HandleEvent(vaxis.Mouse{
+		Button:    vaxis.MouseLeftButton,
+		EventType: vaxis.EventMotion,
+		Row:       0,
+		Col:       4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd != CommandRedraw {
+		t.Fatalf("motion command = %v, want %v", cmd, CommandRedraw)
+	}
+	if got, want := viewer.ClipboardText(), "ef"; got != want {
+		t.Fatalf("clipboard text = %q, want %q", got, want)
+	}
+
+	cmd, err = viewer.HandleEvent(vaxis.Mouse{
+		Button:    vaxis.MouseLeftButton,
+		EventType: vaxis.EventMotion,
+		Row:       0,
+		Col:       3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd != CommandRedraw {
+		t.Fatalf("second motion command = %v, want %v", cmd, CommandRedraw)
+	}
+	if got, want := viewer.ClipboardText(), "def"; got != want {
+		t.Fatalf("clipboard text = %q, want %q", got, want)
+	}
+}
+
 func TestDiffViewerSelectionDoesNotSelectHunkHeaderContext(t *testing.T) {
 	row := diff.Row{
 		Kind:   diff.RowHunk,
