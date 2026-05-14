@@ -6,11 +6,22 @@ import (
 	"git.sr.ht/~rockorager/vaxis"
 )
 
-const DefaultFrameRate = 60
+const (
+	DefaultFrameRate = 60
+	Unbounded        = -1
+)
 
 type Size struct {
 	Width  int
 	Height int
+}
+
+func (s Size) HasUnboundedWidth() bool {
+	return s.Width == Unbounded
+}
+
+func (s Size) HasUnboundedHeight() bool {
+	return s.Height == Unbounded
 }
 
 type Constraints struct {
@@ -25,6 +36,19 @@ func Tight(size Size) Constraints {
 	}
 }
 
+func Loose(max Size) Constraints {
+	return Constraints{
+		Max: max,
+	}
+}
+
+func Unconstrained() Constraints {
+	return Loose(Size{
+		Width:  Unbounded,
+		Height: Unbounded,
+	})
+}
+
 func (c Constraints) Constrain(size Size) Size {
 	if size.Width < c.Min.Width {
 		size.Width = c.Min.Width
@@ -32,10 +56,10 @@ func (c Constraints) Constrain(size Size) Size {
 	if size.Height < c.Min.Height {
 		size.Height = c.Min.Height
 	}
-	if size.Width > c.Max.Width {
+	if !c.Max.HasUnboundedWidth() && size.Width > c.Max.Width {
 		size.Width = c.Max.Width
 	}
-	if size.Height > c.Max.Height {
+	if !c.Max.HasUnboundedHeight() && size.Height > c.Max.Height {
 		size.Height = c.Max.Height
 	}
 	return size

@@ -108,3 +108,38 @@ func TestConstraintsConstrain(t *testing.T) {
 		})
 	}
 }
+
+func TestConstraintsConstrainUnboundedMax(t *testing.T) {
+	constraints := Constraints{
+		Min: Size{Width: 10, Height: 5},
+		Max: Size{Width: Unbounded, Height: Unbounded},
+	}
+
+	got := constraints.Constrain(Size{Width: 1000, Height: 2000})
+	want := Size{Width: 1000, Height: 2000}
+	if got != want {
+		t.Fatalf("Constrain with unbounded max = %+v, want %+v", got, want)
+	}
+}
+
+func TestConstraintsConstrainPartiallyUnboundedMax(t *testing.T) {
+	constraints := Constraints{
+		Max: Size{Width: 20, Height: Unbounded},
+	}
+
+	got := constraints.Constrain(Size{Width: 1000, Height: 2000})
+	want := Size{Width: 20, Height: 2000}
+	if got != want {
+		t.Fatalf("Constrain with partially unbounded max = %+v, want %+v", got, want)
+	}
+}
+
+func TestUnconstrained(t *testing.T) {
+	constraints := Unconstrained()
+	if !constraints.Max.HasUnboundedWidth() {
+		t.Fatal("Unconstrained max width is bounded")
+	}
+	if !constraints.Max.HasUnboundedHeight() {
+		t.Fatal("Unconstrained max height is bounded")
+	}
+}
