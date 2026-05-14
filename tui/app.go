@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -111,10 +112,12 @@ type searchMatch struct {
 }
 
 type textSelection struct {
-	Active   bool
-	Dragging bool
-	Anchor   selectionPoint
-	Cursor   selectionPoint
+	Active       bool
+	Dragging     bool
+	Anchor       selectionPoint
+	Cursor       selectionPoint
+	SideFiltered bool
+	Side         diffSide
 }
 
 type commentEditor struct {
@@ -232,6 +235,9 @@ func (d *diffViewer) HandleEvent(ev vaxis.Event) (Command, error) {
 
 func (d *diffViewer) handleKey(key vaxis.Key) (Command, error) {
 	if key.EventType == vaxis.EventRelease {
+		return CommandNone, nil
+	}
+	if pureModifierKey(key) {
 		return CommandNone, nil
 	}
 
@@ -480,20 +486,75 @@ func (d *diffViewer) handleTextObjectKey(key vaxis.Key) (Command, error) {
 		return CommandNone, nil
 	}
 
-	if key.Text == "" {
-		return CommandNone, nil
-	}
-	r := key.Keycode
-	if r == 0 {
-		r, _ = utf8.DecodeRuneInString(key.Text)
-	}
-	if r == utf8.RuneError {
+	r := textObjectKeyRune(key)
+	if r == 0 || r == utf8.RuneError {
 		return CommandNone, nil
 	}
 	if !d.selectTextObject(state.kind, r) {
 		return CommandNone, nil
 	}
 	return CommandRedraw, nil
+}
+
+func pureModifierKey(key vaxis.Key) bool {
+	if key.Text != "" {
+		return false
+	}
+	switch key.Keycode {
+	case vaxis.KeyLeftShift, vaxis.KeyRightShift, vaxis.KeyL3Shift, vaxis.KeyL5Shift,
+		vaxis.KeyLeftControl, vaxis.KeyRightControl,
+		vaxis.KeyLeftAlt, vaxis.KeyRightAlt,
+		vaxis.KeyLeftSuper, vaxis.KeyRightSuper,
+		vaxis.KeyLeftHyper, vaxis.KeyRightHyper,
+		vaxis.KeyLeftMeta, vaxis.KeyRightMeta:
+		return true
+	default:
+		return false
+	}
+}
+
+func textObjectKeyRune(key vaxis.Key) rune {
+	if key.ShiftedCode != 0 {
+		return key.ShiftedCode
+	}
+	if key.Modifiers&vaxis.ModShift != 0 {
+		if shifted, ok := shiftedTextObjectRune(key.Keycode); ok {
+			return shifted
+		}
+		if r, _ := utf8.DecodeRuneInString(key.Text); r != utf8.RuneError {
+			if shifted, ok := shiftedTextObjectRune(r); ok {
+				return shifted
+			}
+		}
+	}
+	if key.Text != "" {
+		r, _ := utf8.DecodeRuneInString(key.Text)
+		return r
+	}
+	return key.Keycode
+}
+
+func shiftedTextObjectRune(r rune) (rune, bool) {
+	switch r {
+	case '9':
+		return '(', true
+	case '0':
+		return ')', true
+	case '[':
+		return '{', true
+	case ']':
+		return '}', true
+	case '\'':
+		return '"', true
+	case '`':
+		return '~', true
+	case ',':
+		return '<', true
+	case '.':
+		return '>', true
+	default:
+		return 0, false
+	}
 }
 
 func (d *diffViewer) Layout(constraints Constraints) Size {
@@ -844,13 +905,17 @@ func splitStatusPathBase(text string) (string, string) {
 	if text == "" {
 		return "", ""
 	}
+
+	countPrefix := ""
+	path := text
 	if space := strings.Index(text, " "); space >= 0 && isStatusCountPrefix(text[:space]) && space+1 < len(text) {
-		return text[:space+1], text[space+1:]
+		countPrefix = text[:space+1]
+		path = text[space+1:]
 	}
-	if slash := strings.LastIndex(text, "/"); slash >= 0 && slash+1 < len(text) {
-		return text[:slash+1], text[slash+1:]
+	if slash := strings.LastIndex(path, "/"); slash >= 0 && slash+1 < len(path) {
+		return countPrefix + path[:slash+1], path[slash+1:]
 	}
-	return "", text
+	return countPrefix, path
 }
 
 func isStatusCountPrefix(text string) bool {
@@ -1466,8 +1531,7 @@ func (d *diffViewer) printSideBySideCell(win vaxis.Window, docRow int, side diff
 		return
 	}
 	row := d.rows[docRow]
-	gutter := d.sideBySideGutter(row, side)
-	gutterSegments := d.rowSegments([]vaxis.Segment{{Text: gutter, Style: d.gutterStyle(row.Kind)}}, cursorLine)
+	gutterSegments := d.rowSegments(d.sideBySideGutterSegments(row, side), cursorLine)
 	codeOffset := segmentTextWidth(gutterSegments)
 	d.fillCodeBackground(win, 0, codeOffset, row.Kind, cursorLine)
 	printSegmentsAt(win, 0, 0, gutterSegments...)
@@ -1724,6 +1788,30 @@ func (d *diffViewer) sideBySideGutter(row diff.Row, side diffSide) string {
 		}
 	}
 	return fmt.Sprintf("%*s %s ", width, number, marker)
+}
+
+func (d *diffViewer) sideBySideGutterSegments(row diff.Row, side diffSide) []vaxis.Segment {
+	return d.gutterTextSegments(d.sideBySideGutter(row, side), row.Kind, sideBySideReviewAnchor(row, side))
+}
+
+func sideBySideReviewAnchor(row diff.Row, side diffSide) review.Anchor {
+	anchor := row.Review
+	if !reviewAnchorValid(anchor) {
+		return review.Anchor{}
+	}
+	oldNumber, newNumber := splitGutterNumbers(row)
+	number := newNumber
+	anchor.Side = review.SideRight
+	if side == sideLeft {
+		number = oldNumber
+		anchor.Side = review.SideLeft
+	}
+	line, err := strconv.Atoi(number)
+	if err != nil || line <= 0 {
+		return review.Anchor{}
+	}
+	anchor.Line = line
+	return anchor
 }
 
 func (d *diffViewer) sideBySideLineNumberWidth() int {
@@ -2214,6 +2302,10 @@ func (d *diffViewer) applyTextObjectSelection(anchor selectionPoint, cursor sele
 		Anchor: anchor,
 		Cursor: cursor,
 	}
+	if anchor.Row != cursor.Row && d.cursor.Row >= 0 && d.cursor.Row < len(d.rows) {
+		d.selection.SideFiltered = true
+		d.selection.Side = sideForRow(d.rows[d.cursor.Row])
+	}
 	d.mode = modeVisual
 	d.setCursor(cursor)
 	return true
@@ -2472,13 +2564,12 @@ func (d *diffViewer) textObjectSearchBounds() (textObjectBounds, bool) {
 		return textObjectBounds{}, false
 	}
 	side := sideForRow(d.rows[d.cursor.Row])
-	cursorFileName := d.rows[d.cursor.Row].FileName
 	start := d.cursor.Row
-	for start > 0 && textObjectRowsContiguous(d.rows[start-1], cursorFileName, side) {
+	for start > 0 && textObjectRowsContiguous(d.rows[start-1]) {
 		start--
 	}
 	end := d.cursor.Row
-	for end+1 < len(d.rows) && textObjectRowsContiguous(d.rows[end+1], cursorFileName, side) {
+	for end+1 < len(d.rows) && textObjectRowsContiguous(d.rows[end+1]) {
 		end++
 	}
 
@@ -2505,11 +2596,8 @@ func (d *diffViewer) textObjectSearchBounds() (textObjectBounds, bool) {
 	return bounds, true
 }
 
-func textObjectRowsContiguous(row diff.Row, fileName string, side diffSide) bool {
-	if !selectableDiffRow(row.Kind) || !rowOnTextObjectSide(row, side) {
-		return false
-	}
-	return fileName == "" || row.FileName == fileName
+func textObjectRowsContiguous(row diff.Row) bool {
+	return selectableDiffRow(row.Kind)
 }
 
 func rowOnTextObjectSide(row diff.Row, side diffSide) bool {
@@ -2558,7 +2646,14 @@ type selectionPaintSpec struct {
 }
 
 func (d *diffViewer) selectionPaintSpec(docRow int, now time.Time) (selectionPaintSpec, bool) {
-	start, end, ok := d.selectionRangeForPaint(now)
+	if docRow < 0 || docRow >= len(d.rows) {
+		return selectionPaintSpec{}, false
+	}
+	selection, ok := d.selectionForPaint(now)
+	if !ok || !selectionIncludesRow(selection, d.rows[docRow]) {
+		return selectionPaintSpec{}, false
+	}
+	start, end, ok := selectionRange(selection)
 	if !ok || docRow < start.Row || docRow > end.Row {
 		return selectionPaintSpec{}, false
 	}
@@ -2629,13 +2724,25 @@ func (d *diffViewer) selectionRange() (selectionPoint, selectionPoint, bool) {
 }
 
 func (d *diffViewer) selectionRangeForPaint(now time.Time) (selectionPoint, selectionPoint, bool) {
+	selection, ok := d.selectionForPaint(now)
+	if !ok {
+		return selectionPoint{}, selectionPoint{}, false
+	}
+	return selectionRange(selection)
+}
+
+func (d *diffViewer) selectionForPaint(now time.Time) (textSelection, bool) {
 	if d.selection.Active {
-		return selectionRange(d.selection)
+		return d.selection, true
 	}
 	if d.yankSelection.Active && !d.yankUntil.IsZero() && now.Before(d.yankUntil) {
-		return selectionRange(d.yankSelection)
+		return d.yankSelection, true
 	}
-	return selectionPoint{}, selectionPoint{}, false
+	return textSelection{}, false
+}
+
+func selectionIncludesRow(selection textSelection, row diff.Row) bool {
+	return !selection.SideFiltered || rowOnTextObjectSide(row, selection.Side)
 }
 
 func selectionRange(selection textSelection) (selectionPoint, selectionPoint, bool) {
@@ -2686,6 +2793,9 @@ func (d *diffViewer) selectionText() string {
 	var text strings.Builder
 	wroteRow := false
 	for rowIndex := start.Row; rowIndex <= end.Row && rowIndex < len(d.rows); rowIndex++ {
+		if !selectionIncludesRow(d.selection, d.rows[rowIndex]) {
+			continue
+		}
 		rowStart, rowEnd, ok := d.codeRange(d.rows[rowIndex])
 		if !ok {
 			continue
@@ -4292,9 +4402,12 @@ func (d *diffViewer) gutterStyle(kind diff.RowKind) vaxis.Style {
 }
 
 func (d *diffViewer) gutterSegments(row diff.Row) []vaxis.Segment {
-	text := row.Gutter + row.Marker
-	style := d.gutterStyle(row.Kind)
-	if !d.hasReviewDraft(row.Review) || !strings.HasSuffix(text, " ") {
+	return d.gutterTextSegments(row.Gutter+row.Marker, row.Kind, row.Review)
+}
+
+func (d *diffViewer) gutterTextSegments(text string, kind diff.RowKind, anchor review.Anchor) []vaxis.Segment {
+	style := d.gutterStyle(kind)
+	if !d.hasReviewDraft(anchor) || !strings.HasSuffix(text, " ") {
 		return []vaxis.Segment{{Text: text, Style: style}}
 	}
 
@@ -4681,18 +4794,74 @@ func findDelimitedTextObject(bounds textObjectBounds, cursor textObjectPosition,
 	if open == close {
 		return findQuoteTextObject(bounds, cursor, open)
 	}
-	openPos, ok := findOpeningDelimiter(bounds, cursor, open, close)
-	if !ok {
-		return textObjectPosition{}, textObjectPosition{}, false
+	return findBracketTextObject(bounds, cursor, open, close)
+}
+
+type textObjectPair struct {
+	Open  textObjectPosition
+	Close textObjectPosition
+}
+
+func findBracketTextObject(bounds textObjectBounds, cursor textObjectPosition, open rune, close rune) (textObjectPosition, textObjectPosition, bool) {
+	pairs := make([]textObjectPair, 0)
+	stack := make([]textObjectPosition, 0)
+	for pos, ok := nextTextObjectScanPosition(bounds, textObjectPosition{Row: bounds.Start, Col: -1}); ok; pos, ok = nextTextObjectScanPosition(bounds, pos) {
+		r := runeAtCell(rowCode(bounds, pos.Row), pos.Col)
+		switch r {
+		case open:
+			stack = append(stack, pos)
+		case close:
+			if len(stack) == 0 {
+				continue
+			}
+			openPos := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			pairs = append(pairs, textObjectPair{Open: openPos, Close: pos})
+		}
 	}
-	closePos, ok := findClosingDelimiter(bounds, openPos, open, close)
-	if !ok {
-		return textObjectPosition{}, textObjectPosition{}, false
+	return chooseTextObjectPair(pairs, cursor)
+}
+
+func chooseTextObjectPair(pairs []textObjectPair, cursor textObjectPosition) (textObjectPosition, textObjectPosition, bool) {
+	best, ok := innermostContainingTextObjectPair(pairs, cursor)
+	if ok {
+		return best.Open, best.Close, true
 	}
-	if textObjectPositionLess(cursor, openPos) || textObjectPositionLess(closePos, cursor) {
-		return textObjectPosition{}, textObjectPosition{}, false
+	best, ok = nextTextObjectPair(pairs, cursor)
+	if ok {
+		return best.Open, best.Close, true
 	}
-	return openPos, closePos, true
+	return textObjectPosition{}, textObjectPosition{}, false
+}
+
+func innermostContainingTextObjectPair(pairs []textObjectPair, cursor textObjectPosition) (textObjectPair, bool) {
+	var best textObjectPair
+	found := false
+	for _, pair := range pairs {
+		if textObjectPositionLess(cursor, pair.Open) || textObjectPositionLess(pair.Close, cursor) {
+			continue
+		}
+		if !found || textObjectPositionLess(best.Open, pair.Open) {
+			best = pair
+			found = true
+		}
+	}
+	return best, found
+}
+
+func nextTextObjectPair(pairs []textObjectPair, cursor textObjectPosition) (textObjectPair, bool) {
+	var best textObjectPair
+	found := false
+	for _, pair := range pairs {
+		if !textObjectPositionLess(cursor, pair.Open) {
+			continue
+		}
+		if !found || textObjectPositionLess(pair.Open, best.Open) {
+			best = pair
+			found = true
+		}
+	}
+	return best, found
 }
 
 func findQuoteTextObject(bounds textObjectBounds, cursor textObjectPosition, delimiter rune) (textObjectPosition, textObjectPosition, bool) {
@@ -4708,104 +4877,11 @@ func findQuoteTextObject(bounds textObjectBounds, cursor textObjectPosition, del
 			}
 		}
 	}
+	pairs := make([]textObjectPair, 0, len(positions)/2)
 	for i := 0; i+1 < len(positions); i += 2 {
-		openPos := positions[i]
-		closePos := positions[i+1]
-		if !textObjectPositionLess(cursor, openPos) && !textObjectPositionLess(closePos, cursor) {
-			return openPos, closePos, true
-		}
+		pairs = append(pairs, textObjectPair{Open: positions[i], Close: positions[i+1]})
 	}
-	return textObjectPosition{}, textObjectPosition{}, false
-}
-
-func findOpeningDelimiter(bounds textObjectBounds, cursor textObjectPosition, open rune, close rune) (textObjectPosition, bool) {
-	if open == close {
-		return findPreviousQuoteDelimiter(bounds, cursor, open)
-	}
-
-	depth := 0
-	for pos, ok := previousTextObjectScanPosition(bounds, cursor); ok; pos, ok = previousTextObjectScanPosition(bounds, beforeTextObjectPosition(pos)) {
-		r := runeAtCell(rowCode(bounds, pos.Row), pos.Col)
-		if r == close {
-			depth++
-			continue
-		}
-		if r != open {
-			continue
-		}
-		if depth == 0 {
-			return pos, true
-		}
-		depth--
-	}
-	return textObjectPosition{}, false
-}
-
-func findClosingDelimiter(bounds textObjectBounds, openPos textObjectPosition, open rune, close rune) (textObjectPosition, bool) {
-	if open == close {
-		return findNextMatchingDelimiter(bounds, openPos, close)
-	}
-
-	depth := 0
-	for pos, ok := nextTextObjectScanPosition(bounds, openPos); ok; pos, ok = nextTextObjectScanPosition(bounds, afterTextObjectPosition(pos)) {
-		r := runeAtCell(rowCode(bounds, pos.Row), pos.Col)
-		if r == open && open != close {
-			depth++
-			continue
-		}
-		if r != close {
-			continue
-		}
-		if depth == 0 {
-			return pos, true
-		}
-		depth--
-	}
-	return textObjectPosition{}, false
-}
-
-func findPreviousMatchingDelimiter(bounds textObjectBounds, cursor textObjectPosition, delimiter rune) (textObjectPosition, bool) {
-	for pos, ok := previousTextObjectScanPosition(bounds, cursor); ok; pos, ok = previousTextObjectScanPosition(bounds, beforeTextObjectPosition(pos)) {
-		if runeAtCell(rowCode(bounds, pos.Row), pos.Col) == delimiter {
-			return pos, true
-		}
-	}
-	return textObjectPosition{}, false
-}
-
-func findPreviousQuoteDelimiter(bounds textObjectBounds, cursor textObjectPosition, delimiter rune) (textObjectPosition, bool) {
-	positions := make([]textObjectPosition, 0)
-	for row := bounds.Start; row <= cursor.Row; row++ {
-		width, ok := bounds.CodeWidth[row]
-		if !ok {
-			continue
-		}
-		maxCol := width - 1
-		if row == cursor.Row {
-			maxCol = minInt(cursor.Col, width-1)
-		}
-		for col := 0; col <= maxCol; col++ {
-			if runeAtCell(rowCode(bounds, row), col) == delimiter {
-				positions = append(positions, textObjectPosition{Row: row, Col: col})
-			}
-		}
-	}
-	if len(positions) == 1 {
-		return positions[len(positions)-1], true
-	}
-	if len(positions) >= 2 {
-		return positions[len(positions)-2], true
-	}
-	return textObjectPosition{}, false
-}
-
-func findNextMatchingDelimiter(bounds textObjectBounds, openPos textObjectPosition, delimiter rune) (textObjectPosition, bool) {
-	for pos, ok := nextTextObjectScanPosition(bounds, openPos); ok; pos, ok = nextTextObjectScanPosition(bounds, afterTextObjectPosition(pos)) {
-		if runeAtCell(rowCode(bounds, pos.Row), pos.Col) == delimiter {
-			return pos, true
-		}
-	}
-	return textObjectPosition{}, false
+	return chooseTextObjectPair(pairs, cursor)
 }
 
 func previousTextObjectScanPosition(bounds textObjectBounds, pos textObjectPosition) (textObjectPosition, bool) {
@@ -4843,14 +4919,6 @@ func nextTextObjectScanPosition(bounds textObjectBounds, pos textObjectPosition)
 		}
 	}
 	return textObjectPosition{}, false
-}
-
-func beforeTextObjectPosition(pos textObjectPosition) textObjectPosition {
-	return textObjectPosition{Row: pos.Row, Col: pos.Col - 1}
-}
-
-func afterTextObjectPosition(pos textObjectPosition) textObjectPosition {
-	return textObjectPosition{Row: pos.Row, Col: pos.Col + 1}
 }
 
 func advanceTextObjectPosition(bounds textObjectBounds, pos textObjectPosition) textObjectPosition {

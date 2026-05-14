@@ -518,6 +518,32 @@ func TestDiffViewerStatusContextShowsSectionedFileAndTotals(t *testing.T) {
 	}
 }
 
+func TestDiffViewerStatusContextBoldsOnlyFileBase(t *testing.T) {
+	viewer := &diffViewer{
+		rows: []diff.Row{
+			{Kind: diff.RowFile, Text: "src/pkg/one.go"},
+			{Kind: diff.RowAdd, FileName: "src/pkg/one.go", Code: "new"},
+			{Kind: diff.RowFile, Text: "README.md"},
+		},
+		cursor: selectionPoint{Row: 1},
+	}
+	viewer.ensureColorScheme()
+
+	left := viewer.statusLeftSegments()
+	if got, want := segmentsText(left), " 1/2 src/pkg/one.go  +1 -0"; got != want {
+		t.Fatalf("left status = %q, want %q", got, want)
+	}
+	if left[0].Text != " 1/2 src/pkg/" || left[0].Style.Attribute == vaxis.AttrBold {
+		t.Fatalf("file context prefix segment = %q %+v, want regular directory prefix", left[0].Text, left[0].Style)
+	}
+	if left[1].Text != "one.go" || left[1].Style.Attribute != vaxis.AttrBold {
+		t.Fatalf("file context base segment = %q %+v, want bold file name", left[1].Text, left[1].Style)
+	}
+	if left[2].Text != " " || left[2].Style.Attribute == vaxis.AttrBold {
+		t.Fatalf("file context suffix segment = %q %+v, want regular padding", left[2].Text, left[2].Style)
+	}
+}
+
 func TestDiffViewerStatusContextShowsCountsWhenMultipleCommits(t *testing.T) {
 	viewer := &diffViewer{
 		rows: []diff.Row{
@@ -2834,6 +2860,156 @@ func TestDiffViewerTextObjectSelectsInnerWord(t *testing.T) {
 	}
 }
 
+func TestDiffViewerTextObjectUsesPrintedDelimiterForShiftedKeys(t *testing.T) {
+	tests := []struct {
+		name    string
+		code    string
+		cursor  int
+		object  vaxis.Key
+		want    string
+	}{
+		{
+			name:   "double quote",
+			code:   `const x = "hello"`,
+			cursor: strings.Index(`const x = "hello"`, "hello"),
+			object: vaxis.Key{Text: `"`, Keycode: '\''},
+			want:   `"hello"`,
+		},
+		{
+			name:   "paren",
+			code:   `call(foo)`,
+			cursor: strings.Index(`call(foo)`, "foo"),
+			object: vaxis.Key{Text: "(", Keycode: '9'},
+			want:   `(foo)`,
+		},
+		{
+			name:   "brace",
+			code:   `before {inside} after`,
+			cursor: strings.Index(`before {inside} after`, "inside"),
+			object: vaxis.Key{Text: "{", Keycode: '['},
+			want:   `{inside}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			viewer := &diffViewer{
+				rows:   []diff.Row{{Kind: diff.RowContext, Text: tt.code, Code: tt.code}},
+				cursor: selectionPoint{Row: 0, Col: tt.cursor},
+				mode:   modeVisual,
+			}
+			viewer.Layout(Tight(Size{Width: 80, Height: 10}))
+
+			if _, err := viewer.HandleEvent(vaxis.Key{Text: "a", Keycode: 'a'}); err != nil {
+				t.Fatal(err)
+			}
+			cmd, err := viewer.HandleEvent(tt.object)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cmd != CommandRedraw {
+				t.Fatalf("command = %v, want redraw", cmd)
+			}
+			if got := viewer.ClipboardText(); got != tt.want {
+				t.Fatalf("selection text = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDiffViewerTextObjectIgnoresShiftModifierPress(t *testing.T) {
+	viewer := &diffViewer{
+		rows: []diff.Row{
+			{Kind: diff.RowContext, Text: "        vaxis.Segment{", Code: "        vaxis.Segment{"},
+			{Kind: diff.RowContext, Text: `            Text:  " " + d.modeLabel() + " ",`, Code: `            Text:  " " + d.modeLabel() + " ",`},
+			{Kind: diff.RowContext, Text: "            Style: d.statusStyle(),", Code: "            Style: d.statusStyle(),"},
+			{Kind: diff.RowContext, Text: "        },", Code: "        },"},
+		},
+		cursor: selectionPoint{Row: 2, Col: 8},
+		mode:   modeVisual,
+	}
+	viewer.Layout(Tight(Size{Width: 80, Height: 10}))
+
+	if _, err := viewer.HandleEvent(vaxis.Key{Text: "i", Keycode: 'i'}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := viewer.HandleEvent(vaxis.Key{Keycode: vaxis.KeyLeftShift}); err != nil {
+		t.Fatal(err)
+	}
+	if !viewer.textObject.active {
+		t.Fatal("text object state cleared by shift press")
+	}
+	cmd, err := viewer.HandleEvent(vaxis.Key{Text: "[", Keycode: '[', Modifiers: vaxis.ModShift})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd != CommandRedraw {
+		t.Fatalf("command = %v, want redraw", cmd)
+	}
+	if got, want := viewer.ClipboardText(), `            Text:  " " + d.modeLabel() + " ",
+            Style: d.statusStyle(),
+        `; got != want {
+		t.Fatalf("selection text = %q, want %q", got, want)
+	}
+}
+
+func TestDiffViewerTextObjectUsesShiftedPunctuationFallback(t *testing.T) {
+	viewer := &diffViewer{
+		rows: []diff.Row{
+			{Kind: diff.RowContext, Text: "        vaxis.Segment{", Code: "        vaxis.Segment{"},
+			{Kind: diff.RowContext, Text: `            Text:  " " + d.modeLabel() + " ",`, Code: `            Text:  " " + d.modeLabel() + " ",`},
+			{Kind: diff.RowContext, Text: "            Style: d.statusStyle(),", Code: "            Style: d.statusStyle(),"},
+			{Kind: diff.RowContext, Text: "        },", Code: "        },"},
+		},
+		cursor: selectionPoint{Row: 2, Col: 8},
+		mode:   modeVisual,
+	}
+	viewer.Layout(Tight(Size{Width: 80, Height: 10}))
+
+	if _, err := viewer.HandleEvent(vaxis.Key{Text: "i", Keycode: 'i'}); err != nil {
+		t.Fatal(err)
+	}
+	cmd, err := viewer.HandleEvent(vaxis.Key{Text: "[", Keycode: '[', Modifiers: vaxis.ModShift})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd != CommandRedraw {
+		t.Fatalf("command = %v, want redraw", cmd)
+	}
+	if got, want := viewer.ClipboardText(), `            Text:  " " + d.modeLabel() + " ",
+            Style: d.statusStyle(),
+        `; got != want {
+		t.Fatalf("selection text = %q, want %q", got, want)
+	}
+}
+
+func TestDiffViewerTextObjectSelectsNextMultilineObject(t *testing.T) {
+	viewer := &diffViewer{
+		rows: []diff.Row{
+			{Kind: diff.RowContext, Text: "func main() {", Code: "func main() {"},
+			{Kind: diff.RowContext, Text: "\tcall()", Code: "\tcall()"},
+			{Kind: diff.RowContext, Text: "}", Code: "}"},
+		},
+		cursor: selectionPoint{Row: 0, Col: 0},
+		mode:   modeVisual,
+	}
+	viewer.Layout(Tight(Size{Width: 80, Height: 10}))
+
+	if _, err := viewer.HandleEvent(vaxis.Key{Text: "a", Keycode: 'a'}); err != nil {
+		t.Fatal(err)
+	}
+	cmd, err := viewer.HandleEvent(vaxis.Key{Text: "{", Keycode: '['})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd != CommandRedraw {
+		t.Fatalf("command = %v, want redraw", cmd)
+	}
+	if got, want := viewer.ClipboardText(), "{\n\tcall()\n}"; got != want {
+		t.Fatalf("selection text = %q, want %q", got, want)
+	}
+}
+
 func TestDiffViewerTextObjectSelectsAroundBracesWithinHunk(t *testing.T) {
 	rows := []diff.Row{
 		{Kind: diff.RowContext, Text: "func main() {", Code: "func main() {"},
@@ -2861,6 +3037,71 @@ func TestDiffViewerTextObjectSelectsAroundBracesWithinHunk(t *testing.T) {
 		t.Fatalf("command = %v, want redraw", cmd)
 	}
 	if got, want := viewer.ClipboardText(), "{\n\tcall()\n}"; got != want {
+		t.Fatalf("selection text = %q, want %q", got, want)
+	}
+}
+
+func TestDiffViewerTextObjectSelectsAcrossOppositeSideRows(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowContext, Gutter: "  1   1   ", Code: "if ok {", FileName: "main.go"},
+		{Kind: diff.RowDelete, Gutter: "  2     - ", Code: "old()", FileName: "main.go"},
+		{Kind: diff.RowAdd, Gutter: "      2 + ", Code: "new()", FileName: "main.go"},
+		{Kind: diff.RowContext, Gutter: "  3   3   ", Code: "}", FileName: "main.go"},
+	}
+	for index := range rows {
+		rows[index].Text = rows[index].Gutter + rows[index].Code
+	}
+	cursorCol := testCodeOffset(rows[2]) + strings.Index(rows[2].Code, "new")
+	viewer := &diffViewer{
+		rows:   rows,
+		cursor: selectionPoint{Row: 2, Col: cursorCol},
+		mode:   modeVisual,
+	}
+	viewer.Layout(Tight(Size{Width: 80, Height: 10}))
+
+	if _, err := viewer.HandleEvent(vaxis.Key{Text: "a", Keycode: 'a'}); err != nil {
+		t.Fatal(err)
+	}
+	cmd, err := viewer.HandleEvent(vaxis.Key{Text: "{", Keycode: '['})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd != CommandRedraw {
+		t.Fatalf("command = %v, want redraw", cmd)
+	}
+	if got, want := viewer.ClipboardText(), "{\nnew()\n}"; got != want {
+		t.Fatalf("selection text = %q, want %q", got, want)
+	}
+}
+
+func TestDiffViewerTextObjectSelectsQuotesAcrossRows(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowContext, Gutter: "  1   1   ", Code: `message = "hello`, FileName: "main.go"},
+		{Kind: diff.RowDelete, Gutter: "  2     - ", Code: "old", FileName: "main.go"},
+		{Kind: diff.RowAdd, Gutter: "      2 + ", Code: "world", FileName: "main.go"},
+		{Kind: diff.RowContext, Gutter: "  3   3   ", Code: `"`, FileName: "main.go"},
+	}
+	for index := range rows {
+		rows[index].Text = rows[index].Gutter + rows[index].Code
+	}
+	viewer := &diffViewer{
+		rows:   rows,
+		cursor: selectionPoint{Row: 2, Col: testCodeOffset(rows[2])},
+		mode:   modeVisual,
+	}
+	viewer.Layout(Tight(Size{Width: 80, Height: 10}))
+
+	if _, err := viewer.HandleEvent(vaxis.Key{Text: "a", Keycode: 'a'}); err != nil {
+		t.Fatal(err)
+	}
+	cmd, err := viewer.HandleEvent(vaxis.Key{Text: `"`, Keycode: '\''})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd != CommandRedraw {
+		t.Fatalf("command = %v, want redraw", cmd)
+	}
+	if got, want := viewer.ClipboardText(), "\"hello\nworld\n\""; got != want {
 		t.Fatalf("selection text = %q, want %q", got, want)
 	}
 }
@@ -3599,6 +3840,38 @@ func TestDiffViewerSideBySideGutterUsesOneSideLineNumbers(t *testing.T) {
 	}
 	if got, want := viewer.sideBySideGutter(viewer.rows[2], sideRight), "13   "; got != want {
 		t.Fatalf("context right gutter = %q, want %q", got, want)
+	}
+}
+
+func TestDiffViewerSideBySideGutterUsesReviewMarker(t *testing.T) {
+	viewer := &diffViewer{
+		rows: []diff.Row{{
+			Kind:   diff.RowAdd,
+			Gutter: "    11 + ",
+			Code:   "new",
+			Review: review.Anchor{Path: "main.go", Line: 11, Side: review.SideRight},
+		}},
+		reviewDrafts: []review.CommentDraft{{
+			Path: "main.go",
+			Line: 11,
+			Side: review.SideRight,
+			Body: "comment",
+		}},
+	}
+	viewer.ensureColorScheme()
+
+	segments := viewer.sideBySideGutterSegments(viewer.rows[0], sideRight)
+	if len(segments) != 2 {
+		t.Fatalf("segments = %+v, want two", segments)
+	}
+	if got, want := segments[0].Text, "11 +"; got != want {
+		t.Fatalf("gutter text = %q, want %q", got, want)
+	}
+	if got, want := segments[1].Text, "▐"; got != want {
+		t.Fatalf("marker text = %q, want %q", got, want)
+	}
+	if got, want := segments[1].Style.Foreground, viewer.scheme.Yellow; got != want {
+		t.Fatalf("marker foreground = %v, want %v", got, want)
 	}
 }
 
