@@ -3,7 +3,7 @@ package diff
 import (
 	"unicode/utf8"
 
-	uucode "github.com/rockorager/go-uucode"
+	"github.com/rockorager/go-uucode"
 )
 
 type token struct {

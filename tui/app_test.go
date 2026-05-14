@@ -2,6 +2,7 @@ package tui
 
 import (
 	"testing"
+	"time"
 
 	"git.sr.ht/~rockorager/vaxis"
 
@@ -143,13 +144,13 @@ func TestDiffViewerUsesMutedGutterForegroundForChangedLines(t *testing.T) {
 
 func TestDiffViewerVimNavigationKeys(t *testing.T) {
 	tests := []struct {
-		name      string
-		start     int
-		key       vaxis.Key
-		want      int
-		wantCmd   Command
-		pendingG  bool
-		wantPendG bool
+		name     string
+		start    int
+		key      vaxis.Key
+		want     int
+		wantCmd  Command
+		pending  string
+		wantPend string
 	}{
 		{
 			name:    "G scrolls to bottom",
@@ -199,20 +200,20 @@ func TestDiffViewerVimNavigationKeys(t *testing.T) {
 			wantCmd: CommandRedraw,
 		},
 		{
-			name:      "g waits for second g",
-			start:     10,
-			key:       vaxis.Key{Text: "g", Keycode: 'g'},
-			want:      10,
-			wantCmd:   CommandNone,
-			wantPendG: true,
-		},
-		{
-			name:     "second g scrolls to top",
+			name:     "g waits for second g",
 			start:    10,
 			key:      vaxis.Key{Text: "g", Keycode: 'g'},
-			want:     0,
-			wantCmd:  CommandRedraw,
-			pendingG: true,
+			want:     10,
+			wantCmd:  CommandNone,
+			wantPend: "g",
+		},
+		{
+			name:    "second g scrolls to top",
+			start:   10,
+			key:     vaxis.Key{Text: "g", Keycode: 'g'},
+			want:    0,
+			wantCmd: CommandRedraw,
+			pending: "g",
 		},
 	}
 
@@ -220,7 +221,9 @@ func TestDiffViewerVimNavigationKeys(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			viewer := newTestDiffViewer(100, 10)
 			viewer.scroll = tt.start
-			viewer.pendingG = tt.pendingG
+			if tt.pending != "" {
+				viewer.keys.Set(tt.pending, time.Now())
+			}
 
 			cmd, err := viewer.HandleEvent(tt.key)
 			if err != nil {
@@ -232,10 +235,30 @@ func TestDiffViewerVimNavigationKeys(t *testing.T) {
 			if viewer.scroll != tt.want {
 				t.Fatalf("scroll = %d, want %d", viewer.scroll, tt.want)
 			}
-			if viewer.pendingG != tt.wantPendG {
-				t.Fatalf("pendingG = %v, want %v", viewer.pendingG, tt.wantPendG)
+			if viewer.keys.Pending() != tt.wantPend {
+				t.Fatalf("pending keys = %q, want %q", viewer.keys.Pending(), tt.wantPend)
 			}
 		})
+	}
+}
+
+func TestDiffViewerPendingGExpires(t *testing.T) {
+	viewer := newTestDiffViewer(100, 10)
+	viewer.scroll = 10
+	viewer.keys.Set("g", time.Now().Add(-pendingKeyTimeout-time.Second))
+
+	cmd, err := viewer.HandleEvent(vaxis.Key{Text: "g", Keycode: 'g'})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd != CommandNone {
+		t.Fatalf("command = %v, want %v", cmd, CommandNone)
+	}
+	if viewer.scroll != 10 {
+		t.Fatalf("scroll = %d, want 10", viewer.scroll)
+	}
+	if viewer.keys.Pending() != "g" {
+		t.Fatalf("pending keys = %q, want %q", viewer.keys.Pending(), "g")
 	}
 }
 

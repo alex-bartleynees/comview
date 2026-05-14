@@ -5,6 +5,8 @@ import (
 
 	"git.sr.ht/~rockorager/vaxis"
 	"github.com/alecthomas/chroma/v2"
+
+	"github.com/rockorager/comview/diff"
 )
 
 func TestSyntaxHighlighterHighlightsKnownFileType(t *testing.T) {
@@ -69,5 +71,39 @@ func TestSyntaxHighlighterUpdatesWithColorScheme(t *testing.T) {
 	style := highlighter.styleFor(chroma.Keyword, vaxis.Style{})
 	if style.Foreground != scheme.Hunk {
 		t.Fatalf("keyword foreground = %v, want %v", style.Foreground, scheme.Hunk)
+	}
+}
+
+func TestSyntaxHighlighterPreservesMultilineRawStringStateAcrossRows(t *testing.T) {
+	scheme := DefaultColorScheme()
+	highlighter := NewSyntaxHighlighterWithScheme(scheme)
+	base := vaxis.Style{
+		Foreground: vaxis.RGBColor(1, 2, 3),
+		Background: vaxis.RGBColor(4, 5, 6),
+	}
+	rows := []diff.Row{
+		{Kind: diff.RowHunk, FileName: "inline_test.go", Text: "@@ -1 +1 @@"},
+		{Kind: diff.RowAdd, FileName: "inline_test.go", Code: "doc, err := Parse(`diff --git a/main.go b/main.go"},
+		{Kind: diff.RowAdd, FileName: "inline_test.go", Code: "--- a/main.go"},
+		{Kind: diff.RowAdd, FileName: "inline_test.go", Code: "+++ b/main.go"},
+		{Kind: diff.RowAdd, FileName: "inline_test.go", Code: "`)"},
+	}
+
+	segments := highlighter.HighlightRows(rows, func(diff.RowKind) vaxis.Style {
+		return base
+	})
+
+	rawStringLine := segments[2]
+	if len(rawStringLine) != 1 {
+		t.Fatalf("raw string line segments = %+v, want one segment", rawStringLine)
+	}
+	if rawStringLine[0].Text != "--- a/main.go" {
+		t.Fatalf("raw string line text = %q", rawStringLine[0].Text)
+	}
+	if rawStringLine[0].Style.Foreground != scheme.Green() {
+		t.Fatalf("raw string line foreground = %v, want string color %v", rawStringLine[0].Style.Foreground, scheme.Green())
+	}
+	if rawStringLine[0].Style.Background != base.Background {
+		t.Fatalf("raw string line background = %v, want %v", rawStringLine[0].Style.Background, base.Background)
 	}
 }

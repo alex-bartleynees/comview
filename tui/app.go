@@ -1,10 +1,14 @@
 package tui
 
 import (
+	"time"
+
 	"git.sr.ht/~rockorager/vaxis"
 
 	"github.com/rockorager/comview/diff"
 )
+
+const pendingKeyTimeout = 800 * time.Millisecond
 
 // Run starts the comview TUI.
 func Run(input string) error {
@@ -28,7 +32,7 @@ type diffViewer struct {
 	rows        []diff.Row
 	scroll      int
 	height      int
-	pendingG    bool
+	keys        keyChordState
 	scheme      ColorScheme
 	highlighter *SyntaxHighlighter
 }
@@ -47,45 +51,47 @@ func (d *diffViewer) HandleEvent(ev vaxis.Event) (Command, error) {
 		return CommandNone, nil
 	}
 
+	d.keys.ClearExpired(time.Now())
+
 	switch {
 	case key.Matches('c', vaxis.ModCtrl),
 		key.Matches('q'),
 		key.MatchString("Esc"):
 		return CommandQuit, nil
 	case key.Matches('g'):
-		if d.pendingG {
-			d.pendingG = false
+		if d.keys.Pending() == "g" {
+			d.keys.Clear()
 			d.scrollTop()
 			return CommandRedraw, nil
 		}
-		d.pendingG = true
+		d.keys.Set("g", time.Now())
 		return CommandNone, nil
 	case key.Matches('G'), key.Matches(vaxis.KeyEnd):
-		d.pendingG = false
+		d.keys.Clear()
 		d.scrollBottom()
 		return CommandRedraw, nil
 	case key.Matches(vaxis.KeyHome):
-		d.pendingG = false
+		d.keys.Clear()
 		d.scrollTop()
 		return CommandRedraw, nil
 	case key.Matches('d', vaxis.ModCtrl), key.Matches(vaxis.KeyPgDown):
-		d.pendingG = false
+		d.keys.Clear()
 		d.scrollBy(d.halfPage())
 		return CommandRedraw, nil
 	case key.Matches('u', vaxis.ModCtrl), key.Matches(vaxis.KeyPgUp):
-		d.pendingG = false
+		d.keys.Clear()
 		d.scrollBy(-d.halfPage())
 		return CommandRedraw, nil
 	case key.Matches('j'), key.MatchString("Down"):
-		d.pendingG = false
+		d.keys.Clear()
 		d.scrollBy(1)
 		return CommandRedraw, nil
 	case key.Matches('k'), key.MatchString("Up"):
-		d.pendingG = false
+		d.keys.Clear()
 		d.scrollBy(-1)
 		return CommandRedraw, nil
 	default:
-		d.pendingG = false
+		d.keys.Clear()
 		return CommandNone, nil
 	}
 }
@@ -134,12 +140,13 @@ func (d *diffViewer) Paint(win vaxis.Window) {
 
 	printAt(win, 10, 0, "j/k, gg/G, Ctrl+d/u scroll, q quits", mutedStyle)
 
+	highlightedRows := d.highlighter.HighlightRows(d.rows, d.codeStyle)
 	for row, diffRow := range d.visibleRows() {
-		d.printRow(win, row+1, diffRow)
+		d.printRow(win, row+1, diffRow, highlightedRows[d.scroll+row])
 	}
 }
 
-func (d *diffViewer) printRow(win vaxis.Window, row int, diffRow diff.Row) {
+func (d *diffViewer) printRow(win vaxis.Window, row int, diffRow diff.Row, codeSegments []vaxis.Segment) {
 	d.fillRowBackground(win, row, diffRow.Kind)
 	if diffRow.Kind == diff.RowHunk && diffRow.Prefix != "" && diffRow.Code != "" {
 		segments := []vaxis.Segment{
@@ -156,7 +163,7 @@ func (d *diffViewer) printRow(win vaxis.Window, row int, diffRow diff.Row) {
 			{Text: diffRow.Marker, Style: d.styleFor(diffRow.Kind)},
 		}
 		if diffRow.Code != "" {
-			codeSegments := d.highlighter.Highlight(diffRow.FileName, diffRow.Code, d.codeStyle(diffRow.Kind))
+			codeSegments = d.fallbackCodeSegments(diffRow, codeSegments)
 			codeSegments = applyInlineSpans(codeSegments, diffRow.InlineSpans, d.inlineBackground(diffRow.Kind))
 			segments = append(segments, codeSegments...)
 		}
@@ -174,10 +181,17 @@ func (d *diffViewer) printRow(win vaxis.Window, row int, diffRow diff.Row) {
 		{Text: diffRow.Gutter, Style: d.styleFor(diff.RowMeta)},
 		{Text: diffRow.Marker, Style: style},
 	}
-	codeSegments := d.highlighter.Highlight(diffRow.FileName, diffRow.Code, d.codeStyle(diffRow.Kind))
+	codeSegments = d.fallbackCodeSegments(diffRow, codeSegments)
 	codeSegments = applyInlineSpans(codeSegments, diffRow.InlineSpans, d.inlineBackground(diffRow.Kind))
 	segments = append(segments, codeSegments...)
 	printSegmentsAt(win, 0, row, segments...)
+}
+
+func (d *diffViewer) fallbackCodeSegments(diffRow diff.Row, segments []vaxis.Segment) []vaxis.Segment {
+	if len(segments) > 0 {
+		return segments
+	}
+	return d.highlighter.Highlight(diffRow.FileName, diffRow.Code, d.codeStyle(diffRow.Kind))
 }
 
 func (d *diffViewer) fillRowBackground(win vaxis.Window, row int, kind diff.RowKind) {

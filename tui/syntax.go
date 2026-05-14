@@ -7,6 +7,8 @@ import (
 	"git.sr.ht/~rockorager/vaxis"
 	"github.com/alecthomas/chroma/v2"
 	"github.com/alecthomas/chroma/v2/lexers"
+
+	"github.com/rockorager/comview/diff"
 )
 
 type SyntaxHighlighter struct {
@@ -59,6 +61,117 @@ func (h *SyntaxHighlighter) Highlight(fileName string, code string, base vaxis.S
 
 	if len(segments) == 0 {
 		return []vaxis.Segment{{Text: code, Style: base}}
+	}
+	return segments
+}
+
+func (h *SyntaxHighlighter) HighlightRows(rows []diff.Row, baseFor func(diff.RowKind) vaxis.Style) map[int][]vaxis.Segment {
+	segments := make(map[int][]vaxis.Segment, len(rows))
+	var oldSide []syntaxLine
+	var newSide []syntaxLine
+
+	flush := func() {
+		h.highlightSide(oldSide, baseFor, segments)
+		h.highlightSide(newSide, baseFor, segments)
+		oldSide = nil
+		newSide = nil
+	}
+
+	for index, row := range rows {
+		switch row.Kind {
+		case diff.RowHunk, diff.RowFile, diff.RowMeta, diff.RowPreamble:
+			flush()
+		}
+
+		if row.Code == "" {
+			continue
+		}
+
+		line := syntaxLine{
+			rowIndex: index,
+			fileName: row.FileName,
+			code:     row.Code,
+			kind:     row.Kind,
+		}
+		switch row.Kind {
+		case diff.RowContext:
+			oldSide = append(oldSide, line)
+			newSide = append(newSide, line)
+		case diff.RowDelete:
+			oldSide = append(oldSide, line)
+		case diff.RowAdd:
+			newSide = append(newSide, line)
+		}
+	}
+	flush()
+
+	return segments
+}
+
+type syntaxLine struct {
+	rowIndex int
+	fileName string
+	code     string
+	kind     diff.RowKind
+}
+
+func (h *SyntaxHighlighter) highlightSide(lines []syntaxLine, baseFor func(diff.RowKind) vaxis.Style, out map[int][]vaxis.Segment) {
+	if len(lines) == 0 {
+		return
+	}
+	if h == nil {
+		for _, line := range lines {
+			out[line.rowIndex] = []vaxis.Segment{{Text: line.code, Style: baseFor(line.kind)}}
+		}
+		return
+	}
+
+	lexer := h.lexerFor(lines[0].fileName)
+	if lexer == nil || lexer == lexers.Fallback {
+		for _, line := range lines {
+			out[line.rowIndex] = []vaxis.Segment{{Text: line.code, Style: baseFor(line.kind)}}
+		}
+		return
+	}
+
+	var source strings.Builder
+	for _, line := range lines {
+		source.WriteString(line.code)
+		source.WriteByte('\n')
+	}
+
+	iterator, err := lexer.Tokenise(nil, source.String())
+	if err != nil {
+		for _, line := range lines {
+			out[line.rowIndex] = []vaxis.Segment{{Text: line.code, Style: baseFor(line.kind)}}
+		}
+		return
+	}
+
+	tokenLines := chroma.SplitTokensIntoLines(iterator.Tokens())
+	for index, line := range lines {
+		if index >= len(tokenLines) {
+			out[line.rowIndex] = []vaxis.Segment{{Text: line.code, Style: baseFor(line.kind)}}
+			continue
+		}
+		out[line.rowIndex] = h.tokensToSegments(tokenLines[index], baseFor(line.kind), line.code)
+	}
+}
+
+func (h *SyntaxHighlighter) tokensToSegments(tokens []chroma.Token, base vaxis.Style, fallback string) []vaxis.Segment {
+	segments := make([]vaxis.Segment, 0, len(tokens))
+	for _, token := range tokens {
+		text := strings.TrimSuffix(token.Value, "\n")
+		if text == "" {
+			continue
+		}
+		segments = append(segments, vaxis.Segment{
+			Text:  text,
+			Style: h.styleFor(token.Type, base),
+		})
+	}
+	if len(segments) == 0 {
+		return []vaxis.Segment{{Text: fallback, Style: base}}
 	}
 	return segments
 }
