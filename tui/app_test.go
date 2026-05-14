@@ -26,6 +26,32 @@ func TestDiffViewerUsesQueriedDiffColors(t *testing.T) {
 	}
 }
 
+func TestRowsForInputReturnsNoRowsForEmptyInput(t *testing.T) {
+	rows, err := rowsForInput("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("rows = %d, want 0", len(rows))
+	}
+}
+
+func TestRowsForInputReturnsRowsForDiff(t *testing.T) {
+	rows, err := rowsForInput(`diff --git a/main.go b/main.go
+--- a/main.go
++++ b/main.go
+@@ -1 +1 @@
+-old
++new
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) == 0 {
+		t.Fatal("rows = 0, want diff rows")
+	}
+}
+
 func TestDiffViewerFallsBackToRGBDiffColors(t *testing.T) {
 	viewer := &diffViewer{}
 	viewer.ensureColorScheme()
@@ -51,10 +77,12 @@ func TestDefaultColorSchemeUsesOnlyRGBColors(t *testing.T) {
 		scheme.Base.Cyan,
 		scheme.Foreground,
 		scheme.Background,
+		scheme.Code,
 		scheme.Dim,
 		scheme.Header,
 		scheme.Muted,
 		scheme.Hunk,
+		scheme.Gutter,
 		scheme.Blue,
 		scheme.Yellow,
 		scheme.Add,
@@ -183,24 +211,41 @@ func TestDiffViewerInvalidatesRenderCacheWhenTerminalColorsChange(t *testing.T) 
 	}
 }
 
-func TestDiffViewerUsesMutedGutterForegroundForChangedLines(t *testing.T) {
+func TestDiffViewerUsesChangedGutterForegroundForChangedLines(t *testing.T) {
 	viewer := &diffViewer{}
 	viewer.ensureColorScheme()
 
 	addGutter := viewer.gutterStyle(diff.RowAdd)
-	if addGutter.Foreground != viewer.scheme.Muted {
-		t.Fatalf("add gutter foreground = %v, want %v", addGutter.Foreground, viewer.scheme.Muted)
+	if addGutter.Foreground != viewer.scheme.Add {
+		t.Fatalf("add gutter foreground = %v, want %v", addGutter.Foreground, viewer.scheme.Add)
 	}
-	if addGutter.Background != viewer.scheme.AddLine {
-		t.Fatalf("add gutter background = %v, want %v", addGutter.Background, viewer.scheme.AddLine)
+	if addGutter.Background != viewer.scheme.Gutter {
+		t.Fatalf("add gutter background = %v, want %v", addGutter.Background, viewer.scheme.Gutter)
 	}
 
 	deleteGutter := viewer.gutterStyle(diff.RowDelete)
-	if deleteGutter.Foreground != viewer.scheme.Muted {
-		t.Fatalf("delete gutter foreground = %v, want %v", deleteGutter.Foreground, viewer.scheme.Muted)
+	if deleteGutter.Foreground != viewer.scheme.Delete {
+		t.Fatalf("delete gutter foreground = %v, want %v", deleteGutter.Foreground, viewer.scheme.Delete)
 	}
-	if deleteGutter.Background != viewer.scheme.DeleteLine {
-		t.Fatalf("delete gutter background = %v, want %v", deleteGutter.Background, viewer.scheme.DeleteLine)
+	if deleteGutter.Background != viewer.scheme.Gutter {
+		t.Fatalf("delete gutter background = %v, want %v", deleteGutter.Background, viewer.scheme.Gutter)
+	}
+}
+
+func TestDiffViewerUsesSingleDarkGutterSegment(t *testing.T) {
+	viewer := &diffViewer{}
+	viewer.ensureColorScheme()
+	segments := viewer.gutterSegments(diff.Row{
+		Kind:   diff.RowAdd,
+		Gutter: "1 2 ",
+		Marker: "+",
+	})
+
+	if len(segments) != 1 {
+		t.Fatalf("segments = %+v, want one", segments)
+	}
+	if segments[0].Text != "1 2 +" || segments[0].Style != viewer.gutterStyle(diff.RowAdd) {
+		t.Fatalf("gutter segment = %+v", segments[0])
 	}
 }
 
@@ -301,6 +346,26 @@ func TestDiffViewerVimNavigationKeys(t *testing.T) {
 				t.Fatalf("pending keys = %q, want %q", viewer.keys.Pending(), tt.wantPend)
 			}
 		})
+	}
+}
+
+func TestDiffViewerIgnoresKeyReleaseEvents(t *testing.T) {
+	viewer := newTestDiffViewer(100, 10)
+	viewer.scroll = 10
+
+	cmd, err := viewer.HandleEvent(vaxis.Key{
+		Text:      "j",
+		Keycode:   'j',
+		EventType: vaxis.EventRelease,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd != CommandNone {
+		t.Fatalf("command = %v, want %v", cmd, CommandNone)
+	}
+	if viewer.scroll != 10 {
+		t.Fatalf("scroll = %d, want 10", viewer.scroll)
 	}
 }
 
@@ -579,19 +644,17 @@ func TestDiffViewerAltMouseSelectionCopiesOnlyCode(t *testing.T) {
 	rows := []diff.Row{
 		{
 			Kind:   diff.RowAdd,
-			Gutter: "1 1 │ ",
-			Marker: "+",
+			Gutter: "1 1 + ",
 			Code:   "hello",
 		},
 		{
 			Kind:   diff.RowDelete,
-			Gutter: "2 2 │ ",
-			Marker: "-",
+			Gutter: "2 2 - ",
 			Code:   "world",
 		},
 	}
 	for i := range rows {
-		rows[i].Text = rows[i].Gutter + rows[i].Marker + rows[i].Code
+		rows[i].Text = rows[i].Gutter + rows[i].Code
 	}
 	viewer := &diffViewer{rows: rows}
 	viewer.Layout(Tight(Size{Width: 80, Height: 10}))
@@ -632,11 +695,10 @@ func TestDiffViewerAltMouseSelectionCopiesOnlyCode(t *testing.T) {
 func TestDiffViewerAltTripleClickSelectsOnlyCode(t *testing.T) {
 	row := diff.Row{
 		Kind:   diff.RowAdd,
-		Gutter: "1 1 │ ",
-		Marker: "+",
+		Gutter: "1 1 + ",
 		Code:   "hello",
 	}
-	row.Text = row.Gutter + row.Marker + row.Code
+	row.Text = row.Gutter + row.Code
 	viewer := &diffViewer{rows: []diff.Row{row}}
 	viewer.Layout(Tight(Size{Width: 80, Height: 10}))
 	codeOffset := textCellWidth(row.Gutter + row.Marker)
@@ -694,12 +756,11 @@ func TestDiffViewerPaintsSelectedEmptyLineAsOneCell(t *testing.T) {
 func TestDiffViewerPaintsSelectedEmptyCodeAsOneCell(t *testing.T) {
 	row := diff.Row{
 		Kind:   diff.RowAdd,
-		Gutter: "1 1 │ ",
-		Marker: "+",
+		Gutter: "1 1 + ",
 		Code:   "",
 	}
-	row.Text = row.Gutter + row.Marker
-	codeOffset := textCellWidth(row.Text)
+	row.Text = row.Gutter
+	codeOffset := textCellWidth(row.Gutter + row.Marker)
 	viewer := &diffViewer{
 		rows: []diff.Row{row},
 		selection: textSelection{
@@ -870,11 +931,10 @@ func TestDiffViewerHighlightYankChangesSelectionStyleTemporarily(t *testing.T) {
 func TestDiffViewerSelectionPointAccountsForHorizontalScroll(t *testing.T) {
 	row := diff.Row{
 		Kind:   diff.RowAdd,
-		Gutter: "1 1 │ ",
-		Marker: "+",
+		Gutter: "1 1 + ",
 		Code:   "abcdef",
 	}
-	row.Text = row.Gutter + row.Marker + row.Code
+	row.Text = row.Gutter + row.Code
 	viewer := &diffViewer{
 		rows:    []diff.Row{row},
 		xScroll: 2,

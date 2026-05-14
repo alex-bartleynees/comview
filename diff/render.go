@@ -126,30 +126,30 @@ func renderHunkRows(fileName string, hunk Hunk, options RenderOptions) []Row {
 }
 
 func renderRow(fileName string, line Line, options RenderOptions) Row {
-	gutter := renderGutter(line, options)
 	marker, code := splitLine(line)
+	gutter := renderGutter(line, options, marker)
 	return Row{
 		Kind:     rowKind(line.Kind),
-		Text:     gutter + marker + code,
+		Text:     gutter + code,
 		FileName: fileName,
 		Gutter:   gutter,
-		Marker:   marker,
 		Code:     code,
 	}
 }
 
 func renderLine(line Line, options RenderOptions) string {
-	return renderGutter(line, options) + line.Text
+	marker, code := splitLine(line)
+	return renderGutter(line, options, marker) + code
 }
 
-func renderGutter(line Line, options RenderOptions) string {
+func renderGutter(line Line, options RenderOptions, marker string) string {
 	if !options.ShowLineNumbers {
-		return ""
+		return marker
 	}
 
 	oldNumber := lineNumber(line.OldLine)
 	newNumber := lineNumber(line.NewLine)
-	return fmt.Sprintf("%*s %*s │ ", options.LineNumberWidth, oldNumber, options.LineNumberWidth, newNumber)
+	return fmt.Sprintf("%*s %*s %s ", options.LineNumberWidth, oldNumber, options.LineNumberWidth, newNumber, marker)
 }
 
 func splitLine(line Line) (marker string, code string) {

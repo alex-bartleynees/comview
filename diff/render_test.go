@@ -64,13 +64,13 @@ func TestRowsWithOptionsCanShowLineNumbers(t *testing.T) {
 		}
 	}
 
-	if deleteRow.Text != "     1        │ -old" {
+	if deleteRow.Text != "     1        - old" {
 		t.Fatalf("delete row = %q", deleteRow.Text)
 	}
-	if addRow.Text != "            1 │ +new" {
+	if addRow.Text != "            1 + new" {
 		t.Fatalf("add row = %q", addRow.Text)
 	}
-	if contextRow.Text != "     2      2 │  same" {
+	if contextRow.Text != "     2      2   same" {
 		t.Fatalf("context row = %q", contextRow.Text)
 	}
 }
@@ -97,7 +97,7 @@ func TestRowsWithOptionsUseCompactLineNumberWidth(t *testing.T) {
 		}
 	}
 
-	if deleteRow.Text != "1   │ -old" {
+	if deleteRow.Text != "1   - old" {
 		t.Fatalf("delete row = %q", deleteRow.Text)
 	}
 }
@@ -126,7 +126,7 @@ func TestRowsWithOptionsAllowLineNumberWidthOverride(t *testing.T) {
 		}
 	}
 
-	if deleteRow.Text != "  1     │ -old" {
+	if deleteRow.Text != "  1     - old" {
 		t.Fatalf("delete row = %q", deleteRow.Text)
 	}
 }

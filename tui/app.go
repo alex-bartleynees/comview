@@ -26,13 +26,16 @@ const keyboardFlags = vaxis.CSIuDisambiguate |
 
 // Run starts the comview TUI.
 func Run(input string) error {
-	doc, err := diff.Parse(input)
+	rows, err := rowsForInput(input)
 	if err != nil {
 		return err
 	}
+	if len(rows) == 0 {
+		return nil
+	}
 
 	app, err := NewApp(&diffViewer{
-		rows:        doc.RowsWithOptions(diff.DefaultRenderOptions()),
+		rows:        rows,
 		highlighter: NewSyntaxHighlighter(),
 	}, vaxis.Options{
 		CSIuBitMask: keyboardFlags,
@@ -42,6 +45,14 @@ func Run(input string) error {
 	}
 
 	return app.Run()
+}
+
+func rowsForInput(input string) ([]diff.Row, error) {
+	doc, err := diff.Parse(input)
+	if err != nil {
+		return nil, err
+	}
+	return doc.RowsWithOptions(diff.DefaultRenderOptions()), nil
 }
 
 type diffViewer struct {
@@ -116,6 +127,10 @@ func (d *diffViewer) HandleEvent(ev vaxis.Event) (Command, error) {
 }
 
 func (d *diffViewer) handleKey(key vaxis.Key) (Command, error) {
+	if key.EventType == vaxis.EventRelease {
+		return CommandNone, nil
+	}
+
 	d.keys.ClearExpired(time.Now())
 
 	switch {
@@ -278,17 +293,13 @@ func (d *diffViewer) printRow(win vaxis.Window, row int, diffRow diff.Row, codeS
 	}
 
 	if diffRow.Gutter != "" || diffRow.Marker != "" {
-		segments := []vaxis.Segment{
-			{Text: diffRow.Gutter, Style: d.gutterStyle(diffRow.Kind)},
-			{Text: diffRow.Marker, Style: d.styleFor(diffRow.Kind)},
-		}
-		if diffRow.Code != "" {
-			codeOffset := segmentTextWidth(segments)
-			printSegmentsAt(win, 0, row, segments...)
-			printCodeSegmentsAtOffset(win, codeOffset, row, d.xScroll, codeSegments...)
-			return
-		}
+		segments := d.gutterSegments(diffRow)
+		codeOffset := segmentTextWidth(segments)
+		d.fillCodeBackground(win, row, codeOffset, diffRow.Kind)
 		printSegmentsAt(win, 0, row, segments...)
+		if diffRow.Code != "" {
+			printCodeSegmentsAtOffset(win, codeOffset, row, d.xScroll, codeSegments...)
+		}
 		return
 	}
 
@@ -297,11 +308,8 @@ func (d *diffViewer) printRow(win vaxis.Window, row int, diffRow diff.Row, codeS
 		return
 	}
 
-	style := d.styleFor(diffRow.Kind)
-	segments := []vaxis.Segment{
-		{Text: diffRow.Gutter, Style: d.styleFor(diff.RowMeta)},
-		{Text: diffRow.Marker, Style: style},
-	}
+	segments := d.gutterSegments(diffRow)
+	d.fillCodeBackground(win, row, 0, diffRow.Kind)
 	printSegmentsAt(win, 0, row, segments...)
 	printCodeSegmentsAtOffset(win, 0, row, d.xScroll, codeSegments...)
 }
@@ -342,6 +350,27 @@ func (d *diffViewer) fillRowBackground(win vaxis.Window, row int, kind diff.RowK
 	}
 
 	for col := 0; col < width; col++ {
+		win.SetCell(col, row, vaxis.Cell{
+			Character: vaxis.Character{
+				Grapheme: " ",
+				Width:    1,
+			},
+			Style: style,
+		})
+	}
+}
+
+func (d *diffViewer) fillCodeBackground(win vaxis.Window, row int, start int, kind diff.RowKind) {
+	width, height := win.Size()
+	if row >= height || start >= width {
+		return
+	}
+	if start < 0 {
+		start = 0
+	}
+
+	style := d.codeStyle(kind)
+	for col := start; col < width; col++ {
 		win.SetCell(col, row, vaxis.Cell{
 			Character: vaxis.Character{
 				Grapheme: " ",
@@ -1015,6 +1044,7 @@ func (d *diffViewer) dimStyle() vaxis.Style {
 
 func (d *diffViewer) codeStyle(kind diff.RowKind) vaxis.Style {
 	style := d.baseStyle()
+	style.Background = d.scheme.Code
 	switch kind {
 	case diff.RowAdd:
 		style.Background = d.scheme.AddLine
@@ -1038,15 +1068,19 @@ func (d *diffViewer) inlineBackground(kind diff.RowKind) vaxis.Color {
 func (d *diffViewer) gutterStyle(kind diff.RowKind) vaxis.Style {
 	style := vaxis.Style{
 		Foreground: d.scheme.Muted,
-		Background: d.scheme.Background,
+		Background: d.scheme.Gutter,
 	}
 	switch kind {
 	case diff.RowAdd:
-		style.Background = d.scheme.AddLine
+		style.Foreground = d.scheme.Add
 	case diff.RowDelete:
-		style.Background = d.scheme.DeleteLine
+		style.Foreground = d.scheme.Delete
 	}
 	return style
+}
+
+func (d *diffViewer) gutterSegments(row diff.Row) []vaxis.Segment {
+	return []vaxis.Segment{{Text: row.Gutter + row.Marker, Style: d.gutterStyle(row.Kind)}}
 }
 
 func (d *diffViewer) selectionStyle() vaxis.Style {

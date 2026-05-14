@@ -17,8 +17,10 @@ const (
 	inlineChangeBlend       = 0.32
 	minInlineChangeContrast = 1.70
 	dimBlend                = 0.55
+	codeBackgroundBlend     = 0.035
 	selectionBlend          = 0.40
 	yankHighlightBlend      = 0.50
+	gutterBackgroundBlend   = 0.35
 )
 
 type TerminalColors struct {
@@ -47,10 +49,12 @@ type ColorScheme struct {
 	Base         BaseColors
 	Foreground   vaxis.Color
 	Background   vaxis.Color
+	Code         vaxis.Color
 	Dim          vaxis.Color
 	Header       vaxis.Color
 	Muted        vaxis.Color
 	Hunk         vaxis.Color
+	Gutter       vaxis.Color
 	Blue         vaxis.Color
 	Yellow       vaxis.Color
 	Add          vaxis.Color
@@ -127,12 +131,18 @@ func (s *ColorScheme) ApplyTerminalColors(colors TerminalColors) {
 
 func (s *ColorScheme) RecomputeDerivedColors() {
 	s.Dim = blendRGB(s.Foreground, s.Background, dimBlend)
+	s.Code = blendRGB(s.Background, s.Foreground, codeBackgroundBlend)
 	s.AddLine = changedLineBackground(s.Background, s.Add)
 	s.DeleteLine = changedLineBackground(s.Background, s.Delete)
 	s.AddInline = inlineChangeBackground(s.Background, s.Add)
 	s.DeleteInline = inlineChangeBackground(s.Background, s.Delete)
 	s.Selection = blendRGB(s.Background, s.Blue, selectionBlend)
 	s.Yank = blendRGB(s.Background, s.Yellow, yankHighlightBlend)
+	s.Gutter = blendRGB(s.Background, trueBlack(), gutterBackgroundBlend)
+}
+
+func trueBlack() vaxis.Color {
+	return vaxis.RGBColor(0, 0, 0)
 }
 
 type TerminalColorReceiver interface {
