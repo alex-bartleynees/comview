@@ -57,22 +57,25 @@ func rowsForInput(input string) ([]diff.Row, error) {
 }
 
 type diffViewer struct {
-	rows         []diff.Row
-	scroll       int
-	xScroll      int
-	height       int
-	width        int
-	contentWide  int
-	codeSegments [][]vaxis.Segment
-	fileRows     []int
-	cursor       selectionPoint
-	cursorGoal   int
-	selection    textSelection
-	yankUntil    time.Time
-	clicks       clickState
-	keys         keyChordState
-	scheme       ColorScheme
-	highlighter  *SyntaxHighlighter
+	rows          []diff.Row
+	scroll        int
+	xScroll       int
+	height        int
+	width         int
+	contentWide   int
+	codeSegments  [][]vaxis.Segment
+	fileRows      []int
+	cursor        selectionPoint
+	cursorGoal    int
+	mode          viewMode
+	selection     textSelection
+	yankSelection textSelection
+	clipboardText string
+	yankUntil     time.Time
+	clicks        clickState
+	keys          keyChordState
+	scheme        ColorScheme
+	highlighter   *SyntaxHighlighter
 }
 
 type selectionPoint struct {
@@ -83,21 +86,20 @@ type selectionPoint struct {
 type textSelection struct {
 	Active   bool
 	Dragging bool
-	Mode     selectionMode
 	Anchor   selectionPoint
 	Cursor   selectionPoint
 }
 
-type selectionMode int
+type viewMode int
 
 const (
-	selectionFull selectionMode = iota
-	selectionCode
+	modeNormal viewMode = iota
+	modeVisual
+	modeVisualLine
 )
 
 type clickState struct {
 	Point selectionPoint
-	Mode  selectionMode
 	At    time.Time
 	Count int
 }
@@ -112,11 +114,18 @@ func (d *diffViewer) SetTerminalColors(colors TerminalColors) {
 }
 
 func (d *diffViewer) HighlightYank(now time.Time) {
+	if d.selection.Active {
+		d.yankSelection = d.selection
+	}
 	d.yankUntil = now.Add(yankHighlightDuration)
 }
 
 func (d *diffViewer) YankHighlightDuration() time.Duration {
 	return yankHighlightDuration
+}
+
+func (d *diffViewer) ClipboardConsumed() {
+	d.clipboardText = ""
 }
 
 func (d *diffViewer) HandleEvent(ev vaxis.Event) (Command, error) {
@@ -139,9 +148,31 @@ func (d *diffViewer) handleKey(key vaxis.Key) (Command, error) {
 
 	switch {
 	case key.Matches('c', vaxis.ModCtrl),
-		key.Matches('q'),
-		key.MatchString("Esc"):
+		key.Matches('q'):
 		return CommandQuit, nil
+	case key.Matches(vaxis.KeyEsc), key.MatchString("Esc"):
+		if d.mode != modeNormal || d.selection.Active {
+			d.keys.Clear()
+			d.exitVisualMode()
+			return CommandRedraw, nil
+		}
+		return CommandQuit, nil
+	case key.Matches('v'):
+		d.keys.Clear()
+		if d.mode == modeVisual {
+			d.exitVisualMode()
+		} else {
+			d.enterVisualMode()
+		}
+		return CommandRedraw, nil
+	case key.Matches('V'):
+		d.keys.Clear()
+		if d.mode == modeVisualLine {
+			d.exitVisualMode()
+		} else {
+			d.enterVisualLineMode()
+		}
+		return CommandRedraw, nil
 	case key.Matches('g'):
 		if d.keys.Pending() == "g" {
 			d.keys.Clear()
@@ -185,7 +216,7 @@ func (d *diffViewer) handleKey(key vaxis.Key) (Command, error) {
 	case key.Matches('y'), key.Matches(vaxis.KeyCopy),
 		key.Matches('c', vaxis.ModSuper):
 		d.keys.Clear()
-		if d.ClipboardText() == "" {
+		if !d.prepareYank() {
 			return CommandNone, nil
 		}
 		return CommandCopy, nil
@@ -248,11 +279,6 @@ func (d *diffViewer) Paint(win vaxis.Window) {
 	d.ensureColorScheme()
 	d.ensureRenderCache()
 
-	headerStyle := vaxis.Style{
-		Foreground: d.scheme.Header,
-		Background: d.scheme.Background,
-		Attribute:  vaxis.AttrBold,
-	}
 	mutedStyle := vaxis.Style{
 		Foreground: d.scheme.Muted,
 		Background: d.scheme.Background,
@@ -268,25 +294,24 @@ func (d *diffViewer) Paint(win vaxis.Window) {
 			Background: d.scheme.Background,
 		},
 	})
-	printAt(win, 0, 0, "comview", headerStyle)
 
 	if len(d.rows) == 0 {
-		printAt(win, 0, 2, "Pipe git diff or git show into comview.", d.baseStyle())
-		printAt(win, 0, 4, "Press q, Esc, Ctrl+C, or Ctrl+D to quit.", mutedStyle)
+		printAt(win, 0, 0, "Pipe git diff or git show into comview.", d.baseStyle())
+		printAt(win, 0, 2, "Press q, Esc, Ctrl+C, or Ctrl+D to quit.", mutedStyle)
+		d.paintStatusBar(win)
 		return
 	}
 
-	printAt(win, 10, 0, "j/k/h/l, gg/G, Ctrl+d/u scroll, q quits", mutedStyle)
-
 	for row, diffRow := range d.visibleRows() {
 		docRow := d.scroll + row
-		d.printRow(win, row+1, diffRow, d.codeSegments[docRow], docRow == d.cursor.Row)
-		d.paintSelection(win, row+1, docRow)
+		d.printRow(win, row, diffRow, d.codeSegments[docRow], docRow == d.cursor.Row)
+		d.paintSelection(win, row, docRow)
 	}
 	d.paintStickyFileHeader(win)
 	d.paintCursor(win)
 	d.paintScrollbar(win)
 	d.paintHorizontalScrollbar(win)
+	d.paintStatusBar(win)
 }
 
 func (d *diffViewer) paintStickyFileHeader(win vaxis.Window) {
@@ -295,16 +320,23 @@ func (d *diffViewer) paintStickyFileHeader(win vaxis.Window) {
 		return
 	}
 
-	d.clearScreenRow(win, 1, d.baseStyle())
-	d.printRow(win, 1, row, nil, false)
+	d.clearScreenRow(win, 0, d.baseStyle())
+	d.printRow(win, 0, row, nil, false)
 }
 
 func (d *diffViewer) paintCursor(win vaxis.Window) {
+	if win.Vx != nil {
+		win.Vx.HideCursor()
+	}
+
 	col, row, ok := d.cursorScreenPosition(win)
 	if !ok {
 		return
 	}
-	win.ShowCursor(col, row, vaxis.CursorBlock)
+	win.SetCell(col, row, vaxis.Cell{
+		Character: characterAtCell(d.rows[d.cursor.Row].Text, d.cursor.Col),
+		Style:     d.cursorCellStyle(),
+	})
 }
 
 func (d *diffViewer) cursorScreenPosition(win vaxis.Window) (int, int, bool) {
@@ -312,9 +344,9 @@ func (d *diffViewer) cursorScreenPosition(win vaxis.Window) (int, int, bool) {
 		return 0, 0, false
 	}
 
-	screenRow := d.cursor.Row - d.scroll + 1
+	screenRow := d.cursor.Row - d.scroll
 	width, height := win.Size()
-	if screenRow < 1 || screenRow >= height {
+	if screenRow < 0 || screenRow >= d.visibleRowCapacity() || screenRow >= height {
 		return 0, 0, false
 	}
 
@@ -323,6 +355,102 @@ func (d *diffViewer) cursorScreenPosition(win vaxis.Window) (int, int, bool) {
 		return 0, 0, false
 	}
 	return screenCol, screenRow, true
+}
+
+func (d *diffViewer) cursorCellStyle() vaxis.Style {
+	if d.cursor.Row < 0 || d.cursor.Row >= len(d.rows) {
+		return d.reverseStyle(d.baseStyle())
+	}
+
+	row := d.rows[d.cursor.Row]
+	style := d.cursorBaseStyle(row)
+	return d.reverseStyle(d.rowStyle(style, true))
+}
+
+func (d *diffViewer) cursorBaseStyle(row diff.Row) vaxis.Style {
+	style := d.styleFor(row.Kind)
+	switch {
+	case row.Kind == diff.RowHunk && row.Prefix != "" && row.Code != "":
+		if d.cursor.Col >= textCellWidth(row.Prefix) {
+			style = d.dimStyle()
+		}
+	case row.Gutter != "" || row.Marker != "":
+		codeOffset := textCellWidth(row.Gutter + row.Marker)
+		if d.cursor.Col < codeOffset {
+			style = d.gutterStyle(row.Kind)
+		} else if segmentStyle, ok := segmentStyleAt(d.codeSegmentsForRow(d.cursor.Row), d.cursor.Col-codeOffset); ok {
+			style = segmentStyle
+		} else {
+			style = d.codeStyle(row.Kind)
+		}
+	case row.Code != "":
+		if segmentStyle, ok := segmentStyleAt(d.codeSegmentsForRow(d.cursor.Row), d.cursor.Col); ok {
+			style = segmentStyle
+		} else {
+			style = d.codeStyle(row.Kind)
+		}
+	}
+	return style
+}
+
+func (d *diffViewer) codeSegmentsForRow(row int) []vaxis.Segment {
+	if row < 0 || row >= len(d.codeSegments) {
+		return nil
+	}
+	return d.codeSegments[row]
+}
+
+func (d *diffViewer) reverseStyle(style vaxis.Style) vaxis.Style {
+	foreground := style.Foreground
+	background := style.Background
+	if foreground == vaxis.ColorDefault {
+		foreground = d.scheme.Foreground
+	}
+	if background == vaxis.ColorDefault {
+		background = d.scheme.Background
+	}
+	style.Foreground = background
+	style.Background = foreground
+	return style
+}
+
+func (d *diffViewer) paintStatusBar(win vaxis.Window) {
+	width, height := win.Size()
+	if width <= 0 || height <= 0 {
+		return
+	}
+
+	style := d.statusStyle()
+	row := height - 1
+	for col := 0; col < width; col++ {
+		win.SetCell(col, row, vaxis.Cell{
+			Character: vaxis.Character{
+				Grapheme: " ",
+				Width:    1,
+			},
+			Style: style,
+		})
+	}
+	printAt(win, 0, row, " "+d.modeLabel()+" ", style)
+}
+
+func (d *diffViewer) statusStyle() vaxis.Style {
+	return vaxis.Style{
+		Foreground: d.scheme.Background,
+		Background: d.scheme.Header,
+		Attribute:  vaxis.AttrBold,
+	}
+}
+
+func (d *diffViewer) modeLabel() string {
+	switch d.mode {
+	case modeVisual:
+		return "VISUAL"
+	case modeVisualLine:
+		return "V-LINE"
+	default:
+		return "NORMAL"
+	}
 }
 
 func (d *diffViewer) screenColumn(row diff.Row, docCol int) int {
@@ -532,7 +660,7 @@ type scrollbar struct {
 }
 
 func (d *diffViewer) scrollbar(width int, height int) scrollbar {
-	trackTop := 1
+	trackTop := 0
 	verticalVisible, _ := d.scrollbarVisibility(width, height)
 	if !verticalVisible {
 		return scrollbar{}
@@ -628,7 +756,7 @@ func (d *diffViewer) horizontalScrollbar(width int, height int) scrollbar {
 	return scrollbar{
 		Visible: true,
 		Col:     0,
-		Row:     height - 1,
+		Row:     height - 2,
 		Length:  trackWidth,
 		Thumb:   thumbLeft,
 		Size:    thumbSize,
@@ -658,41 +786,37 @@ func (d *diffViewer) paintHorizontalScrollbar(win vaxis.Window) {
 }
 
 func (d *diffViewer) startSelection(mouse vaxis.Mouse) Command {
-	mode := selectionFull
-	if mouse.Modifiers&vaxis.ModAlt != 0 {
-		mode = selectionCode
-	}
-
-	point, ok := d.selectionPointForMode(mouse, mode)
+	point, ok := d.selectionPoint(mouse)
 	if !ok {
 		if d.selection.Active {
-			d.selection = textSelection{}
+			d.exitVisualMode()
 			return CommandRedraw
 		}
 		return CommandNone
 	}
 
 	d.keys.Clear()
+	d.clipboardText = ""
 	d.setCursor(point)
-	switch d.registerClick(point, mode, time.Now()) {
+	switch d.registerClick(point, time.Now()) {
 	case 2:
-		return d.selectToken(point, mode)
+		return d.selectToken(point)
 	case 3:
-		return d.selectRow(point.Row, mode)
+		return d.selectRow(point.Row)
 	}
 
 	d.selection = textSelection{
 		Active:   true,
 		Dragging: true,
-		Mode:     mode,
 		Anchor:   point,
 		Cursor:   point,
 	}
+	d.mode = modeVisual
 	return CommandRedraw
 }
 
-func (d *diffViewer) registerClick(point selectionPoint, mode selectionMode, now time.Time) int {
-	if d.clicks.Point == point && d.clicks.Mode == mode && now.Sub(d.clicks.At) <= multiClickTimeout {
+func (d *diffViewer) registerClick(point selectionPoint, now time.Time) int {
+	if d.clicks.Point == point && now.Sub(d.clicks.At) <= multiClickTimeout {
 		d.clicks.Count++
 	} else {
 		d.clicks.Count = 1
@@ -701,28 +825,24 @@ func (d *diffViewer) registerClick(point selectionPoint, mode selectionMode, now
 		d.clicks.Count = 1
 	}
 	d.clicks.Point = point
-	d.clicks.Mode = mode
 	d.clicks.At = now
 	return d.clicks.Count
 }
 
-func (d *diffViewer) selectToken(point selectionPoint, mode selectionMode) Command {
+func (d *diffViewer) selectToken(point selectionPoint) Command {
 	if point.Row < 0 || point.Row >= len(d.rows) {
 		return CommandNone
 	}
 
 	start, end := tokenRangeAt(d.rows[point.Row].Text, point.Col)
-	if mode == selectionCode {
-		codeStart, codeEnd, ok := codeRange(d.rows[point.Row])
-		if !ok {
-			return CommandNone
-		}
-		start = maxInt(start, codeStart)
-		end = minInt(end, codeEnd)
+	codeStart, codeEnd, ok := codeRange(d.rows[point.Row])
+	if !ok {
+		return CommandNone
 	}
+	start = maxInt(start, codeStart)
+	end = minInt(end, codeEnd)
 	d.selection = textSelection{
 		Active: true,
-		Mode:   mode,
 		Anchor: selectionPoint{
 			Row: point.Row,
 			Col: start,
@@ -732,27 +852,22 @@ func (d *diffViewer) selectToken(point selectionPoint, mode selectionMode) Comma
 			Col: maxInt(start, end-1),
 		},
 	}
+	d.mode = modeVisual
 	d.setCursor(point)
 	return CommandRedraw
 }
 
-func (d *diffViewer) selectRow(row int, mode selectionMode) Command {
+func (d *diffViewer) selectRow(row int) Command {
 	if row < 0 || row >= len(d.rows) {
 		return CommandNone
 	}
 
-	start := 0
-	end := textCellWidth(d.rows[row].Text)
-	if mode == selectionCode {
-		var ok bool
-		start, end, ok = codeRange(d.rows[row])
-		if !ok {
-			return CommandNone
-		}
+	start, end, ok := codeRange(d.rows[row])
+	if !ok {
+		return CommandNone
 	}
 	d.selection = textSelection{
 		Active: true,
-		Mode:   mode,
 		Anchor: selectionPoint{
 			Row: row,
 			Col: start,
@@ -762,6 +877,7 @@ func (d *diffViewer) selectRow(row int, mode selectionMode) Command {
 			Col: maxInt(start, end-1),
 		},
 	}
+	d.mode = modeVisualLine
 	d.setCursor(selectionPoint{Row: row, Col: start})
 	return CommandRedraw
 }
@@ -770,7 +886,7 @@ func (d *diffViewer) extendSelection(mouse vaxis.Mouse) Command {
 	if !d.selection.Dragging {
 		return CommandNone
 	}
-	point, ok := d.selectionPointForMode(mouse, d.selection.Mode)
+	point, ok := d.selectionPoint(mouse)
 	if !ok {
 		return CommandNone
 	}
@@ -784,7 +900,7 @@ func (d *diffViewer) extendSelectionAfterScroll(mouse vaxis.Mouse) {
 	if !d.selection.Dragging {
 		return
 	}
-	point, ok := d.selectionPointForMode(mouse, d.selection.Mode)
+	point, ok := d.selectionPoint(mouse)
 	if !ok {
 		return
 	}
@@ -796,7 +912,7 @@ func (d *diffViewer) finishSelection(mouse vaxis.Mouse) Command {
 	if !d.selection.Dragging {
 		return CommandNone
 	}
-	point, ok := d.selectionPointForMode(mouse, d.selection.Mode)
+	point, ok := d.selectionPoint(mouse)
 	if ok {
 		d.selection.Cursor = point
 		d.setCursor(point)
@@ -806,24 +922,15 @@ func (d *diffViewer) finishSelection(mouse vaxis.Mouse) Command {
 }
 
 func (d *diffViewer) selectionPoint(mouse vaxis.Mouse) (selectionPoint, bool) {
-	return d.selectionPointForMode(mouse, selectionFull)
-}
-
-func (d *diffViewer) selectionPointForMode(mouse vaxis.Mouse, mode selectionMode) (selectionPoint, bool) {
-	row := d.scroll + mouse.Row - 1
-	if mouse.Row <= 0 || row < 0 || row >= len(d.rows) {
+	row := d.scroll + mouse.Row
+	if mouse.Row < 0 || mouse.Row >= d.visibleRowCapacity() || row < 0 || row >= len(d.rows) {
 		return selectionPoint{}, false
 	}
 
 	docCol := d.documentColumn(d.rows[row], mouse.Col)
-	start := 0
-	end := textCellWidth(d.rows[row].Text)
-	if mode == selectionCode {
-		var ok bool
-		start, end, ok = codeRange(d.rows[row])
-		if !ok {
-			return selectionPoint{}, false
-		}
+	start, end, ok := codeRange(d.rows[row])
+	if !ok {
+		return selectionPoint{}, false
 	}
 	if docCol < start {
 		docCol = start
@@ -851,9 +958,8 @@ func (d *diffViewer) documentColumn(row diff.Row, screenCol int) int {
 
 func codeRange(row diff.Row) (int, int, bool) {
 	switch {
-	case row.Kind == diff.RowHunk && row.Code != "":
-		start := textCellWidth(row.Prefix)
-		return start, start + textCellWidth(row.Code), true
+	case row.Kind == diff.RowHunk:
+		return 0, 0, false
 	case row.Gutter != "" || row.Marker != "":
 		start := textCellWidth(row.Gutter + row.Marker)
 		return start, start + textCellWidth(row.Code), true
@@ -865,7 +971,7 @@ func codeRange(row diff.Row) (int, int, bool) {
 }
 
 func (d *diffViewer) paintSelection(win vaxis.Window, screenRow int, docRow int) {
-	start, end, ok := d.selectionRange()
+	start, end, ok := d.selectionRangeForPaint(time.Now())
 	if !ok || docRow < start.Row || docRow > end.Row {
 		return
 	}
@@ -906,14 +1012,9 @@ func (d *diffViewer) selectionPaintRange(docRow int, start selectionPoint, end s
 
 func (d *diffViewer) selectionRenderRange(docRow int, start selectionPoint, end selectionPoint) (int, int, bool) {
 	row := d.rows[docRow]
-	startCol := 0
-	endCol := textCellWidth(row.Text)
-	if d.selection.Mode == selectionCode {
-		var ok bool
-		startCol, endCol, ok = codeRange(row)
-		if !ok {
-			return 0, 0, false
-		}
+	startCol, endCol, ok := codeRange(row)
+	if !ok {
+		return 0, 0, false
 	}
 	if docRow == start.Row {
 		startCol = maxInt(startCol, start.Col)
@@ -925,12 +1026,26 @@ func (d *diffViewer) selectionRenderRange(docRow int, start selectionPoint, end 
 }
 
 func (d *diffViewer) selectionRange() (selectionPoint, selectionPoint, bool) {
-	if !d.selection.Active {
+	return selectionRange(d.selection)
+}
+
+func (d *diffViewer) selectionRangeForPaint(now time.Time) (selectionPoint, selectionPoint, bool) {
+	if d.selection.Active {
+		return selectionRange(d.selection)
+	}
+	if d.yankSelection.Active && !d.yankUntil.IsZero() && now.Before(d.yankUntil) {
+		return selectionRange(d.yankSelection)
+	}
+	return selectionPoint{}, selectionPoint{}, false
+}
+
+func selectionRange(selection textSelection) (selectionPoint, selectionPoint, bool) {
+	if !selection.Active {
 		return selectionPoint{}, selectionPoint{}, false
 	}
 
-	start := d.selection.Anchor
-	end := d.selection.Cursor
+	start := selection.Anchor
+	end := selection.Cursor
 	if selectionPointLess(end, start) {
 		start, end = end, start
 	}
@@ -946,21 +1061,35 @@ func selectionPointLess(a selectionPoint, b selectionPoint) bool {
 }
 
 func (d *diffViewer) ClipboardText() string {
+	if d.clipboardText != "" {
+		return d.clipboardText
+	}
+	return d.selectionText()
+}
+
+func (d *diffViewer) prepareYank() bool {
+	text := d.selectionText()
+	if text == "" {
+		return false
+	}
+	d.clipboardText = text
+	d.yankSelection = d.selection
+	d.exitVisualMode()
+	return true
+}
+
+func (d *diffViewer) selectionText() string {
 	start, end, ok := d.selectionRange()
 	if !ok {
 		return ""
 	}
 
 	var text strings.Builder
+	wroteRow := false
 	for rowIndex := start.Row; rowIndex <= end.Row && rowIndex < len(d.rows); rowIndex++ {
-		rowStart := 0
-		rowEnd := textCellWidth(d.rows[rowIndex].Text)
-		if d.selection.Mode == selectionCode {
-			var ok bool
-			rowStart, rowEnd, ok = codeRange(d.rows[rowIndex])
-			if !ok {
-				continue
-			}
+		rowStart, rowEnd, ok := codeRange(d.rows[rowIndex])
+		if !ok {
+			continue
 		}
 		if rowIndex == start.Row {
 			rowStart = maxInt(rowStart, start.Col)
@@ -968,14 +1097,37 @@ func (d *diffViewer) ClipboardText() string {
 		if rowIndex == end.Row {
 			rowEnd = minInt(rowEnd, end.Col)
 		}
+		var rowText string
 		if rowStart < rowEnd {
-			text.WriteString(cellTextRange(d.rows[rowIndex].Text, rowStart, rowEnd))
+			rowText = cellTextRange(d.rows[rowIndex].Text, rowStart, rowEnd)
+			if textCellWidth(d.rows[rowIndex].Text) < rowEnd {
+				rowText += " "
+			}
+		} else if d.selectedEmptyCell(rowIndex, rowStart, rowEnd) {
+			rowText = " "
 		}
-		if rowIndex != end.Row {
+		if rowText == "" {
+			continue
+		}
+		if wroteRow {
 			text.WriteByte('\n')
 		}
+		text.WriteString(rowText)
+		wroteRow = true
 	}
 	return text.String()
+}
+
+func (d *diffViewer) selectedEmptyCell(rowIndex int, rowStart int, rowEnd int) bool {
+	if rowStart != rowEnd {
+		return false
+	}
+	start, end, ok := d.selectionRange()
+	if !ok {
+		return false
+	}
+	startCol, endCol, ok := d.selectionPaintRange(rowIndex, start, end)
+	return ok && startCol == rowStart && endCol == rowStart+1
 }
 
 func (d *diffViewer) clampScroll() {
@@ -1018,6 +1170,15 @@ func (d *diffViewer) clampCursorCol(row int, col int) int {
 	if row < 0 || row >= len(d.rows) {
 		return 0
 	}
+	if start, end, ok := codeRange(d.rows[row]); ok {
+		if col < start {
+			return start
+		}
+		if col > end {
+			return end
+		}
+		return col
+	}
 	if col < 0 {
 		return 0
 	}
@@ -1040,6 +1201,7 @@ func (d *diffViewer) moveCursorRows(delta int) {
 	d.clampCursor()
 	d.cursor.Col = d.clampCursorCol(d.cursor.Row, d.cursorGoal)
 	d.ensureCursorVisible()
+	d.updateVisualSelection()
 }
 
 func (d *diffViewer) moveCursorCols(delta int) {
@@ -1048,6 +1210,7 @@ func (d *diffViewer) moveCursorCols(delta int) {
 	d.clampCursor()
 	d.cursorGoal = d.cursor.Col
 	d.ensureCursorVisible()
+	d.updateVisualSelection()
 }
 
 func (d *diffViewer) cursorTop() {
@@ -1055,6 +1218,7 @@ func (d *diffViewer) cursorTop() {
 	d.clampCursor()
 	d.cursorGoal = d.cursor.Col
 	d.ensureCursorVisible()
+	d.updateVisualSelection()
 }
 
 func (d *diffViewer) cursorBottom() {
@@ -1062,6 +1226,109 @@ func (d *diffViewer) cursorBottom() {
 	d.clampCursor()
 	d.cursorGoal = d.cursor.Col
 	d.ensureCursorVisible()
+	d.updateVisualSelection()
+}
+
+func (d *diffViewer) enterVisualMode() {
+	if len(d.rows) == 0 {
+		return
+	}
+	start, end, ok := codeRange(d.rows[d.cursor.Row])
+	if !ok {
+		return
+	}
+	col := d.cursor.Col
+	if col < start {
+		col = start
+	}
+	if col > end {
+		col = end
+	}
+	d.cursor.Col = col
+	d.cursorGoal = col
+	d.mode = modeVisual
+	d.clipboardText = ""
+	d.selection = textSelection{
+		Active: true,
+		Anchor: selectionPoint{
+			Row: d.cursor.Row,
+			Col: col,
+		},
+		Cursor: selectionPoint{
+			Row: d.cursor.Row,
+			Col: col,
+		},
+	}
+}
+
+func (d *diffViewer) enterVisualLineMode() {
+	if len(d.rows) == 0 {
+		return
+	}
+	start, end, ok := codeRange(d.rows[d.cursor.Row])
+	if !ok {
+		return
+	}
+	d.mode = modeVisualLine
+	d.clipboardText = ""
+	d.selection = textSelection{
+		Active: true,
+		Anchor: selectionPoint{
+			Row: d.cursor.Row,
+			Col: start,
+		},
+		Cursor: selectionPoint{
+			Row: d.cursor.Row,
+			Col: maxInt(start, end-1),
+		},
+	}
+}
+
+func (d *diffViewer) exitVisualMode() {
+	d.mode = modeNormal
+	d.selection = textSelection{}
+}
+
+func (d *diffViewer) updateVisualSelection() {
+	switch d.mode {
+	case modeVisual:
+		if d.selection.Active {
+			d.clampCursorToCode()
+			d.selection.Cursor = d.cursor
+		}
+	case modeVisualLine:
+		if !d.selection.Active {
+			return
+		}
+		row := d.cursor.Row
+		start, end, ok := codeRange(d.rows[row])
+		if !ok {
+			d.selection.Cursor = selectionPoint{Row: row, Col: 0}
+			return
+		}
+		if row < d.selection.Anchor.Row {
+			d.selection.Cursor = selectionPoint{Row: row, Col: start}
+		} else {
+			d.selection.Cursor = selectionPoint{Row: row, Col: maxInt(start, end-1)}
+		}
+	}
+}
+
+func (d *diffViewer) clampCursorToCode() {
+	if d.cursor.Row < 0 || d.cursor.Row >= len(d.rows) {
+		return
+	}
+	start, end, ok := codeRange(d.rows[d.cursor.Row])
+	if !ok {
+		return
+	}
+	if d.cursor.Col < start {
+		d.cursor.Col = start
+	}
+	if d.cursor.Col > end {
+		d.cursor.Col = end
+	}
+	d.cursorGoal = d.cursor.Col
 }
 
 func (d *diffViewer) prepareCursorForMovement() {
@@ -1405,12 +1672,50 @@ func segmentTextWidth(segments []vaxis.Segment) int {
 	return width
 }
 
+func segmentStyleAt(segments []vaxis.Segment, target int) (vaxis.Style, bool) {
+	if target < 0 {
+		return vaxis.Style{}, false
+	}
+
+	col := 0
+	for _, segment := range segments {
+		next := col + textCellWidth(segment.Text)
+		if target >= col && target < next {
+			return segment.Style, true
+		}
+		col = next
+	}
+	return vaxis.Style{}, false
+}
+
 func textCellWidth(text string) int {
 	width := 0
 	for _, char := range vaxis.Characters(text) {
 		width += char.Width
 	}
 	return width
+}
+
+func characterAtCell(text string, target int) vaxis.Character {
+	if target < 0 {
+		target = 0
+	}
+
+	col := 0
+	for _, char := range vaxis.Characters(text) {
+		next := col + char.Width
+		if target >= col && target < next {
+			if target == col && char.Width == 1 {
+				return char
+			}
+			break
+		}
+		col = next
+	}
+	return vaxis.Character{
+		Grapheme: " ",
+		Width:    1,
+	}
 }
 
 func cellTextRange(text string, start int, end int) string {
@@ -1423,10 +1728,12 @@ func cellTextRange(text string, start int, end int) string {
 
 	var out strings.Builder
 	col := 0
-	for _, char := range vaxis.Characters(text) {
-		next := col + char.Width
+	it := uucode.NewGraphemeIterator(text)
+	for g, ok := it.Next(); ok; g, ok = it.Next() {
+		cluster := text[g.Start:g.End]
+		next := col + graphemeCellWidth(cluster)
 		if next > start && col < end {
-			out.WriteString(char.Grapheme)
+			out.WriteString(cluster)
 		}
 		col = next
 		if col >= end {
@@ -1434,6 +1741,13 @@ func cellTextRange(text string, start int, end int) string {
 		}
 	}
 	return out.String()
+}
+
+func graphemeCellWidth(grapheme string) int {
+	if grapheme == "\t" {
+		return 8
+	}
+	return uucode.StringWidth(grapheme)
 }
 
 type textCell struct {

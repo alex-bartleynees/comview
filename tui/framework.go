@@ -84,6 +84,10 @@ type ClipboardProvider interface {
 	ClipboardText() string
 }
 
+type ClipboardConsumer interface {
+	ClipboardConsumed()
+}
+
 type YankHighlighter interface {
 	HighlightYank(time.Time)
 	YankHighlightDuration() time.Duration
@@ -184,6 +188,9 @@ func (a *App) handleEvent(ev vaxis.Event) (Command, error) {
 				time.Sleep(duration)
 				a.vx.PostEvent(vaxis.Redraw{})
 			}()
+		}
+		if consumer, ok := a.root.(ClipboardConsumer); ok {
+			consumer.ClipboardConsumed()
 		}
 		requestFrame = true
 	}
