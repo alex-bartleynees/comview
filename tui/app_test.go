@@ -428,7 +428,7 @@ func TestDiffViewerStatusColorsFollowMode(t *testing.T) {
 	if got, want := viewer.statusColor(), viewer.scheme.Base.Magenta; got != want {
 		t.Fatalf("visual status color = %v, want magenta %v", got, want)
 	}
-	if got, want := viewer.statusSeparatorStyle().Foreground, viewer.scheme.Base.Magenta; got != want {
+	if got, want := viewer.statusSeparatorStyle(viewer.statusBackground()).Foreground, viewer.scheme.Base.Magenta; got != want {
 		t.Fatalf("visual separator foreground = %v, want magenta %v", got, want)
 	}
 
@@ -440,6 +440,76 @@ func TestDiffViewerStatusColorsFollowMode(t *testing.T) {
 	viewer.mode = modeInsert
 	if got, want := viewer.statusColor(), viewer.scheme.Base.Green; got != want {
 		t.Fatalf("insert status color = %v, want green %v", got, want)
+	}
+}
+
+func TestDiffViewerStatusFillUsesDistinctBackground(t *testing.T) {
+	viewer := &diffViewer{}
+	viewer.ensureColorScheme()
+
+	style := viewer.statusFillStyle()
+	if style.Background == viewer.scheme.Background {
+		t.Fatalf("status background = %v, want distinct shade", style.Background)
+	}
+	if params := style.Background.Params(); params == nil {
+		t.Fatalf("status background params = %v, want RGB params", params)
+	}
+	if got, want := viewer.statusSeparatorStyle(style.Background).Background, style.Background; got != want {
+		t.Fatalf("separator background = %v, want status background %v", got, want)
+	}
+}
+
+func TestDiffViewerStatusContextShowsSectionedFileAndTotals(t *testing.T) {
+	viewer := &diffViewer{
+		rows: []diff.Row{
+			{Kind: diff.RowCommitHeader, Text: "commit abc1234567890", Code: "abc1234567890"},
+			{Kind: diff.RowFile, Text: "one.go"},
+			{Kind: diff.RowAdd, FileName: "one.go", Code: "new"},
+			{Kind: diff.RowDelete, FileName: "one.go", Code: "old"},
+			{Kind: diff.RowFile, Text: "two.go"},
+			{Kind: diff.RowAdd, FileName: "two.go", Code: "new"},
+		},
+		cursor: selectionPoint{Row: 2},
+	}
+	viewer.ensureColorScheme()
+
+	left := viewer.statusLeftSegments()
+	if got, want := segmentsText(left), "abc123456789  1/2 one.go  +1 -1"; got != want {
+		t.Fatalf("left status = %q, want %q", got, want)
+	}
+	if left[0].Style.Background == viewer.statusBackground() {
+		t.Fatalf("commit section background = %v, want colored section", left[0].Style.Background)
+	}
+	if left[0].Style.Foreground != viewer.scheme.Base.Blue {
+		t.Fatalf("commit section foreground = %v, want blue %v", left[0].Style.Foreground, viewer.scheme.Base.Blue)
+	}
+	if left[len(left)-3].Style.Foreground != viewer.scheme.Add {
+		t.Fatalf("add stat style = %+v, want add foreground %v", left[len(left)-3].Style, viewer.scheme.Add)
+	}
+	if left[len(left)-1].Style.Foreground != viewer.scheme.Delete {
+		t.Fatalf("delete stat style = %+v, want delete foreground %v", left[len(left)-1].Style, viewer.scheme.Delete)
+	}
+
+	right := viewer.statusRightSegments()
+	if got, want := segmentsText(right), "1 commit / 2 files  +2 -1"; got != want {
+		t.Fatalf("right status = %q, want %q", got, want)
+	}
+}
+
+func TestDiffViewerStatusContextShowsCountsWhenMultipleCommits(t *testing.T) {
+	viewer := &diffViewer{
+		rows: []diff.Row{
+			{Kind: diff.RowCommitHeader, Text: "commit abc1234567890", Code: "abc1234567890"},
+			{Kind: diff.RowFile, Text: "one.go"},
+			{Kind: diff.RowCommitHeader, Text: "commit def1234567890", Code: "def1234567890"},
+			{Kind: diff.RowFile, Text: "two.go"},
+		},
+		cursor: selectionPoint{Row: 3},
+	}
+	viewer.ensureColorScheme()
+
+	if got, want := segmentsText(viewer.statusLeftSegments()), "2/2 def123456789  2/2 two.go  +0 -0"; got != want {
+		t.Fatalf("left status = %q, want %q", got, want)
 	}
 }
 
@@ -961,7 +1031,7 @@ func TestDiffViewerCommentEditorGrowsAndScrolls(t *testing.T) {
 
 func TestDiffViewerCommentEditorWrapsLongLines(t *testing.T) {
 	editor := &commentEditor{lines: []string{"hello world"}}
-	wrapped := editor.wrappedLines(6)
+	wrapped := editor.wrappedLines(7)
 
 	if len(wrapped) != 2 {
 		t.Fatalf("wrapped line count = %d, want 2", len(wrapped))
@@ -970,6 +1040,21 @@ func TestDiffViewerCommentEditorWrapsLongLines(t *testing.T) {
 		t.Fatalf("first wrapped line = %q, want %q", got, want)
 	}
 	if got, want := wrapped[1].text(editor.lines), "world"; got != want {
+		t.Fatalf("second wrapped line = %q, want %q", got, want)
+	}
+}
+
+func TestDiffViewerCommentEditorWrapsBeforeTruncationColumn(t *testing.T) {
+	editor := &commentEditor{lines: []string{"abcdef"}}
+	wrapped := editor.wrappedLines(6)
+
+	if len(wrapped) != 2 {
+		t.Fatalf("wrapped line count = %d, want 2", len(wrapped))
+	}
+	if got, want := wrapped[0].text(editor.lines), "abcde"; got != want {
+		t.Fatalf("first wrapped line = %q, want %q", got, want)
+	}
+	if got, want := wrapped[1].text(editor.lines), "f"; got != want {
 		t.Fatalf("second wrapped line = %q, want %q", got, want)
 	}
 }
@@ -3322,14 +3407,90 @@ func TestDiffViewerSideBySideRowsUseSimilarityPairing(t *testing.T) {
 	if len(rows) != 3 {
 		t.Fatalf("side rows = %+v, want 3 rows", rows)
 	}
-	if rows[0].Left != -1 || rows[0].Right != 2 {
-		t.Fatalf("inserted row = %+v, want add-only row 2", rows[0])
+	if rows[0].Left != 0 || rows[0].Right != 2 {
+		t.Fatalf("first compact row = %+v, want delete 0 add 2", rows[0])
 	}
-	if rows[1].Left != 0 || rows[1].Right != 3 {
-		t.Fatalf("changed row = %+v, want delete 0 paired with add 3", rows[1])
+	if rows[1].Left != 1 || rows[1].Right != 3 {
+		t.Fatalf("second compact row = %+v, want delete 1 add 3", rows[1])
 	}
-	if rows[2].Left != 1 || rows[2].Right != 4 {
-		t.Fatalf("shifted equal row = %+v, want delete 1 paired with add 4", rows[2])
+	if rows[2].Left != -1 || rows[2].Right != 4 {
+		t.Fatalf("extra add row = %+v, want add-only row 4", rows[2])
+	}
+}
+
+func TestDiffViewerSideBySideRowsDoNotGapLeftSideForInsertedRows(t *testing.T) {
+	viewer := &diffViewer{
+		rows: []diff.Row{
+			{Kind: diff.RowDelete, Gutter: "1921     - ", Code: "name   string"},
+			{Kind: diff.RowDelete, Gutter: "1922     - ", Code: "start  int"},
+			{Kind: diff.RowDelete, Gutter: "1923     - ", Code: "mouse  vaxis.Mouse"},
+			{Kind: diff.RowDelete, Gutter: "1924     - ", Code: "want   int"},
+			{Kind: diff.RowDelete, Gutter: "1925     - ", Code: "keys   string"},
+			{Kind: diff.RowDelete, Gutter: "1926     - ", Code: "noKeys bool"},
+			{Kind: diff.RowAdd, Gutter: "    1921 + ", Code: "name       string"},
+			{Kind: diff.RowAdd, Gutter: "    1922 + ", Code: "start      int"},
+			{Kind: diff.RowAdd, Gutter: "    1923 + ", Code: "cursor     int"},
+			{Kind: diff.RowAdd, Gutter: "    1924 + ", Code: "mouse      vaxis.Mouse"},
+			{Kind: diff.RowAdd, Gutter: "    1925 + ", Code: "want       int"},
+			{Kind: diff.RowAdd, Gutter: "    1926 + ", Code: "wantCursor int"},
+			{Kind: diff.RowAdd, Gutter: "    1927 + ", Code: "keys       string"},
+			{Kind: diff.RowAdd, Gutter: "    1928 + ", Code: "noKeys     bool"},
+		},
+	}
+
+	rows := viewer.sideBySideRows()
+	for index, row := range rows[:6] {
+		if row.Left < 0 || row.Right < 0 {
+			t.Fatalf("row %d = %+v, want both sides populated", index, row)
+		}
+	}
+}
+
+func TestDiffViewerSideBySideRowsPutAddOnlyHunkContextOnRight(t *testing.T) {
+	viewer := &diffViewer{
+		rows: []diff.Row{
+			{Kind: diff.RowHunk, Text: "@@ -1,2 +1,3 @@"},
+			{Kind: diff.RowContext, Gutter: "1 1   ", Code: "before"},
+			{Kind: diff.RowAdd, Gutter: "    2 + ", Code: "added"},
+			{Kind: diff.RowContext, Gutter: "2 3   ", Code: "after"},
+		},
+	}
+
+	rows := viewer.sideBySideRows()
+	if len(rows) != 4 {
+		t.Fatalf("side rows = %+v, want 4 rows", rows)
+	}
+	if rows[0].Full != 0 {
+		t.Fatalf("hunk row = %+v, want full row 0", rows[0])
+	}
+	for index, row := range rows[1:] {
+		if row.Left != -1 || row.Right != index+1 {
+			t.Fatalf("row %d = %+v, want right-only doc row %d", index+1, row, index+1)
+		}
+	}
+}
+
+func TestDiffViewerSideBySideRowsPutDeleteOnlyHunkContextOnLeft(t *testing.T) {
+	viewer := &diffViewer{
+		rows: []diff.Row{
+			{Kind: diff.RowHunk, Text: "@@ -1,3 +1,2 @@"},
+			{Kind: diff.RowContext, Gutter: "1 1   ", Code: "before"},
+			{Kind: diff.RowDelete, Gutter: "2     - ", Code: "deleted"},
+			{Kind: diff.RowContext, Gutter: "3 2   ", Code: "after"},
+		},
+	}
+
+	rows := viewer.sideBySideRows()
+	if len(rows) != 4 {
+		t.Fatalf("side rows = %+v, want 4 rows", rows)
+	}
+	if rows[0].Full != 0 {
+		t.Fatalf("hunk row = %+v, want full row 0", rows[0])
+	}
+	for index, row := range rows[1:] {
+		if row.Left != index+1 || row.Right != -1 {
+			t.Fatalf("row %d = %+v, want left-only doc row %d", index+1, row, index+1)
+		}
 	}
 }
 
@@ -3586,6 +3747,14 @@ func newTestDiffViewer(rows int, height int) *diffViewer {
 
 func testCodeOffset(row diff.Row) int {
 	return textCellWidth(row.Gutter + row.Marker)
+}
+
+func segmentsText(segments []vaxis.Segment) string {
+	var text strings.Builder
+	for _, segment := range segments {
+		text.WriteString(segment.Text)
+	}
+	return text.String()
 }
 
 func intPtr(value int) *int {

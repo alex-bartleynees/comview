@@ -641,7 +641,7 @@ func (d *diffViewer) paintStatusBar(win vaxis.Window) {
 	if d.mode == modeCommand {
 		printSegmentsAt(win, 0, row, vaxis.Segment{
 			Text:  ":" + d.commandLine,
-			Style: d.baseStyle(),
+			Style: d.statusTextStyle(),
 		})
 		d.paintCommandCursor(win)
 		return
@@ -649,11 +649,17 @@ func (d *diffViewer) paintStatusBar(win vaxis.Window) {
 	if d.mode == modeSearch {
 		printSegmentsAt(win, 0, row, vaxis.Segment{
 			Text:  "/" + d.searchQuery,
-			Style: d.baseStyle(),
+			Style: d.statusTextStyle(),
 		})
 		d.paintSearchCursor(win)
 		return
 	}
+	leftSegments := d.statusLeftSegments()
+	separatorBackground := d.statusBackground()
+	if len(leftSegments) > 0 {
+		separatorBackground = leftSegments[0].Style.Background
+	}
+	modeWidth := textCellWidth(" " + d.modeLabel() + "  ")
 	printSegmentsAt(win, 0, row,
 		vaxis.Segment{
 			Text:  " " + d.modeLabel() + " ",
@@ -661,20 +667,250 @@ func (d *diffViewer) paintStatusBar(win vaxis.Window) {
 		},
 		vaxis.Segment{
 			Text:  "",
-			Style: d.statusSeparatorStyle(),
+			Style: d.statusSeparatorStyle(separatorBackground),
 		},
 	)
 	if d.statusMessage != "" {
-		printSegmentsAt(win, textCellWidth(" "+d.modeLabel()+"  "), row, vaxis.Segment{
+		printSegmentsAt(win, modeWidth, row, vaxis.Segment{
 			Text:  d.statusMessage,
-			Style: d.dimStyle(),
+			Style: d.statusDimStyle(),
 		})
-	} else if d.layoutMode == layoutSideBySide {
-		printSegmentsAt(win, textCellWidth(" "+d.modeLabel()+"  "), row, vaxis.Segment{
-			Text:  "SIDE-BY-SIDE",
-			Style: d.dimStyle(),
+		return
+	}
+
+	rightSegments := d.statusRightSegments()
+	rightWidth := segmentsWidth(rightSegments)
+	rightCol := width - rightWidth - 1
+	if rightCol < modeWidth {
+		rightSegments = nil
+		rightWidth = 0
+		rightCol = width
+	}
+
+	leftWidth := rightCol - modeWidth - 1
+	if leftWidth < 0 {
+		leftWidth = 0
+	}
+	printSegmentsClipped(win, modeWidth, row, leftWidth, leftSegments...)
+	if len(rightSegments) > 0 {
+		printSegmentsAt(win, width-rightWidth-1, row, rightSegments...)
+	}
+}
+
+type statusStats struct {
+	Adds    int
+	Deletes int
+}
+
+type statusContext struct {
+	CommitIndex int
+	Commits     int
+	Commit      string
+	FileIndex   int
+	Files       int
+	File        string
+	FileStats   statusStats
+	TotalStats  statusStats
+}
+
+func (d *diffViewer) statusLeftSegments() []vaxis.Segment {
+	context := d.currentStatusContext()
+	sections := make([]statusSection, 0, 2)
+
+	if context.Commits > 0 && context.CommitIndex > 0 {
+		commit := context.Commit
+		if len(commit) > 12 {
+			commit = commit[:12]
+		}
+		if commit != "" {
+			if context.Commits > 1 {
+				commit = fmt.Sprintf("%d/%d %s", context.CommitIndex, context.Commits, commit)
+			}
+			sections = append(sections, statusSection{
+				Text:       commit,
+				Foreground: d.scheme.Base.Blue,
+				Background: d.statusCommitBackground(),
+			})
+		}
+	}
+
+	if context.Files > 0 && context.File != "" {
+		file := context.File
+		if context.Files > 1 {
+			file = fmt.Sprintf("%d/%d %s", context.FileIndex, context.Files, file)
+		}
+		sections = append(sections, statusSection{
+			Text:       file,
+			Foreground: d.scheme.Foreground,
+			Background: d.statusFileBackground(),
 		})
 	}
+
+	segments := d.statusSectionSegments(sections)
+	if context.Files > 0 && context.File != "" {
+		segments = append(segments, d.statusStatsSegments(context.FileStats)...)
+	}
+	if d.layoutMode == layoutSideBySide {
+		segments = append([]vaxis.Segment{{Text: " SIDE-BY-SIDE ", Style: d.statusDimStyle()}}, segments...)
+	}
+	return segments
+}
+
+func (d *diffViewer) statusRightSegments() []vaxis.Segment {
+	context := d.currentStatusContext()
+	if context.Commits == 0 && context.Files == 0 {
+		return nil
+	}
+	return append([]vaxis.Segment{{
+		Text:  fmt.Sprintf("%s / %s ", countLabel(context.Commits, "commit"), countLabel(context.Files, "file")),
+		Style: d.statusDimStyle(),
+	}}, d.statusStatsSegments(context.TotalStats)...)
+}
+
+type statusSection struct {
+	Text       string
+	Foreground vaxis.Color
+	Background vaxis.Color
+}
+
+func (d *diffViewer) statusSectionSegments(sections []statusSection) []vaxis.Segment {
+	segments := make([]vaxis.Segment, 0, len(sections)*2)
+	for index, section := range sections {
+		if section.Text == "" {
+			continue
+		}
+		nextBackground := d.statusBackground()
+		if index+1 < len(sections) {
+			nextBackground = sections[index+1].Background
+		}
+		text := " " + section.Text + " "
+		if index == 0 {
+			text = section.Text + " "
+		}
+		segments = append(segments,
+			vaxis.Segment{
+				Text: text,
+				Style: vaxis.Style{
+					Foreground: section.Foreground,
+					Background: section.Background,
+					Attribute:  vaxis.AttrBold,
+				},
+			},
+			vaxis.Segment{
+				Text: "",
+				Style: vaxis.Style{
+					Foreground: section.Background,
+					Background: nextBackground,
+				},
+			},
+		)
+	}
+	return segments
+}
+
+func (d *diffViewer) statusStatsSegments(stats statusStats) []vaxis.Segment {
+	return []vaxis.Segment{
+		{Text: " ", Style: d.statusTextStyle()},
+		{Text: fmt.Sprintf("+%d", stats.Adds), Style: d.statusAddStyle()},
+		{Text: " ", Style: d.statusTextStyle()},
+		{Text: fmt.Sprintf("-%d", stats.Deletes), Style: d.statusDeleteStyle()},
+	}
+}
+
+func (d *diffViewer) currentStatusContext() statusContext {
+	var context statusContext
+	context.Commits = d.countRows(diff.RowCommitHeader)
+	context.Files = d.countRows(diff.RowFile)
+	context.TotalStats = rowsStats(d.rows)
+	context.CommitIndex, context.Commit = d.currentCommitContext()
+	context.FileIndex, context.File, context.FileStats = d.currentFileContext()
+	return context
+}
+
+func (d *diffViewer) countRows(kind diff.RowKind) int {
+	count := 0
+	for _, row := range d.rows {
+		if row.Kind == kind {
+			count++
+		}
+	}
+	return count
+}
+
+func (d *diffViewer) currentCommitContext() (int, string) {
+	index := 0
+	currentIndex := 0
+	currentCommit := ""
+	for rowIndex, row := range d.rows {
+		if row.Kind != diff.RowCommitHeader {
+			continue
+		}
+		index++
+		if rowIndex <= d.cursor.Row {
+			currentIndex = index
+			currentCommit = row.Code
+			if currentCommit == "" {
+				currentCommit = strings.TrimPrefix(row.Text, "commit ")
+			}
+		}
+	}
+	return currentIndex, currentCommit
+}
+
+func (d *diffViewer) currentFileContext() (int, string, statusStats) {
+	fileStart := -1
+	fileIndex := 0
+	currentIndex := 0
+	fileName := ""
+	for rowIndex, row := range d.rows {
+		switch row.Kind {
+		case diff.RowCommitHeader:
+			if rowIndex <= d.cursor.Row {
+				fileStart = -1
+				currentIndex = 0
+				fileName = ""
+			}
+		case diff.RowFile:
+			fileIndex++
+			if rowIndex <= d.cursor.Row {
+				fileStart = rowIndex
+				currentIndex = fileIndex
+				fileName = row.Text
+			}
+		}
+	}
+	if fileStart < 0 {
+		return 0, "", statusStats{}
+	}
+	fileEnd := len(d.rows)
+	for rowIndex := fileStart + 1; rowIndex < len(d.rows); rowIndex++ {
+		switch d.rows[rowIndex].Kind {
+		case diff.RowFile, diff.RowCommitHeader:
+			fileEnd = rowIndex
+			break
+		}
+		if fileEnd == rowIndex {
+			break
+		}
+	}
+	return currentIndex, fileName, rowsStats(d.rows[fileStart:fileEnd])
+}
+
+func rowsStats(rows []diff.Row) statusStats {
+	var stats statusStats
+	for _, row := range rows {
+		switch row.Kind {
+		case diff.RowAdd:
+			stats.Adds++
+		case diff.RowDelete:
+			stats.Deletes++
+		}
+	}
+	return stats
+}
+
+func (s statusStats) String() string {
+	return fmt.Sprintf("+%d -%d", s.Adds, s.Deletes)
 }
 
 func (d *diffViewer) paintCommandCursor(win vaxis.Window) {
@@ -909,22 +1145,64 @@ func (d *diffViewer) paintCommentCursor(win vaxis.Window, layout commentEditorLa
 func (d *diffViewer) statusFillStyle() vaxis.Style {
 	return vaxis.Style{
 		Foreground: d.scheme.Foreground,
-		Background: d.scheme.Background,
+		Background: d.statusBackground(),
 	}
+}
+
+func (d *diffViewer) statusTextStyle() vaxis.Style {
+	return vaxis.Style{
+		Foreground: d.scheme.Foreground,
+		Background: d.statusBackground(),
+	}
+}
+
+func (d *diffViewer) statusDimStyle() vaxis.Style {
+	return vaxis.Style{
+		Foreground: d.scheme.Dim,
+		Background: d.statusBackground(),
+	}
+}
+
+func (d *diffViewer) statusAddStyle() vaxis.Style {
+	return vaxis.Style{
+		Foreground: d.scheme.Add,
+		Background: d.statusBackground(),
+		Attribute:  vaxis.AttrBold,
+	}
+}
+
+func (d *diffViewer) statusDeleteStyle() vaxis.Style {
+	return vaxis.Style{
+		Foreground: d.scheme.Delete,
+		Background: d.statusBackground(),
+		Attribute:  vaxis.AttrBold,
+	}
+}
+
+func (d *diffViewer) statusBackground() vaxis.Color {
+	return blendRGB(d.scheme.Background, d.scheme.Foreground, 0.08)
+}
+
+func (d *diffViewer) statusCommitBackground() vaxis.Color {
+	return blendRGB(d.statusBackground(), d.scheme.Base.Blue, 0.55)
+}
+
+func (d *diffViewer) statusFileBackground() vaxis.Color {
+	return blendRGB(d.statusBackground(), d.scheme.Base.Cyan, 0.45)
 }
 
 func (d *diffViewer) statusStyle() vaxis.Style {
 	return vaxis.Style{
-		Foreground: d.scheme.Background,
+		Foreground: d.statusBackground(),
 		Background: d.statusColor(),
 		Attribute:  vaxis.AttrBold,
 	}
 }
 
-func (d *diffViewer) statusSeparatorStyle() vaxis.Style {
+func (d *diffViewer) statusSeparatorStyle(background vaxis.Color) vaxis.Style {
 	return vaxis.Style{
 		Foreground: d.statusColor(),
-		Background: d.scheme.Background,
+		Background: background,
 	}
 }
 
@@ -1195,6 +1473,8 @@ func (d *diffViewer) sideBySidePaneGeometry(win vaxis.Window) (leftWidth int, ri
 
 func (d *diffViewer) sideBySideRows() []sideBySideRow {
 	rows := make([]sideBySideRow, 0, len(d.rows))
+	contextLeft := true
+	contextRight := true
 	for i := 0; i < len(d.rows); {
 		if d.rows[i].Kind == diff.RowDelete {
 			deleteStart := i
@@ -1205,35 +1485,13 @@ func (d *diffViewer) sideBySideRows() []sideBySideRow {
 			for i < len(d.rows) && d.rows[i].Kind == diff.RowAdd {
 				i++
 			}
-			deleteCount := addStart - deleteStart
-			addCount := i - addStart
-			pairs := diff.PairChangedRows(d.rows[deleteStart:addStart], d.rows[addStart:i])
-			deleteOffset := 0
-			addOffset := 0
-			for _, pair := range pairs {
-				for deleteOffset < pair.DeleteIndex || addOffset < pair.AddIndex {
-					row := sideBySideRow{Full: -1, Left: -1, Right: -1}
-					if deleteOffset < pair.DeleteIndex {
-						row.Left = deleteStart + deleteOffset
-						deleteOffset++
-					}
-					if addOffset < pair.AddIndex {
-						row.Right = addStart + addOffset
-						addOffset++
-					}
-					rows = append(rows, row)
-				}
-				rows = append(rows, sideBySideRow{Full: -1, Left: deleteStart + pair.DeleteIndex, Right: addStart + pair.AddIndex})
-				deleteOffset = pair.DeleteIndex + 1
-				addOffset = pair.AddIndex + 1
-			}
-			for deleteOffset < deleteCount || addOffset < addCount {
+			for deleteOffset, addOffset := 0, 0; deleteOffset < addStart-deleteStart || addOffset < i-addStart; {
 				row := sideBySideRow{Full: -1, Left: -1, Right: -1}
-				if deleteOffset < deleteCount {
+				if deleteOffset < addStart-deleteStart {
 					row.Left = deleteStart + deleteOffset
 					deleteOffset++
 				}
-				if addOffset < addCount {
+				if addOffset < i-addStart {
 					row.Right = addStart + addOffset
 					addOffset++
 				}
@@ -1242,16 +1500,55 @@ func (d *diffViewer) sideBySideRows() []sideBySideRow {
 			continue
 		}
 		switch d.rows[i].Kind {
+		case diff.RowHunk:
+			contextLeft, contextRight = sideBySideHunkContextSides(d.rows, i)
+			rows = append(rows, sideBySideRow{Full: i, Left: -1, Right: -1})
 		case diff.RowAdd:
 			rows = append(rows, sideBySideRow{Full: -1, Left: -1, Right: i})
 		case diff.RowContext:
-			rows = append(rows, sideBySideRow{Full: -1, Left: i, Right: i})
+			row := sideBySideRow{Full: -1, Left: -1, Right: -1}
+			if contextLeft {
+				row.Left = i
+			}
+			if contextRight {
+				row.Right = i
+			}
+			rows = append(rows, row)
 		default:
+			contextLeft = true
+			contextRight = true
 			rows = append(rows, sideBySideRow{Full: i, Left: -1, Right: -1})
 		}
 		i++
 	}
 	return rows
+}
+
+func sideBySideHunkContextSides(rows []diff.Row, hunk int) (bool, bool) {
+	hasDeletes := false
+	hasAdds := false
+	for i := hunk + 1; i < len(rows); i++ {
+		switch rows[i].Kind {
+		case diff.RowDelete:
+			hasDeletes = true
+		case diff.RowAdd:
+			hasAdds = true
+		case diff.RowHunk, diff.RowFile, diff.RowMeta, diff.RowCommitHeader, diff.RowCommitMeta, diff.RowCommitMessage, diff.RowCommitTrailer, diff.RowBlank:
+			return sideBySideContextSides(hasDeletes, hasAdds)
+		}
+	}
+	return sideBySideContextSides(hasDeletes, hasAdds)
+}
+
+func sideBySideContextSides(hasDeletes bool, hasAdds bool) (bool, bool) {
+	switch {
+	case hasAdds && !hasDeletes:
+		return false, true
+	case hasDeletes && !hasAdds:
+		return true, false
+	default:
+		return true, true
+	}
 }
 
 func (d *diffViewer) sideBySideStart(rows []sideBySideRow) int {
@@ -2807,6 +3104,7 @@ func (e *commentEditor) wrappedLines(width int) []commentDisplayLine {
 	if width < 1 {
 		width = 1
 	}
+	wrapWidth := commentEditorWrapWidth(width)
 	lines := make([]commentDisplayLine, 0, len(e.lines))
 	for lineIndex, line := range e.lines {
 		runes := []rune(line)
@@ -2815,7 +3113,7 @@ func (e *commentEditor) wrappedLines(width int) []commentDisplayLine {
 			continue
 		}
 		for start := 0; start < len(runes); {
-			end := wrappedLineEnd(runes, start, width)
+			end := wrappedLineEnd(runes, start, wrapWidth)
 			lines = append(lines, commentDisplayLine{line: lineIndex, start: start, end: end})
 			start = end
 		}
@@ -2824,6 +3122,13 @@ func (e *commentEditor) wrappedLines(width int) []commentDisplayLine {
 		return []commentDisplayLine{{}}
 	}
 	return lines
+}
+
+func commentEditorWrapWidth(width int) int {
+	if width <= 1 {
+		return 1
+	}
+	return width - 1
 }
 
 func wrappedLineEnd(runes []rune, start int, width int) int {
@@ -4013,6 +4318,33 @@ func printSegmentsAt(win vaxis.Window, col int, row int, segments ...vaxis.Segme
 
 	line := win.New(col, row, -1, 1)
 	line.PrintTruncate(0, segments...)
+}
+
+func printSegmentsClipped(win vaxis.Window, col int, row int, width int, segments ...vaxis.Segment) {
+	winWidth, height := win.Size()
+	if width <= 0 || col >= winWidth || row >= height {
+		return
+	}
+	if col+width > winWidth {
+		width = winWidth - col
+	}
+	line := win.New(col, row, width, 1)
+	line.PrintTruncate(0, segments...)
+}
+
+func segmentsWidth(segments []vaxis.Segment) int {
+	width := 0
+	for _, segment := range segments {
+		width += textCellWidth(segment.Text)
+	}
+	return width
+}
+
+func countLabel(count int, singular string) string {
+	if count == 1 {
+		return fmt.Sprintf("1 %s", singular)
+	}
+	return fmt.Sprintf("%d %ss", count, singular)
 }
 
 func printCodeSegmentsAtOffset(win vaxis.Window, col int, row int, offset int, segments ...vaxis.Segment) {
