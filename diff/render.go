@@ -68,7 +68,10 @@ func (d Document) RowsWithOptions(options RenderOptions) []Row {
 			}
 		}
 
-		for _, hunk := range file.Hunks {
+		for hunkIndex, hunk := range file.Hunks {
+			if hunkIndex > 0 {
+				rows = append(rows, Row{Kind: RowBlank})
+			}
 			if options.ShowHunkHeaders {
 				rows = append(rows, renderHunkHeaderRow(syntaxName, hunk))
 			}

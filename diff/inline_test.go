@@ -246,6 +246,16 @@ func TestInlineSpansCoalesceAcrossWhitespace(t *testing.T) {
 	assertSpan(t, newSpans, 0, len("new thing"))
 }
 
+func TestInlineSpansHighlightMatchedTokenInsideRemovedWrapper(t *testing.T) {
+	oldCode := "\tfor i, j := 0, 0; i < len(deletes) && j < len(adds); {"
+	newCode := "\tfor i, j := 0, 0; i < deletes && j < adds; {"
+
+	oldSpans, newSpans := inlineSpans(oldCode, newCode)
+
+	assertSpanTextsInCode(t, oldCode, oldSpans, "len(deletes)", "len(adds)")
+	assertSpanTextsInCode(t, newCode, newSpans, "deletes", "adds")
+}
+
 func assertSpan(t *testing.T, spans []InlineSpan, start int, end int) {
 	t.Helper()
 	if len(spans) != 1 {
@@ -258,15 +268,20 @@ func assertSpan(t *testing.T, spans []InlineSpan, start int, end int) {
 
 func assertSpanTexts(t *testing.T, row Row, texts ...string) {
 	t.Helper()
-	if len(row.InlineSpans) != len(texts) {
-		t.Fatalf("row %q spans = %+v, want texts %q", row.Text, row.InlineSpans, texts)
+	assertSpanTextsInCode(t, row.Code, row.InlineSpans, texts...)
+}
+
+func assertSpanTextsInCode(t *testing.T, code string, spans []InlineSpan, texts ...string) {
+	t.Helper()
+	if len(spans) != len(texts) {
+		t.Fatalf("code %q spans = %+v, want texts %q", code, spans, texts)
 	}
-	for i, span := range row.InlineSpans {
-		if span.Start < 0 || span.End > len(row.Code) || span.Start >= span.End {
-			t.Fatalf("row %q has invalid span %+v", row.Text, span)
+	for i, span := range spans {
+		if span.Start < 0 || span.End > len(code) || span.Start >= span.End {
+			t.Fatalf("code %q has invalid span %+v", code, span)
 		}
-		if got := row.Code[span.Start:span.End]; got != texts[i] {
-			t.Fatalf("span %d text = %q, want %q in row %q", i, got, texts[i], row.Text)
+		if got := code[span.Start:span.End]; got != texts[i] {
+			t.Fatalf("span %d text = %q, want %q in code %q", i, got, texts[i], code)
 		}
 	}
 }

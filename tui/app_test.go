@@ -2818,6 +2818,177 @@ func TestDiffViewerJumpCommitKeys(t *testing.T) {
 	}
 }
 
+func TestDiffViewerTogglesSideBySideLayout(t *testing.T) {
+	viewer := newTestDiffViewer(1, 10)
+
+	cmd, err := viewer.HandleEvent(vaxis.Key{Text: "s", Keycode: 's'})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd != CommandRedraw {
+		t.Fatalf("toggle command = %v, want redraw", cmd)
+	}
+	if viewer.layoutMode != layoutSideBySide {
+		t.Fatalf("layout mode = %v, want side-by-side", viewer.layoutMode)
+	}
+
+	cmd, err = viewer.HandleEvent(vaxis.Key{Text: "s", Keycode: 's'})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd != CommandRedraw {
+		t.Fatalf("second toggle command = %v, want redraw", cmd)
+	}
+	if viewer.layoutMode != layoutStacked {
+		t.Fatalf("layout mode = %v, want stacked", viewer.layoutMode)
+	}
+}
+
+func TestDiffViewerSideBySideRowsPairReplacementBlocks(t *testing.T) {
+	viewer := &diffViewer{
+		rows: []diff.Row{
+			{Kind: diff.RowFile, Text: "main.go"},
+			{Kind: diff.RowContext, Gutter: "1 1   ", Code: "same"},
+			{Kind: diff.RowDelete, Gutter: "2     - ", Code: "old one"},
+			{Kind: diff.RowDelete, Gutter: "3     - ", Code: "old two"},
+			{Kind: diff.RowAdd, Gutter: "    2 + ", Code: "new one"},
+			{Kind: diff.RowContext, Gutter: "4 3   ", Code: "after"},
+		},
+	}
+
+	rows := viewer.sideBySideRows()
+	if len(rows) != 5 {
+		t.Fatalf("side rows = %+v, want 5 rows", rows)
+	}
+	if rows[0].Full != 0 {
+		t.Fatalf("file row = %+v, want full row 0", rows[0])
+	}
+	if rows[1].Left != 1 || rows[1].Right != 1 {
+		t.Fatalf("context row = %+v, want row 1 on both sides", rows[1])
+	}
+	if rows[2].Left != 2 || rows[2].Right != 4 {
+		t.Fatalf("paired replacement row = %+v, want delete 2 add 4", rows[2])
+	}
+	if rows[3].Left != 3 || rows[3].Right != -1 {
+		t.Fatalf("unpaired delete row = %+v, want delete 3 only", rows[3])
+	}
+	if rows[4].Left != 5 || rows[4].Right != 5 {
+		t.Fatalf("final context row = %+v, want row 5 on both sides", rows[4])
+	}
+}
+
+func TestDiffViewerSideBySideRowsUseSimilarityPairing(t *testing.T) {
+	viewer := &diffViewer{
+		rows: []diff.Row{
+			{Kind: diff.RowDelete, Gutter: "1     - ", Code: "foo := oldValue + 1"},
+			{Kind: diff.RowDelete, Gutter: "2     - ", Code: "keep()"},
+			{Kind: diff.RowAdd, Gutter: "    1 + ", Code: "inserted()"},
+			{Kind: diff.RowAdd, Gutter: "    2 + ", Code: "foo := newValue + 1"},
+			{Kind: diff.RowAdd, Gutter: "    3 + ", Code: "keep()"},
+		},
+	}
+
+	rows := viewer.sideBySideRows()
+	if len(rows) != 3 {
+		t.Fatalf("side rows = %+v, want 3 rows", rows)
+	}
+	if rows[0].Left != -1 || rows[0].Right != 2 {
+		t.Fatalf("inserted row = %+v, want add-only row 2", rows[0])
+	}
+	if rows[1].Left != 0 || rows[1].Right != 3 {
+		t.Fatalf("changed row = %+v, want delete 0 paired with add 3", rows[1])
+	}
+	if rows[2].Left != 1 || rows[2].Right != 4 {
+		t.Fatalf("shifted equal row = %+v, want delete 1 paired with add 4", rows[2])
+	}
+}
+
+func TestDiffViewerSideBySideRowsPreserveRightOrderBeforePair(t *testing.T) {
+	viewer := &diffViewer{
+		rows: []diff.Row{
+			{Kind: diff.RowDelete, Gutter: "62     - ", Code: "dp := make([][]float64, len(deletes)+1)"},
+			{Kind: diff.RowDelete, Gutter: "63     - ", Code: "for i := range dp {"},
+			{Kind: diff.RowDelete, Gutter: "64     - ", Code: "\tdp[i] = make([]float64, len(adds)+1)"},
+			{Kind: diff.RowAdd, Gutter: "    91 + ", Code: "return bestLinePairs(scores)"},
+			{Kind: diff.RowAdd, Gutter: "    92 + ", Code: "}"},
+			{Kind: diff.RowAdd, Gutter: "    93 + ", Code: " "},
+			{Kind: diff.RowAdd, Gutter: "    94 + ", Code: "func bestLinePairs(scores [][]float64) []inlineLinePair {"},
+			{Kind: diff.RowAdd, Gutter: "    95 + ", Code: "if len(scores) == 0 || len(scores[0]) == 0 {"},
+			{Kind: diff.RowAdd, Gutter: "    96 + ", Code: "\treturn nil"},
+			{Kind: diff.RowAdd, Gutter: "    97 + ", Code: "}"},
+			{Kind: diff.RowDelete, Gutter: "67     - ", Code: "for i := len(deletes) - 1; i >= 0; i-- {"},
+			{Kind: diff.RowDelete, Gutter: "68     - ", Code: "\tfor j := len(adds) - 1; j >= 0; j-- {"},
+			{Kind: diff.RowAdd, Gutter: "    99 + ", Code: "deletes := len(scores)"},
+			{Kind: diff.RowAdd, Gutter: "   100 + ", Code: "adds := len(scores[0])"},
+			{Kind: diff.RowAdd, Gutter: "   101 + ", Code: "dp := make([][]float64, deletes+1)"},
+			{Kind: diff.RowAdd, Gutter: "   102 + ", Code: "for i := range dp {"},
+			{Kind: diff.RowAdd, Gutter: "   103 + ", Code: "\tdp[i] = make([]float64, adds+1)"},
+			{Kind: diff.RowAdd, Gutter: "   104 + ", Code: "}"},
+			{Kind: diff.RowAdd, Gutter: "   105 + ", Code: " "},
+			{Kind: diff.RowAdd, Gutter: "   106 + ", Code: "for i := deletes - 1; i >= 0; i-- {"},
+			{Kind: diff.RowAdd, Gutter: "   107 + ", Code: "\tfor j := adds - 1; j >= 0; j-- {"},
+		},
+	}
+
+	rows := viewer.sideBySideRows()
+	var right []int
+	for _, row := range rows {
+		if row.Right >= 0 {
+			right = append(right, row.Right)
+		}
+	}
+	for i := 1; i < len(right); i++ {
+		if right[i] <= right[i-1] {
+			t.Fatalf("right rows out of order: %+v from side rows %+v", right, rows)
+		}
+	}
+}
+
+func TestDiffViewerSideBySideRowsCompactUnpairedChanges(t *testing.T) {
+	viewer := &diffViewer{
+		rows: []diff.Row{
+			{Kind: diff.RowDelete, Gutter: "1     - ", Code: "alpha beta"},
+			{Kind: diff.RowDelete, Gutter: "2     - ", Code: "gamma delta"},
+			{Kind: diff.RowAdd, Gutter: "    1 + ", Code: "one two"},
+			{Kind: diff.RowAdd, Gutter: "    2 + ", Code: "three four"},
+		},
+	}
+
+	rows := viewer.sideBySideRows()
+	if len(rows) != 2 {
+		t.Fatalf("side rows = %+v, want 2 rows", rows)
+	}
+	if rows[0].Left != 0 || rows[0].Right != 2 {
+		t.Fatalf("first compact row = %+v, want delete 0 add 2", rows[0])
+	}
+	if rows[1].Left != 1 || rows[1].Right != 3 {
+		t.Fatalf("second compact row = %+v, want delete 1 add 3", rows[1])
+	}
+}
+
+func TestDiffViewerSideBySideGutterUsesOneSideLineNumbers(t *testing.T) {
+	viewer := &diffViewer{
+		rows: []diff.Row{
+			{Kind: diff.RowDelete, Gutter: "10     - ", Code: "old"},
+			{Kind: diff.RowAdd, Gutter: "    11 + ", Code: "new"},
+			{Kind: diff.RowContext, Gutter: "12 13   ", Code: "same"},
+		},
+	}
+
+	if got, want := viewer.sideBySideGutter(viewer.rows[0], sideLeft), "10 - "; got != want {
+		t.Fatalf("delete left gutter = %q, want %q", got, want)
+	}
+	if got, want := viewer.sideBySideGutter(viewer.rows[1], sideRight), "11 + "; got != want {
+		t.Fatalf("add right gutter = %q, want %q", got, want)
+	}
+	if got, want := viewer.sideBySideGutter(viewer.rows[2], sideLeft), "12   "; got != want {
+		t.Fatalf("context left gutter = %q, want %q", got, want)
+	}
+	if got, want := viewer.sideBySideGutter(viewer.rows[2], sideRight), "13   "; got != want {
+		t.Fatalf("context right gutter = %q, want %q", got, want)
+	}
+}
+
 func TestDiffViewerJumpCommitScrollsTargetToTop(t *testing.T) {
 	rows := make([]diff.Row, 30)
 	for i := range rows {

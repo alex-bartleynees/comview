@@ -39,6 +39,35 @@ type inlineLinePair struct {
 	addIndex    int
 }
 
+type RowPair struct {
+	DeleteIndex int
+	AddIndex    int
+}
+
+func PairChangedRows(deletes []Row, adds []Row) []RowPair {
+	if len(deletes) == 0 || len(adds) == 0 {
+		return nil
+	}
+
+	scores := make([][]float64, len(deletes))
+	for i := range deletes {
+		scores[i] = make([]float64, len(adds))
+		for j := range adds {
+			scores[i][j] = lineSimilarity(deletes[i].Code, adds[j].Code)
+		}
+	}
+
+	pairs := bestLinePairs(scores)
+	rowPairs := make([]RowPair, 0, len(pairs))
+	for _, pair := range pairs {
+		rowPairs = append(rowPairs, RowPair{
+			DeleteIndex: pair.deleteIndex,
+			AddIndex:    pair.addIndex,
+		})
+	}
+	return rowPairs
+}
+
 const (
 	minInlineLineSimilarity = 0.45
 	leadingTokenMatchBonus  = 0.5
@@ -59,13 +88,23 @@ func inlineLinePairs(deletes []Line, adds []Line) []inlineLinePair {
 		}
 	}
 
-	dp := make([][]float64, len(deletes)+1)
-	for i := range dp {
-		dp[i] = make([]float64, len(adds)+1)
+	return bestLinePairs(scores)
+}
+
+func bestLinePairs(scores [][]float64) []inlineLinePair {
+	if len(scores) == 0 || len(scores[0]) == 0 {
+		return nil
 	}
 
-	for i := len(deletes) - 1; i >= 0; i-- {
-		for j := len(adds) - 1; j >= 0; j-- {
+	deletes := len(scores)
+	adds := len(scores[0])
+	dp := make([][]float64, deletes+1)
+	for i := range dp {
+		dp[i] = make([]float64, adds+1)
+	}
+
+	for i := deletes - 1; i >= 0; i-- {
+		for j := adds - 1; j >= 0; j-- {
 			best := dp[i+1][j]
 			if dp[i][j+1] > best {
 				best = dp[i][j+1]
@@ -78,7 +117,7 @@ func inlineLinePairs(deletes []Line, adds []Line) []inlineLinePair {
 	}
 
 	pairs := make([]inlineLinePair, 0)
-	for i, j := 0, 0; i < len(deletes) && j < len(adds); {
+	for i, j := 0, 0; i < deletes && j < adds; {
 		pairScore := scores[i][j] + dp[i+1][j+1]
 		if scores[i][j] >= minInlineLineSimilarity && pairScore >= dp[i+1][j] && pairScore >= dp[i][j+1] {
 			pairs = append(pairs, inlineLinePair{
@@ -102,9 +141,17 @@ func inlineLinePairs(deletes []Line, adds []Line) []inlineLinePair {
 func inlineSpans(oldCode string, newCode string) ([]InlineSpan, []InlineSpan) {
 	oldTokens := tokenizeInline(oldCode)
 	newTokens := tokenizeInline(newCode)
-	oldMatched, newMatched := matchedTokens(oldTokens, newTokens)
+	oldMatched, newMatched, pairs := tokenMatches(oldTokens, newTokens)
 
-	return changedSpans(oldTokens, oldMatched), changedSpans(newTokens, newMatched)
+	oldSpans := changedSpans(oldTokens, oldMatched)
+	newSpans := changedSpans(newTokens, newMatched)
+	if len(oldSpans) > 0 && len(newSpans) == 0 {
+		newSpans = counterpartSpans(oldTokens, newTokens, pairs, oldSpans, false)
+	}
+	if len(newSpans) > 0 && len(oldSpans) == 0 {
+		oldSpans = counterpartSpans(oldTokens, newTokens, pairs, newSpans, true)
+	}
+	return oldSpans, newSpans
 }
 
 func lineSimilarity(oldCode string, newCode string) float64 {
@@ -171,20 +218,40 @@ func tokenLCSMatrix(oldTokens []token, newTokens []token) [][]int {
 }
 
 func matchedTokens(oldTokens []token, newTokens []token) ([]bool, []bool) {
+	oldMatched, newMatched, _ := tokenMatches(oldTokens, newTokens)
+	return oldMatched, newMatched
+}
+
+type tokenPair struct {
+	oldIndex int
+	newIndex int
+}
+
+func tokenMatches(oldTokens []token, newTokens []token) ([]bool, []bool, []tokenPair) {
 	oldMatched := make([]bool, len(oldTokens))
 	newMatched := make([]bool, len(newTokens))
+	pairs := make([]tokenPair, 0)
 	prefix := 0
 	for prefix < len(oldTokens) && prefix < len(newTokens) && oldTokens[prefix].text == newTokens[prefix].text {
 		oldMatched[prefix] = true
 		newMatched[prefix] = true
+		pairs = append(pairs, tokenPair{
+			oldIndex: prefix,
+			newIndex: prefix,
+		})
 		prefix++
 	}
 
+	suffixPairs := make([]tokenPair, 0)
 	oldSuffix := len(oldTokens) - 1
 	newSuffix := len(newTokens) - 1
 	for oldSuffix >= prefix && newSuffix >= prefix && oldTokens[oldSuffix].text == newTokens[newSuffix].text {
 		oldMatched[oldSuffix] = true
 		newMatched[newSuffix] = true
+		suffixPairs = append(suffixPairs, tokenPair{
+			oldIndex: oldSuffix,
+			newIndex: newSuffix,
+		})
 		oldSuffix--
 		newSuffix--
 	}
@@ -206,6 +273,10 @@ func matchedTokens(oldTokens []token, newTokens []token) ([]bool, []bool) {
 		if middleOldTokens[middleI].text == middleNewTokens[middleJ].text {
 			oldMatched[i] = true
 			newMatched[j] = true
+			pairs = append(pairs, tokenPair{
+				oldIndex: i,
+				newIndex: j,
+			})
 			i++
 			j++
 			continue
@@ -217,7 +288,10 @@ func matchedTokens(oldTokens []token, newTokens []token) ([]bool, []bool) {
 		}
 	}
 
-	return oldMatched, newMatched
+	for i := len(suffixPairs) - 1; i >= 0; i-- {
+		pairs = append(pairs, suffixPairs[i])
+	}
+	return oldMatched, newMatched, pairs
 }
 
 func changedSpans(tokens []token, matched []bool) []InlineSpan {
@@ -233,6 +307,43 @@ func changedSpans(tokens []token, matched []bool) []InlineSpan {
 		})
 	}
 	return mergeInlineSpans(tokens, spans)
+}
+
+func counterpartSpans(oldTokens []token, newTokens []token, pairs []tokenPair, sourceSpans []InlineSpan, oldTarget bool) []InlineSpan {
+	spans := make([]InlineSpan, 0)
+	for _, pair := range pairs {
+		source := oldTokens[pair.oldIndex]
+		target := newTokens[pair.newIndex]
+		if oldTarget {
+			source = newTokens[pair.newIndex]
+			target = oldTokens[pair.oldIndex]
+		}
+		if target.kind != wordToken || !tokenOverlapsSpans(source, sourceSpans) {
+			continue
+		}
+		spans = append(spans, InlineSpan{
+			Start: target.start,
+			End:   target.end,
+			Kind:  InlineChange,
+		})
+	}
+	return mergeInlineSpans(targetTokens(oldTokens, newTokens, oldTarget), spans)
+}
+
+func targetTokens(oldTokens []token, newTokens []token, oldTarget bool) []token {
+	if oldTarget {
+		return oldTokens
+	}
+	return newTokens
+}
+
+func tokenOverlapsSpans(tok token, spans []InlineSpan) bool {
+	for _, span := range spans {
+		if tok.start < span.End && tok.end > span.Start {
+			return true
+		}
+	}
+	return false
 }
 
 func mergeInlineSpans(tokens []token, spans []InlineSpan) []InlineSpan {

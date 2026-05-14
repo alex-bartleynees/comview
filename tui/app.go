@@ -75,6 +75,7 @@ type diffViewer struct {
 	contentWide   int
 	codeSegments  [][]vaxis.Segment
 	fileRows      []int
+	layoutMode    diffLayoutMode
 	cursor        selectionPoint
 	cursorGoal    int
 	mode          viewMode
@@ -143,6 +144,19 @@ const (
 	modeCommand
 	modeSearch
 )
+
+type diffLayoutMode int
+
+const (
+	layoutStacked diffLayoutMode = iota
+	layoutSideBySide
+)
+
+type sideBySideRow struct {
+	Full  int
+	Left  int
+	Right int
+}
 
 type clickState struct {
 	Point selectionPoint
@@ -216,6 +230,10 @@ func (d *diffViewer) handleKey(key vaxis.Key) (Command, error) {
 		if !d.moveSearchMatch(-1) {
 			return CommandNone, nil
 		}
+		return CommandRedraw, nil
+	case key.Matches('s'):
+		d.keys.Clear()
+		d.toggleLayoutMode()
 		return CommandRedraw, nil
 	case key.Matches('n'):
 		d.keys.Clear()
@@ -408,10 +426,14 @@ func (d *diffViewer) Paint(win vaxis.Window) {
 		return
 	}
 
-	for row, diffRow := range d.visibleRows() {
-		docRow := d.scroll + row
-		d.printRow(win, row, docRow, diffRow, d.codeSegments[docRow], docRow == d.cursor.Row)
-		d.paintSelection(win, row, docRow)
+	if d.layoutMode == layoutSideBySide {
+		d.paintSideBySide(win)
+	} else {
+		for row, diffRow := range d.visibleRows() {
+			docRow := d.scroll + row
+			d.printRow(win, row, docRow, diffRow, d.codeSegments[docRow], docRow == d.cursor.Row)
+			d.paintSelection(win, row, docRow)
+		}
 	}
 	d.paintStickyFileHeader(win)
 	d.paintCursor(win)
@@ -422,6 +444,9 @@ func (d *diffViewer) Paint(win vaxis.Window) {
 }
 
 func (d *diffViewer) paintStickyFileHeader(win vaxis.Window) {
+	if d.layoutMode == layoutSideBySide {
+		return
+	}
 	row, ok := d.stickyFileHeader()
 	if !ok {
 		return
@@ -455,6 +480,9 @@ func (d *diffViewer) cursorScreenPosition(win vaxis.Window) (int, int, bool) {
 }
 
 func (d *diffViewer) cursorScreenPositionForSize(width int, height int) (int, int, bool) {
+	if d.layoutMode == layoutSideBySide {
+		return d.sideBySideCursorScreenPosition(width, height)
+	}
 	if d.cursor.Row < d.scroll || d.cursor.Row >= len(d.rows) {
 		return 0, 0, false
 	}
@@ -578,6 +606,11 @@ func (d *diffViewer) paintStatusBar(win vaxis.Window) {
 	if d.statusMessage != "" {
 		printSegmentsAt(win, textCellWidth(" "+d.modeLabel()+"  "), row, vaxis.Segment{
 			Text:  d.statusMessage,
+			Style: d.dimStyle(),
+		})
+	} else if d.layoutMode == layoutSideBySide {
+		printSegmentsAt(win, textCellWidth(" "+d.modeLabel()+"  "), row, vaxis.Segment{
+			Text:  "SIDE-BY-SIDE",
 			Style: d.dimStyle(),
 		})
 	}
@@ -911,6 +944,267 @@ func (d *diffViewer) structuredSegments(row diff.Row) ([]vaxis.Segment, bool) {
 	default:
 		return nil, false
 	}
+}
+
+func (d *diffViewer) toggleLayoutMode() {
+	if d.layoutMode == layoutSideBySide {
+		d.layoutMode = layoutStacked
+		return
+	}
+	d.layoutMode = layoutSideBySide
+}
+
+func (d *diffViewer) paintSideBySide(win vaxis.Window) {
+	rows := d.sideBySideRows()
+	start := d.sideBySideStart(rows)
+	visible := d.visibleRowCapacity()
+	if visible <= 0 {
+		return
+	}
+	end := minInt(len(rows), start+visible)
+	leftWidth, rightStart, rightWidth := d.sideBySidePaneGeometry(win)
+	separatorStyle := vaxis.Style{Foreground: d.scheme.Muted, Background: d.scheme.Background}
+
+	for screenRow, sideRow := range rows[start:end] {
+		if sideRow.Full >= 0 {
+			docRow := sideRow.Full
+			d.printRow(win, screenRow, docRow, d.rows[docRow], d.codeSegments[docRow], docRow == d.cursor.Row)
+			continue
+		}
+		if leftWidth > 0 {
+			d.printSideBySideCell(win.New(0, screenRow, leftWidth, 1), sideRow.Left, sideLeft, sideRow.Left == d.cursor.Row)
+		}
+		if rightStart > 0 {
+			win.SetCell(rightStart-1, screenRow, vaxis.Cell{
+				Character: vaxis.Character{Grapheme: " ", Width: 1},
+				Style:     separatorStyle,
+			})
+		}
+		if rightWidth > 0 {
+			d.printSideBySideCell(win.New(rightStart, screenRow, rightWidth, 1), sideRow.Right, sideRight, sideRow.Right == d.cursor.Row)
+		}
+	}
+}
+
+type diffSide int
+
+const (
+	sideLeft diffSide = iota
+	sideRight
+)
+
+func (d *diffViewer) printSideBySideCell(win vaxis.Window, docRow int, side diffSide, cursorLine bool) {
+	if docRow < 0 || docRow >= len(d.rows) {
+		return
+	}
+	row := d.rows[docRow]
+	gutter := d.sideBySideGutter(row, side)
+	gutterSegments := d.rowSegments([]vaxis.Segment{{Text: gutter, Style: d.gutterStyle(row.Kind)}}, cursorLine)
+	codeOffset := segmentTextWidth(gutterSegments)
+	d.fillCodeBackground(win, 0, codeOffset, row.Kind, cursorLine)
+	printSegmentsAt(win, 0, 0, gutterSegments...)
+	if row.Code == "" {
+		return
+	}
+	codeSegments := d.reviewSegments(row, d.codeSegmentsForRow(docRow))
+	codeSegments = d.searchSegments(docRow, row, codeSegments)
+	printCodeSegmentsAtOffset(win, codeOffset, 0, d.xScroll, d.rowSegments(codeSegments, cursorLine)...)
+}
+
+func (d *diffViewer) sideBySidePaneGeometry(win vaxis.Window) (leftWidth int, rightStart int, rightWidth int) {
+	width, _ := win.Size()
+	leftWidth = width / 2
+	if width > 1 {
+		leftWidth = (width - 1) / 2
+	}
+	rightStart = leftWidth
+	if width > 1 {
+		rightStart++
+	}
+	rightWidth = width - rightStart
+	if rightWidth < 0 {
+		rightWidth = 0
+	}
+	return leftWidth, rightStart, rightWidth
+}
+
+func (d *diffViewer) sideBySideRows() []sideBySideRow {
+	rows := make([]sideBySideRow, 0, len(d.rows))
+	for i := 0; i < len(d.rows); {
+		if d.rows[i].Kind == diff.RowDelete {
+			deleteStart := i
+			for i < len(d.rows) && d.rows[i].Kind == diff.RowDelete {
+				i++
+			}
+			addStart := i
+			for i < len(d.rows) && d.rows[i].Kind == diff.RowAdd {
+				i++
+			}
+			deleteCount := addStart - deleteStart
+			addCount := i - addStart
+			pairs := diff.PairChangedRows(d.rows[deleteStart:addStart], d.rows[addStart:i])
+			deleteOffset := 0
+			addOffset := 0
+			for _, pair := range pairs {
+				for deleteOffset < pair.DeleteIndex || addOffset < pair.AddIndex {
+					row := sideBySideRow{Full: -1, Left: -1, Right: -1}
+					if deleteOffset < pair.DeleteIndex {
+						row.Left = deleteStart + deleteOffset
+						deleteOffset++
+					}
+					if addOffset < pair.AddIndex {
+						row.Right = addStart + addOffset
+						addOffset++
+					}
+					rows = append(rows, row)
+				}
+				rows = append(rows, sideBySideRow{Full: -1, Left: deleteStart + pair.DeleteIndex, Right: addStart + pair.AddIndex})
+				deleteOffset = pair.DeleteIndex + 1
+				addOffset = pair.AddIndex + 1
+			}
+			for deleteOffset < deleteCount || addOffset < addCount {
+				row := sideBySideRow{Full: -1, Left: -1, Right: -1}
+				if deleteOffset < deleteCount {
+					row.Left = deleteStart + deleteOffset
+					deleteOffset++
+				}
+				if addOffset < addCount {
+					row.Right = addStart + addOffset
+					addOffset++
+				}
+				rows = append(rows, row)
+			}
+			continue
+		}
+		switch d.rows[i].Kind {
+		case diff.RowAdd:
+			rows = append(rows, sideBySideRow{Full: -1, Left: -1, Right: i})
+		case diff.RowContext:
+			rows = append(rows, sideBySideRow{Full: -1, Left: i, Right: i})
+		default:
+			rows = append(rows, sideBySideRow{Full: i, Left: -1, Right: -1})
+		}
+		i++
+	}
+	return rows
+}
+
+func (d *diffViewer) sideBySideStart(rows []sideBySideRow) int {
+	for index, row := range rows {
+		if rowContainsDocRow(row, d.scroll) || rowAfterDocRow(row, d.scroll) {
+			return index
+		}
+	}
+	if len(rows) == 0 {
+		return 0
+	}
+	return len(rows) - 1
+}
+
+func rowContainsDocRow(row sideBySideRow, docRow int) bool {
+	return row.Full == docRow || row.Left == docRow || row.Right == docRow
+}
+
+func rowAfterDocRow(row sideBySideRow, docRow int) bool {
+	switch {
+	case row.Full >= 0:
+		return row.Full > docRow
+	case row.Left >= 0 && row.Right >= 0:
+		return minInt(row.Left, row.Right) > docRow
+	case row.Left >= 0:
+		return row.Left > docRow
+	case row.Right >= 0:
+		return row.Right > docRow
+	default:
+		return false
+	}
+}
+
+func (d *diffViewer) sideBySideCursorScreenPosition(width int, height int) (int, int, bool) {
+	if d.cursor.Row < 0 || d.cursor.Row >= len(d.rows) {
+		return 0, 0, false
+	}
+	rows := d.sideBySideRows()
+	start := d.sideBySideStart(rows)
+	visible := d.visibleRowCapacity()
+	leftWidth, rightStart, _ := d.sideBySidePaneGeometry(vaxis.Window{Width: width, Height: height})
+	for index := start; index < len(rows) && index < start+visible; index++ {
+		if !rowContainsDocRow(rows[index], d.cursor.Row) {
+			continue
+		}
+		side := sideForRow(d.rows[d.cursor.Row])
+		paneStart := 0
+		paneWidth := leftWidth
+		if side == sideRight {
+			paneStart = rightStart
+			paneWidth = width - rightStart
+		}
+		codeCol := d.cursor.Col - d.codeOffset(d.rows[d.cursor.Row])
+		if codeCol < 0 {
+			codeCol = 0
+		}
+		screenCol := paneStart + textCellWidth(d.sideBySideGutter(d.rows[d.cursor.Row], side)) + codeCol - d.xScroll
+		if screenCol < paneStart || screenCol >= paneStart+paneWidth || screenCol >= width {
+			return 0, 0, false
+		}
+		return screenCol, index - start, true
+	}
+	return 0, 0, false
+}
+
+func sideForRow(row diff.Row) diffSide {
+	if row.Kind == diff.RowDelete {
+		return sideLeft
+	}
+	return sideRight
+}
+
+func (d *diffViewer) sideBySideGutter(row diff.Row, side diffSide) string {
+	width := d.sideBySideLineNumberWidth()
+	oldNumber, newNumber := splitGutterNumbers(row)
+	number := ""
+	marker := " "
+	if side == sideLeft {
+		number = oldNumber
+		if row.Kind == diff.RowDelete {
+			marker = "-"
+		}
+	} else {
+		number = newNumber
+		if row.Kind == diff.RowAdd {
+			marker = "+"
+		}
+	}
+	return fmt.Sprintf("%*s %s ", width, number, marker)
+}
+
+func (d *diffViewer) sideBySideLineNumberWidth() int {
+	width := 1
+	for _, row := range d.rows {
+		oldNumber, newNumber := splitGutterNumbers(row)
+		width = maxInt(width, len(oldNumber))
+		width = maxInt(width, len(newNumber))
+	}
+	return width
+}
+
+func splitGutterNumbers(row diff.Row) (string, string) {
+	fields := strings.Fields(row.Gutter)
+	switch row.Kind {
+	case diff.RowContext:
+		if len(fields) >= 2 {
+			return fields[0], fields[1]
+		}
+	case diff.RowDelete:
+		if len(fields) >= 1 {
+			return fields[0], ""
+		}
+	case diff.RowAdd:
+		if len(fields) >= 1 {
+			return "", fields[0]
+		}
+	}
+	return "", ""
 }
 
 func (d *diffViewer) clearScreenRow(win vaxis.Window, row int, style vaxis.Style) {

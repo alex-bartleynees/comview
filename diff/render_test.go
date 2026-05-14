@@ -462,6 +462,38 @@ diff --git a/two.go b/two.go
 	t.Fatal("missing second file row")
 }
 
+func TestRowsSeparateHunks(t *testing.T) {
+	doc, err := Parse(`diff --git a/main.go b/main.go
+--- a/main.go
++++ b/main.go
+@@ -1 +1 @@
+-old
++new
+@@ -10 +10 @@
+-older
++newer
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rows := doc.Rows()
+	hunks := 0
+	for i, row := range rows {
+		if row.Kind != RowHunk {
+			continue
+		}
+		hunks++
+		if hunks == 2 {
+			if i == 0 || rows[i-1].Kind != RowBlank {
+				t.Fatalf("row before second hunk = %+v, want blank", rows[i-1])
+			}
+			return
+		}
+	}
+	t.Fatalf("hunks = %d, want 2", hunks)
+}
+
 func TestRowsWithOptionsCanShowLineNumbers(t *testing.T) {
 	doc, err := Parse(`diff --git a/main.go b/main.go
 --- a/main.go
