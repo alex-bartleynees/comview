@@ -152,6 +152,46 @@ func TestRowsWithOptionsHighlightsReplacedAppendArgumentAsOneSpan(t *testing.T) 
 	assertSpan(t, addRow.InlineSpans, len(unchangedPrefix), len(addRow.Code)-1)
 }
 
+func TestRowsWithOptionsPairsOneAddedLineInLargerDeleteBlock(t *testing.T) {
+	doc, err := Parse(`diff --git a/app.go b/app.go
+--- a/app.go
++++ b/app.go
+@@ -467,6 +463,1 @@
+-        for row := bar.Row; row < bar.Row+bar.Length; row++ {
+-                style := trackStyle
+-                grapheme := "│"
+-                if row >= bar.Thumb && row < bar.Thumb+bar.Size {
+-                        style = thumbStyle
+-                        grapheme = verticalScrollbarThumb
++        for row := bar.Thumb; row < bar.Thumb+bar.Size; row++ {
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var deleteRows []Row
+	var addRows []Row
+	for _, row := range doc.Rows() {
+		switch row.Kind {
+		case RowDelete:
+			deleteRows = append(deleteRows, row)
+		case RowAdd:
+			addRows = append(addRows, row)
+		}
+	}
+
+	if len(deleteRows) != 6 || len(addRows) != 1 {
+		t.Fatalf("got %d delete rows and %d add rows", len(deleteRows), len(addRows))
+	}
+	assertSpanTexts(t, deleteRows[0], "Row", "Row", "Length")
+	assertSpanTexts(t, addRows[0], "Thumb", "Thumb", "Size")
+	for _, row := range deleteRows[1:] {
+		if len(row.InlineSpans) != 0 {
+			t.Fatalf("unpaired row %q has inline spans %+v", row.Text, row.InlineSpans)
+		}
+	}
+}
+
 func TestInlineSpansCoalesceAcrossWhitespace(t *testing.T) {
 	oldSpans, newSpans := inlineSpans("old value", "new thing")
 
@@ -166,5 +206,20 @@ func assertSpan(t *testing.T, spans []InlineSpan, start int, end int) {
 	}
 	if spans[0].Start != start || spans[0].End != end {
 		t.Fatalf("span = %+v, want %d:%d", spans[0], start, end)
+	}
+}
+
+func assertSpanTexts(t *testing.T, row Row, texts ...string) {
+	t.Helper()
+	if len(row.InlineSpans) != len(texts) {
+		t.Fatalf("row %q spans = %+v, want texts %q", row.Text, row.InlineSpans, texts)
+	}
+	for i, span := range row.InlineSpans {
+		if span.Start < 0 || span.End > len(row.Code) || span.Start >= span.End {
+			t.Fatalf("row %q has invalid span %+v", row.Text, span)
+		}
+		if got := row.Code[span.Start:span.End]; got != texts[i] {
+			t.Fatalf("span %d text = %q, want %q in row %q", i, got, texts[i], row.Text)
+		}
 	}
 }

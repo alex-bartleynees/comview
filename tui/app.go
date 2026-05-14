@@ -456,27 +456,17 @@ func (d *diffViewer) paintScrollbar(win vaxis.Window) {
 		return
 	}
 
-	trackStyle := vaxis.Style{
-		Foreground: d.scheme.Dim,
-		Background: d.scheme.Background,
-	}
 	thumbStyle := vaxis.Style{
 		Foreground: d.scheme.Muted,
 		Background: d.scheme.Background,
 	}
-	for row := bar.Row; row < bar.Row+bar.Length; row++ {
-		style := trackStyle
-		grapheme := "│"
-		if row >= bar.Thumb && row < bar.Thumb+bar.Size {
-			style = thumbStyle
-			grapheme = verticalScrollbarThumb
-		}
+	for row := bar.Thumb; row < bar.Thumb+bar.Size; row++ {
 		win.SetCell(bar.Col, row, vaxis.Cell{
 			Character: vaxis.Character{
-				Grapheme: grapheme,
+				Grapheme: verticalScrollbarThumb,
 				Width:    scrollbarWidth,
 			},
-			Style: style,
+			Style: thumbStyle,
 		})
 	}
 }
@@ -524,27 +514,17 @@ func (d *diffViewer) paintHorizontalScrollbar(win vaxis.Window) {
 		return
 	}
 
-	trackStyle := vaxis.Style{
-		Foreground: d.scheme.Dim,
-		Background: d.scheme.Background,
-	}
 	thumbStyle := vaxis.Style{
 		Foreground: d.scheme.Muted,
 		Background: d.scheme.Background,
 	}
-	for col := bar.Col; col < bar.Col+bar.Length; col++ {
-		style := trackStyle
-		grapheme := "─"
-		if col >= bar.Thumb && col < bar.Thumb+bar.Size {
-			style = thumbStyle
-			grapheme = horizontalScrollbarThumb
-		}
+	for col := bar.Thumb; col < bar.Thumb+bar.Size; col++ {
 		win.SetCell(col, bar.Row, vaxis.Cell{
 			Character: vaxis.Character{
-				Grapheme: grapheme,
+				Grapheme: horizontalScrollbarThumb,
 				Width:    1,
 			},
-			Style: style,
+			Style: thumbStyle,
 		})
 	}
 }

@@ -39,7 +39,10 @@ type inlineLinePair struct {
 	addIndex    int
 }
 
-const minInlineLineSimilarity = 0.45
+const (
+	minInlineLineSimilarity     = 0.45
+	leadingTokenMismatchPenalty = 0.75
+)
 
 func inlineLinePairs(deletes []Line, adds []Line) []inlineLinePair {
 	if len(deletes) == 0 || len(adds) == 0 {
@@ -121,7 +124,11 @@ func lineSimilarity(oldCode string, newCode string) float64 {
 	}
 
 	common := matchedTokenCount(oldTokens, newTokens)
-	return float64(2*common) / float64(len(oldTokens)+len(newTokens))
+	similarity := float64(2*common) / float64(len(oldTokens)+len(newTokens))
+	if oldTokens[0].text != newTokens[0].text {
+		similarity *= leadingTokenMismatchPenalty
+	}
+	return similarity
 }
 
 func similarityTokens(tokens []token) []token {
