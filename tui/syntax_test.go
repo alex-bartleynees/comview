@@ -74,6 +74,52 @@ func TestSyntaxHighlighterUpdatesWithColorScheme(t *testing.T) {
 	}
 }
 
+func TestSyntaxHighlighterColorsAdditionalTokenKinds(t *testing.T) {
+	scheme := DefaultColorScheme()
+	highlighter := NewSyntaxHighlighterWithScheme(scheme)
+	base := vaxis.Style{Foreground: vaxis.RGBColor(1, 2, 3)}
+
+	tests := []struct {
+		tokenType chroma.TokenType
+		want      vaxis.Color
+	}{
+		{chroma.NameProperty, scheme.Cyan()},
+		{chroma.NameNamespace, scheme.Blue},
+		{chroma.NameTag, scheme.Blue},
+		{chroma.NameDecorator, scheme.Magenta()},
+		{chroma.NameVariableClass, scheme.Cyan()},
+		{chroma.LiteralOther, scheme.Cyan()},
+		{chroma.LiteralDate, scheme.Yellow},
+		{chroma.TextPunctuation, scheme.Muted},
+		{chroma.TextSymbol, scheme.Yellow},
+	}
+
+	for _, tt := range tests {
+		style := highlighter.styleFor(tt.tokenType, base)
+		if style.Foreground != tt.want {
+			t.Fatalf("%s foreground = %v, want %v", tt.tokenType, style.Foreground, tt.want)
+		}
+	}
+}
+
+func TestSyntaxHighlighterStylesAdditionalGenericTokenKinds(t *testing.T) {
+	scheme := DefaultColorScheme()
+	highlighter := NewSyntaxHighlighterWithScheme(scheme)
+
+	style := highlighter.styleFor(chroma.GenericError, vaxis.Style{})
+	if style.Foreground != scheme.Delete || style.Attribute&vaxis.AttrBold == 0 {
+		t.Fatalf("generic error style = %+v, want delete bold", style)
+	}
+	style = highlighter.styleFor(chroma.GenericEmph, vaxis.Style{})
+	if style.Foreground != scheme.Foreground || style.Attribute&vaxis.AttrItalic == 0 {
+		t.Fatalf("generic emph style = %+v, want italic foreground", style)
+	}
+	style = highlighter.styleFor(chroma.GenericUnderline, vaxis.Style{})
+	if style.Foreground != scheme.Foreground || style.UnderlineStyle != vaxis.UnderlineSingle {
+		t.Fatalf("generic underline style = %+v, want underlined foreground", style)
+	}
+}
+
 func TestSyntaxHighlighterPreservesMultilineRawStringStateAcrossRows(t *testing.T) {
 	scheme := DefaultColorScheme()
 	highlighter := NewSyntaxHighlighterWithScheme(scheme)
