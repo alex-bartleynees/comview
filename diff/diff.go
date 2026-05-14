@@ -22,10 +22,12 @@ type Metadata struct {
 }
 
 type File struct {
-	Header  []string
-	OldName string
-	NewName string
-	Hunks   []Hunk
+	Preamble []string
+	Header   []string
+	OldName  string
+	NewName  string
+	Hunks    []Hunk
+	Metadata Metadata
 }
 
 type Hunk struct {
@@ -101,6 +103,8 @@ func Parse(input string) (Document, error) {
 	var doc Document
 	var currentFile *File
 	var currentHunk *Hunk
+	var pendingPreamble []string
+	var pendingMetadata Metadata
 	oldLine := 0
 	newLine := 0
 
@@ -108,22 +112,38 @@ func Parse(input string) (Document, error) {
 	scanner.Buffer(make([]byte, 1024), 1024*1024*8)
 
 	for scanner.Scan() {
-		line := scanner.Text()
+		line := strings.TrimSuffix(scanner.Text(), "\r")
+		if isCommitHeader(line) && currentFile != nil {
+			currentFile = nil
+			currentHunk = nil
+		}
 		if currentFile == nil {
-			parseDocumentMetadata(&doc, line)
+			if metadata, ok := metadataFromCommitHeader(line); ok {
+				if doc.Metadata.CommitID == "" {
+					doc.Metadata = metadata
+				}
+				pendingMetadata = metadata
+			}
 		}
 
 		if strings.HasPrefix(line, "diff --git ") {
 			doc.Files = append(doc.Files, File{
-				Header: []string{line},
+				Preamble: pendingPreamble,
+				Header:   []string{line},
+				Metadata: pendingMetadata,
 			})
+			pendingPreamble = nil
 			currentFile = &doc.Files[len(doc.Files)-1]
 			currentHunk = nil
 			continue
 		}
 
 		if currentFile == nil {
-			doc.Preamble = append(doc.Preamble, line)
+			if len(doc.Files) == 0 {
+				doc.Preamble = append(doc.Preamble, line)
+			} else {
+				pendingPreamble = append(pendingPreamble, line)
+			}
 			continue
 		}
 
@@ -137,6 +157,10 @@ func Parse(input string) (Document, error) {
 			oldLine = currentHunk.OldStart
 			newLine = currentHunk.NewStart
 			continue
+		}
+
+		if currentHunk != nil && hunkComplete(*currentHunk, oldLine, newLine) && !strings.HasPrefix(line, `\`) {
+			currentHunk = nil
 		}
 
 		if currentHunk == nil {
@@ -189,17 +213,22 @@ func Parse(input string) (Document, error) {
 	return doc, nil
 }
 
-func parseDocumentMetadata(doc *Document, line string) {
-	if doc.Metadata.CommitID != "" {
-		return
-	}
-	if strings.HasPrefix(line, "commit ") {
+func metadataFromCommitHeader(line string) (Metadata, bool) {
+	if isCommitHeader(line) {
 		fields := strings.Fields(line)
 		if len(fields) >= 2 {
-			doc.Metadata.SourceKind = "show"
-			doc.Metadata.CommitID = fields[1]
+			return Metadata{SourceKind: "show", CommitID: fields[1]}, true
 		}
 	}
+	return Metadata{}, false
+}
+
+func isCommitHeader(line string) bool {
+	if !strings.HasPrefix(line, "commit ") {
+		return false
+	}
+	fields := strings.Fields(line)
+	return len(fields) >= 2
 }
 
 func parseHunkHeader(line string) (Hunk, error) {
@@ -239,6 +268,10 @@ func parseCount(value string) (int, error) {
 		return 1, nil
 	}
 	return strconv.Atoi(value)
+}
+
+func hunkComplete(hunk Hunk, oldLine int, newLine int) bool {
+	return oldLine >= hunk.OldStart+hunk.OldCount && newLine >= hunk.NewStart+hunk.NewCount
 }
 
 func rowKind(kind LineKind) RowKind {

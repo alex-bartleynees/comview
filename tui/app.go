@@ -265,6 +265,18 @@ func (d *diffViewer) handleKey(key vaxis.Key) (Command, error) {
 		d.keys.Clear()
 		d.cursorBottom()
 		return CommandRedraw, nil
+	case key.Matches('J'):
+		d.keys.Clear()
+		if !d.jumpCommit(1) {
+			return CommandNone, nil
+		}
+		return CommandRedraw, nil
+	case key.Matches('K'):
+		d.keys.Clear()
+		if !d.jumpCommit(-1) {
+			return CommandNone, nil
+		}
+		return CommandRedraw, nil
 	case key.Matches(vaxis.KeyHome):
 		d.keys.Clear()
 		d.cursorTop()
@@ -792,6 +804,9 @@ func (d *diffViewer) screenColumn(row diff.Row, docCol int) int {
 }
 
 func (d *diffViewer) stickyFileHeader() (diff.Row, bool) {
+	if d.scroll >= 0 && d.scroll < len(d.rows) && !stickyFileHeaderAllowed(d.rows[d.scroll].Kind) {
+		return diff.Row{}, false
+	}
 	d.ensureFileRows()
 	index := sort.Search(len(d.fileRows), func(index int) bool {
 		return d.fileRows[index] > d.scroll
@@ -805,6 +820,15 @@ func (d *diffViewer) stickyFileHeader() (diff.Row, bool) {
 		return diff.Row{}, false
 	}
 	return d.rows[fileRow], true
+}
+
+func stickyFileHeaderAllowed(kind diff.RowKind) bool {
+	switch kind {
+	case diff.RowCommitHeader, diff.RowCommitMeta, diff.RowCommitMessage, diff.RowCommitTrailer, diff.RowBlank:
+		return false
+	default:
+		return true
+	}
 }
 
 func (d *diffViewer) ensureFileRows() {
@@ -1393,9 +1417,10 @@ func (d *diffViewer) documentColumn(row diff.Row, screenCol int) int {
 }
 
 func (d *diffViewer) codeRange(row diff.Row) (int, int, bool) {
-	switch {
-	case row.Kind == diff.RowHunk:
+	if !selectableDiffRow(row.Kind) {
 		return 0, 0, false
+	}
+	switch {
 	case row.Gutter != "" || row.Marker != "":
 		start := d.codeOffset(row)
 		return start, start + textCellWidth(row.Code), true
@@ -1403,6 +1428,15 @@ func (d *diffViewer) codeRange(row diff.Row) (int, int, bool) {
 		return 0, textCellWidth(row.Code), true
 	default:
 		return 0, 0, false
+	}
+}
+
+func selectableDiffRow(kind diff.RowKind) bool {
+	switch kind {
+	case diff.RowContext, diff.RowAdd, diff.RowDelete:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -1947,6 +1981,8 @@ func reviewDraftMatchesTarget(draft review.CommentDraft, target review.CommentDr
 	if draft.Path != target.Path ||
 		draft.Line != target.Line ||
 		draft.Side != target.Side ||
+		draft.CommitID != target.CommitID ||
+		draft.OriginalCommitID != target.OriginalCommitID ||
 		draft.StartLine != target.StartLine ||
 		draft.StartSide != target.StartSide {
 		return false
@@ -2149,6 +2185,9 @@ func (d *diffViewer) reviewDraftForSelection() (review.CommentDraft, bool) {
 	if startAnchor.Path != endAnchor.Path {
 		return review.CommentDraft{}, false
 	}
+	if startAnchor.CommitID != endAnchor.CommitID || startAnchor.OriginalCommitID != endAnchor.OriginalCommitID {
+		return review.CommentDraft{}, false
+	}
 	if startAnchor.Line != endAnchor.Line || startAnchor.Side != endAnchor.Side {
 		draft.StartLine = startAnchor.Line
 		draft.StartSide = startAnchor.Side
@@ -2214,10 +2253,7 @@ func (d *diffViewer) hasReviewDraft(anchor review.Anchor) bool {
 		return false
 	}
 	for _, draft := range d.reviewDrafts {
-		if draft.Path == anchor.Path && draft.Line == anchor.Line && draft.Side == anchor.Side {
-			return true
-		}
-		if draft.Path == anchor.Path && reviewDraftContains(draft, anchor) {
+		if reviewDraftContains(draft, anchor) {
 			return true
 		}
 	}
@@ -2225,6 +2261,11 @@ func (d *diffViewer) hasReviewDraft(anchor review.Anchor) bool {
 }
 
 func reviewDraftContains(draft review.CommentDraft, anchor review.Anchor) bool {
+	if draft.Path != anchor.Path ||
+		draft.CommitID != anchor.CommitID ||
+		draft.OriginalCommitID != anchor.OriginalCommitID {
+		return false
+	}
 	if draft.StartLine == 0 {
 		return draft.Line == anchor.Line && draft.Side == anchor.Side
 	}
@@ -2338,6 +2379,39 @@ func (d *diffViewer) cursorBottom() {
 	d.cursorGoal = d.cursor.Col
 	d.ensureCursorVisible()
 	d.updateVisualSelection()
+}
+
+func (d *diffViewer) jumpCommit(direction int) bool {
+	if len(d.rows) == 0 {
+		return false
+	}
+	if direction < 0 {
+		for row := d.cursor.Row - 1; row >= 0; row-- {
+			if d.rows[row].Kind == diff.RowCommitHeader {
+				d.setCursorAtCommit(row)
+				d.updateVisualSelection()
+				return true
+			}
+		}
+		return false
+	}
+	for row := d.cursor.Row + 1; row < len(d.rows); row++ {
+		if d.rows[row].Kind == diff.RowCommitHeader {
+			d.setCursorAtCommit(row)
+			d.updateVisualSelection()
+			return true
+		}
+	}
+	return false
+}
+
+func (d *diffViewer) setCursorAtCommit(row int) {
+	d.cursor = selectionPoint{Row: row, Col: 0}
+	d.clampCursor()
+	d.cursorGoal = d.cursor.Col
+	d.scroll = row
+	d.clampScroll()
+	d.ensureCursorColumnVisible()
 }
 
 func (d *diffViewer) enterVisualMode() {
@@ -2810,7 +2884,11 @@ func (d *diffViewer) inlineReviewRange(anchor review.Anchor) (int, int, bool) {
 		return 0, 0, false
 	}
 	for _, draft := range d.reviewDrafts {
-		if draft.Path != anchor.Path || draft.Line != anchor.Line || draft.Side != anchor.Side {
+		if draft.Path != anchor.Path ||
+			draft.Line != anchor.Line ||
+			draft.Side != anchor.Side ||
+			draft.CommitID != anchor.CommitID ||
+			draft.OriginalCommitID != anchor.OriginalCommitID {
 			continue
 		}
 		if draft.StartColumn == nil || draft.EndColumn == nil {

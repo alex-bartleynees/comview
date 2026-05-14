@@ -1,6 +1,9 @@
 package diff
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParseGitDiff(t *testing.T) {
 	input := `diff --git a/main.go b/main.go
@@ -66,5 +69,95 @@ diff --git a/a.txt b/a.txt
 	}
 	if len(doc.Rows()) == 0 {
 		t.Fatal("Rows returned no rows")
+	}
+}
+
+func TestParseMultipleGitShowCommits(t *testing.T) {
+	input := `commit abc123
+Author: Example <example@example.com>
+
+diff --git a/a.txt b/a.txt
+--- a/a.txt
++++ b/a.txt
+@@ -1 +1 @@
+-a
++b
+commit def456
+Author: Other <other@example.com>
+
+diff --git a/b.txt b/b.txt
+--- a/b.txt
++++ b/b.txt
+@@ -1 +1 @@
+-c
++d
+`
+
+	doc, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := len(doc.Files), 2; got != want {
+		t.Fatalf("files = %d, want %d", got, want)
+	}
+	if got, want := len(doc.Preamble), 3; got != want {
+		t.Fatalf("preamble lines = %d, want %d: %#v", got, want, doc.Preamble)
+	}
+	if got, want := len(doc.Files[1].Preamble), 3; got != want {
+		t.Fatalf("second file preamble lines = %d, want %d: %#v", got, want, doc.Files[1].Preamble)
+	}
+	if got, want := doc.Files[1].Preamble[0], "commit def456"; got != want {
+		t.Fatalf("second commit preamble = %q, want %q", got, want)
+	}
+	if got, want := doc.Files[0].Metadata.CommitID, "abc123"; got != want {
+		t.Fatalf("first file commit id = %q, want %q", got, want)
+	}
+	if got, want := doc.Files[1].Metadata.CommitID, "def456"; got != want {
+		t.Fatalf("second file commit id = %q, want %q", got, want)
+	}
+	if got, want := len(doc.Files[0].Hunks[0].Lines), 2; got != want {
+		t.Fatalf("first hunk lines = %d, want %d", got, want)
+	}
+}
+
+func TestParseDoesNotTreatBlankCommitSeparatorAsHunkLine(t *testing.T) {
+	input := strings.Join([]string{
+		"commit abc123",
+		"Author: Example <example@example.com>",
+		"",
+		"diff --git a/a.ts b/a.ts",
+		"--- a/a.ts",
+		"+++ b/a.ts",
+		"@@ -1 +1 @@",
+		" ",
+		"",
+		"commit def456",
+		"Author: Other <other@example.com>",
+		"",
+		"diff --git a/b.ts b/b.ts",
+		"--- a/b.ts",
+		"+++ b/b.ts",
+		"@@ -1 +1 @@",
+		"-old",
+		"+new",
+		"",
+	}, "\n")
+
+	doc, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := len(doc.Files), 2; got != want {
+		t.Fatalf("files = %d, want %d", got, want)
+	}
+	if got, want := len(doc.Files[0].Hunks[0].Lines), 1; got != want {
+		t.Fatalf("first hunk lines = %d, want %d: %+v", got, want, doc.Files[0].Hunks[0].Lines)
+	}
+	line := doc.Files[0].Hunks[0].Lines[0]
+	if line.Kind != Context || line.OldLine != 1 || line.NewLine != 1 || line.Text != " " {
+		t.Fatalf("first hunk line = %+v, want one blank context line", line)
+	}
+	if got, want := doc.Files[1].Preamble[0], "commit def456"; got != want {
+		t.Fatalf("second preamble starts with %q, want %q", got, want)
 	}
 }

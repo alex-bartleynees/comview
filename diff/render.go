@@ -44,10 +44,16 @@ func (d Document) RowsWithOptions(options RenderOptions) []Row {
 	}
 
 	for fileIndex, file := range d.Files {
+		if options.ShowPreamble {
+			if fileIndex > 0 && len(file.Preamble) > 0 {
+				rows = append(rows, Row{Kind: RowBlank})
+			}
+			rows = append(rows, renderPreambleRows(file.Preamble)...)
+		}
 		name := fileName(file)
 		syntaxName := syntaxFileName(file)
 		if options.ShowFileHeaders {
-			if fileIndex > 0 {
+			if fileIndex > 0 && len(file.Preamble) == 0 {
 				rows = append(rows, Row{Kind: RowBlank})
 			}
 			rows = append(rows, Row{Kind: RowFile, Text: name, FileName: syntaxName})
@@ -66,11 +72,18 @@ func (d Document) RowsWithOptions(options RenderOptions) []Row {
 			if options.ShowHunkHeaders {
 				rows = append(rows, renderHunkHeaderRow(syntaxName, hunk))
 			}
-			rows = append(rows, renderHunkRows(syntaxName, hunk, d.Metadata, options)...)
+			rows = append(rows, renderHunkRows(syntaxName, hunk, fileMetadata(file, d.Metadata), options)...)
 		}
 	}
 
 	return rows
+}
+
+func fileMetadata(file File, fallback Metadata) Metadata {
+	if file.Metadata.CommitID != "" {
+		return file.Metadata
+	}
+	return fallback
 }
 
 func renderPreambleRows(lines []string) []Row {
@@ -207,7 +220,18 @@ func renderHunkRows(fileName string, hunk Hunk, metadata Metadata, options Rende
 }
 
 func renderRow(fileName string, line Line, metadata Metadata, options RenderOptions) Row {
+	if line.Kind == NoNewline {
+		return Row{
+			Kind:     RowNoNewline,
+			Text:     line.Text,
+			FileName: fileName,
+		}
+	}
+
 	marker, code := splitLine(line)
+	if code == "" {
+		code = " "
+	}
 	gutter := renderGutter(line, options, marker)
 	return Row{
 		Kind:     rowKind(line.Kind),

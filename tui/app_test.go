@@ -645,6 +645,36 @@ func TestDiffViewerInsertCreatesReviewDraftAtCursor(t *testing.T) {
 	}
 }
 
+func TestDiffViewerReviewDraftMatchingUsesCommitID(t *testing.T) {
+	viewer := &diffViewer{
+		reviewDrafts: []review.CommentDraft{{
+			Path:     "main.go",
+			Line:     12,
+			Side:     review.SideRight,
+			CommitID: "abc123",
+			Body:     "first commit",
+		}},
+	}
+
+	firstCommit := review.Anchor{Path: "main.go", Line: 12, Side: review.SideRight, CommitID: "abc123"}
+	secondCommit := review.Anchor{Path: "main.go", Line: 12, Side: review.SideRight, CommitID: "def456"}
+	if !viewer.hasReviewDraft(firstCommit) {
+		t.Fatal("draft should match anchor with same commit")
+	}
+	if viewer.hasReviewDraft(secondCommit) {
+		t.Fatal("draft matched anchor from a different commit")
+	}
+
+	if reviewDraftMatchesTarget(viewer.reviewDrafts[0], review.CommentDraft{
+		Path:     "main.go",
+		Line:     12,
+		Side:     review.SideRight,
+		CommitID: "def456",
+	}) {
+		t.Fatal("draft target matched a different commit")
+	}
+}
+
 func TestDiffViewerInsertCreatesReviewDraftForSelectionRange(t *testing.T) {
 	rows := []diff.Row{
 		{Kind: diff.RowAdd, Text: "hello", Code: "hello", Review: review.Anchor{Path: "main.go", Line: 12, Side: review.SideRight}},
@@ -688,6 +718,26 @@ func TestDiffViewerInsertCreatesReviewDraftForSelectionRange(t *testing.T) {
 	}
 	if !viewer.hasReviewDraft(rows[0].Review) || !viewer.hasReviewDraft(rows[1].Review) {
 		t.Fatal("draft range marker lookup failed")
+	}
+}
+
+func TestDiffViewerDoesNotCreateReviewDraftAcrossCommits(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowAdd, Text: "first", Code: "first", Review: review.Anchor{Path: "main.go", Line: 12, Side: review.SideRight, CommitID: "abc123"}},
+		{Kind: diff.RowAdd, Text: "second", Code: "second", Review: review.Anchor{Path: "main.go", Line: 12, Side: review.SideRight, CommitID: "def456"}},
+	}
+	viewer := &diffViewer{
+		rows: rows,
+		selection: textSelection{
+			Active: true,
+			Anchor: selectionPoint{Row: 0, Col: 0},
+			Cursor: selectionPoint{Row: 1, Col: 0},
+		},
+		mode: modeVisual,
+	}
+
+	if draft, ok := viewer.reviewDraftTarget(); ok {
+		t.Fatalf("draft = %+v, want no cross-commit draft", draft)
 	}
 }
 
@@ -1617,6 +1667,7 @@ func TestDiffViewerMouseWheelScrolls(t *testing.T) {
 func TestDiffViewerMouseWheelExtendsDraggingSelection(t *testing.T) {
 	viewer := newTestDiffViewer(100, 10)
 	for i := range viewer.rows {
+		viewer.rows[i].Kind = diff.RowContext
 		viewer.rows[i].Code = "abcdef"
 		viewer.rows[i].Text = "abcdef"
 	}
@@ -2051,6 +2102,59 @@ func TestDiffViewerSelectionDoesNotSelectHunkHeaderContext(t *testing.T) {
 	}
 	if got := viewer.ClipboardText(); got != "" {
 		t.Fatalf("clipboard text = %q, want empty", got)
+	}
+}
+
+func TestDiffViewerSelectionDoesNotSelectCommitPreamble(t *testing.T) {
+	rows := []diff.Row{
+		{
+			Kind:   diff.RowContext,
+			Gutter: "1 1   ",
+			Code:   "selectable",
+		},
+		{
+			Kind:   diff.RowCommitHeader,
+			Text:   "commit abc123",
+			Prefix: "commit ",
+			Code:   "abc123",
+		},
+		{
+			Kind:   diff.RowCommitMeta,
+			Text:   "Author: Example <example@example.com>",
+			Prefix: "Author: ",
+			Code:   "Example <example@example.com>",
+		},
+	}
+	rows[0].Text = rows[0].Gutter + rows[0].Code
+	viewer := &diffViewer{rows: rows}
+	viewer.Layout(Tight(Size{Width: 100, Height: 10}))
+
+	for rowIndex, row := range rows[1:] {
+		if _, _, ok := viewer.codeRange(row); ok {
+			t.Fatalf("row %d kind %v is selectable", rowIndex+1, row.Kind)
+		}
+		if _, ok := viewer.selectionPoint(vaxis.Mouse{Row: rowIndex + 1, Col: textCellWidth(row.Text) - 1}); ok {
+			t.Fatalf("selection point found for row %d kind %v", rowIndex+1, row.Kind)
+		}
+	}
+
+	viewer.selection = textSelection{
+		Active: true,
+		Anchor: selectionPoint{Row: 0, Col: testCodeOffset(rows[0])},
+		Cursor: selectionPoint{Row: 2, Col: textCellWidth(rows[2].Text) - 1},
+	}
+	if got, want := viewer.ClipboardText(), "selectable"; got != want {
+		t.Fatalf("clipboard text = %q, want %q", got, want)
+	}
+	start, end, ok := viewer.selectionRange()
+	if !ok {
+		t.Fatal("selection range not active")
+	}
+	if _, _, ok := viewer.selectionPaintRange(1, start, end); ok {
+		t.Fatal("commit header should not have a selection paint range")
+	}
+	if _, _, ok := viewer.selectionPaintRange(2, start, end); ok {
+		t.Fatal("commit metadata should not have a selection paint range")
 	}
 }
 
@@ -2650,6 +2754,7 @@ func TestDiffViewerSelectionPreservesInlineReviewUnderline(t *testing.T) {
 	start, end := 2, 5
 	anchor := review.Anchor{Path: "main.go", Line: 12, Side: review.SideRight}
 	row := diff.Row{
+		Kind:   diff.RowContext,
 		Gutter: "1 1 + ",
 		Code:   "abcdef",
 		Review: anchor,
@@ -2676,6 +2781,100 @@ func TestDiffViewerSelectionPreservesInlineReviewUnderline(t *testing.T) {
 	style = viewer.selectionCellStyle(row, testCodeOffset(row), viewer.selectionStyle())
 	if style.UnderlineStyle != vaxis.UnderlineOff {
 		t.Fatalf("selected non-inline style = %+v, want no underline", style)
+	}
+}
+
+func TestDiffViewerJumpCommitKeys(t *testing.T) {
+	viewer := &diffViewer{
+		rows: []diff.Row{
+			{Kind: diff.RowCommitHeader, Text: "commit one"},
+			{Kind: diff.RowFile, Text: "one.go"},
+			{Kind: diff.RowCommitHeader, Text: "commit two"},
+			{Kind: diff.RowFile, Text: "two.go"},
+		},
+	}
+	viewer.Layout(Tight(Size{Width: 80, Height: 10}))
+
+	cmd, err := viewer.HandleEvent(vaxis.Key{Text: "J", Keycode: 'J'})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd != CommandRedraw {
+		t.Fatalf("J command = %v, want redraw", cmd)
+	}
+	if got, want := viewer.cursor.Row, 2; got != want {
+		t.Fatalf("cursor row after J = %d, want %d", got, want)
+	}
+
+	cmd, err = viewer.HandleEvent(vaxis.Key{Text: "K", Keycode: 'K'})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd != CommandRedraw {
+		t.Fatalf("K command = %v, want redraw", cmd)
+	}
+	if got, want := viewer.cursor.Row, 0; got != want {
+		t.Fatalf("cursor row after K = %d, want %d", got, want)
+	}
+}
+
+func TestDiffViewerJumpCommitScrollsTargetToTop(t *testing.T) {
+	rows := make([]diff.Row, 30)
+	for i := range rows {
+		rows[i] = diff.Row{Kind: diff.RowContext, Text: "line", Code: "line"}
+	}
+	rows[0] = diff.Row{Kind: diff.RowCommitHeader, Text: "commit one"}
+	rows[12] = diff.Row{Kind: diff.RowCommitHeader, Text: "commit two"}
+	rows[28] = diff.Row{Kind: diff.RowCommitHeader, Text: "commit three"}
+	viewer := &diffViewer{
+		rows:   rows,
+		cursor: selectionPoint{Row: 0},
+	}
+	viewer.Layout(Tight(Size{Width: 80, Height: 6}))
+
+	if !viewer.jumpCommit(1) {
+		t.Fatal("jump to next commit failed")
+	}
+	if got, want := viewer.cursor.Row, 12; got != want {
+		t.Fatalf("cursor row = %d, want %d", got, want)
+	}
+	if got, want := viewer.scroll, 12; got != want {
+		t.Fatalf("scroll = %d, want %d", got, want)
+	}
+
+	if !viewer.jumpCommit(1) {
+		t.Fatal("jump to final commit failed")
+	}
+	if got, want := viewer.cursor.Row, 28; got != want {
+		t.Fatalf("cursor row = %d, want %d", got, want)
+	}
+	if got, want := viewer.scroll, viewer.maxScroll(); got != want {
+		t.Fatalf("scroll near eof = %d, want max scroll %d", got, want)
+	}
+}
+
+func TestDiffViewerStickyFileHeaderDoesNotCoverCommitHeader(t *testing.T) {
+	viewer := &diffViewer{
+		rows: []diff.Row{
+			{Kind: diff.RowFile, Text: "one.go"},
+			{Kind: diff.RowContext, Text: "line", Code: "line"},
+			{Kind: diff.RowCommitHeader, Text: "commit two"},
+			{Kind: diff.RowCommitMeta, Text: "Author: Example"},
+			{Kind: diff.RowFile, Text: "two.go"},
+		},
+		scroll: 2,
+	}
+
+	if row, ok := viewer.stickyFileHeader(); ok {
+		t.Fatalf("sticky header = %+v, want none over commit header", row)
+	}
+	viewer.scroll = 3
+	if row, ok := viewer.stickyFileHeader(); ok {
+		t.Fatalf("sticky header = %+v, want none over commit metadata", row)
+	}
+	viewer.scroll = 1
+	if row, ok := viewer.stickyFileHeader(); !ok || row.Text != "one.go" {
+		t.Fatalf("sticky header = %+v ok=%v, want one.go", row, ok)
 	}
 }
 

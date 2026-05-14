@@ -1,6 +1,7 @@
 package diff
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/rockorager/comview/review"
@@ -146,6 +147,209 @@ diff --git a/main.go b/main.go
 		if row.Kind != tt.kind || row.Prefix != tt.prefix || row.Code != tt.code {
 			t.Fatalf("row %d = kind:%v prefix:%q code:%q text:%q", tt.index, row.Kind, row.Prefix, row.Code, row.Text)
 		}
+	}
+}
+
+func TestRowsWithOptionsInterleavesMultipleCommitPreambles(t *testing.T) {
+	doc, err := Parse(`commit abc123
+Author: Example <example@example.com>
+
+diff --git a/a.txt b/a.txt
+--- a/a.txt
++++ b/a.txt
+@@ -1 +1 @@
+-a
++b
+commit def456
+Author: Other <other@example.com>
+
+diff --git a/b.txt b/b.txt
+--- a/b.txt
++++ b/b.txt
+@@ -1 +1 @@
+-c
++d
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rows := doc.Rows()
+
+	var secondCommit int
+	var firstFile int
+	var secondFile int
+	var blankBeforeSecondCommit bool
+	for index, row := range rows {
+		switch {
+		case row.Kind == RowCommitHeader && row.Code == "def456":
+			secondCommit = index
+			blankBeforeSecondCommit = index > 0 && rows[index-1].Kind == RowBlank
+		case row.Kind == RowFile && row.Text == "a.txt":
+			firstFile = index
+		case row.Kind == RowFile && row.Text == "b.txt":
+			secondFile = index
+		}
+	}
+	if firstFile == 0 || secondCommit == 0 || secondFile == 0 {
+		t.Fatalf("missing rows: firstFile=%d secondCommit=%d secondFile=%d rows=%+v", firstFile, secondCommit, secondFile, rows)
+	}
+	if !(firstFile < secondCommit && secondCommit < secondFile) {
+		t.Fatalf("row order firstFile=%d secondCommit=%d secondFile=%d", firstFile, secondCommit, secondFile)
+	}
+	if !blankBeforeSecondCommit {
+		t.Fatalf("row before second commit = %+v, want blank", rows[secondCommit-1])
+	}
+}
+
+func TestRowsWithOptionsUsesPerFileCommitMetadataForMultipleCommits(t *testing.T) {
+	doc, err := Parse(`commit abc123
+Author: Example <example@example.com>
+
+diff --git a/main.go b/main.go
+--- a/main.go
++++ b/main.go
+@@ -1 +1 @@
+-old
++new
+commit def456
+Author: Other <other@example.com>
+
+diff --git a/main.go b/main.go
+--- a/main.go
++++ b/main.go
+@@ -1 +1 @@
+-older
++newer
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var commits []string
+	for _, row := range doc.Rows() {
+		if row.Kind == RowAdd {
+			commits = append(commits, row.Review.CommitID)
+		}
+	}
+	if len(commits) != 2 {
+		t.Fatalf("add rows = %d, want 2", len(commits))
+	}
+	if commits[0] != "abc123" || commits[1] != "def456" {
+		t.Fatalf("commit ids = %#v, want abc123/def456", commits)
+	}
+}
+
+func TestRowsWithOptionsRendersNoNewlineMarkerOutsideCode(t *testing.T) {
+	doc, err := Parse(`diff --git a/app.ts b/app.ts
+--- a/app.ts
++++ b/app.ts
+@@ -1 +1 @@
+-const value = "old";
+\ No newline at end of file
++const value = "new";
+\ No newline at end of file
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rows := doc.Rows()
+	var markers int
+	for _, row := range rows {
+		if row.Kind != RowNoNewline {
+			continue
+		}
+		markers++
+		if row.Text != `\ No newline at end of file` {
+			t.Fatalf("no-newline text = %q", row.Text)
+		}
+		if row.Gutter != "" || row.Marker != "" || row.Code != "" {
+			t.Fatalf("no-newline row has gutter/marker/code: %+v", row)
+		}
+		if row.Review != (review.Anchor{}) {
+			t.Fatalf("no-newline row review anchor = %+v", row.Review)
+		}
+	}
+	if markers != 2 {
+		t.Fatalf("no-newline markers = %d, want 2", markers)
+	}
+}
+
+func TestRowsWithOptionsRendersEmptyDiffLineAsCodeSpace(t *testing.T) {
+	input := strings.Join([]string{
+		"diff --git a/app.ts b/app.ts",
+		"--- a/app.ts",
+		"+++ b/app.ts",
+		"@@ -1,2 +1,2 @@",
+		" const value = 1;",
+		" ",
+		"",
+	}, "\n")
+	doc, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, row := range doc.Rows() {
+		if row.Kind != RowContext || row.Review.Line != 2 {
+			continue
+		}
+		if row.Code != " " {
+			t.Fatalf("empty context code = %q, want single space", row.Code)
+		}
+		if row.Text != row.Gutter+" " {
+			t.Fatalf("empty context text = %q, want gutter plus space", row.Text)
+		}
+		return
+	}
+	t.Fatal("empty context row not found")
+}
+
+func TestRowsWithOptionsRendersCRLFEmptyDiffLineAsCodeSpaceBetweenCommits(t *testing.T) {
+	input := strings.Join([]string{
+		"commit abc123",
+		"Author: Example <example@example.com>",
+		"",
+		"diff --git a/app.ts b/app.ts",
+		"--- a/app.ts",
+		"+++ b/app.ts",
+		"@@ -1,2 +1,2 @@",
+		" const value = 1;",
+		" ",
+		"commit def456",
+		"Author: Other <other@example.com>",
+		"",
+		"diff --git a/next.ts b/next.ts",
+		"--- a/next.ts",
+		"+++ b/next.ts",
+		"@@ -1 +1 @@",
+		"-old",
+		"+new",
+		"",
+	}, "\r\n")
+	doc, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var emptyContext Row
+	var found bool
+	for _, row := range doc.Rows() {
+		if row.Kind == RowContext && row.Review.Path == "app.ts" && row.Review.Line == 2 {
+			emptyContext = row
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("empty context row not found")
+	}
+	if emptyContext.Code != " " {
+		t.Fatalf("empty context code = %q, want single space", emptyContext.Code)
+	}
+	if strings.Contains(emptyContext.Text, "\r") {
+		t.Fatalf("empty context text contains carriage return: %q", emptyContext.Text)
 	}
 }
 
