@@ -1132,6 +1132,9 @@ func (d *diffViewer) selectionRenderRange(docRow int, start selectionPoint, end 
 	if !ok {
 		return 0, 0, false
 	}
+	if d.mode == modeVisualLine {
+		return startCol, endCol, true
+	}
 	if docRow == start.Row {
 		startCol = maxInt(startCol, start.Col)
 	}
@@ -1207,11 +1210,13 @@ func (d *diffViewer) selectionText() string {
 		if !ok {
 			continue
 		}
-		if rowIndex == start.Row {
-			rowStart = maxInt(rowStart, start.Col)
-		}
-		if rowIndex == end.Row {
-			rowEnd = minInt(rowEnd, end.Col)
+		if d.mode != modeVisualLine {
+			if rowIndex == start.Row {
+				rowStart = maxInt(rowStart, start.Col)
+			}
+			if rowIndex == end.Row {
+				rowEnd = minInt(rowEnd, end.Col)
+			}
 		}
 		var rowText string
 		if rowStart < rowEnd {

@@ -514,6 +514,32 @@ func TestDiffViewerVisualLineSelectsWholeCodeRows(t *testing.T) {
 	}
 }
 
+func TestDiffViewerVisualLineSelectsWholeCodeRowsWhenMovingUp(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowAdd, Gutter: "1 1 + ", Code: "hello"},
+		{Kind: diff.RowAdd, Gutter: "2 2 + ", Code: "world"},
+	}
+	for i := range rows {
+		rows[i].Text = rows[i].Gutter + rows[i].Code
+	}
+	viewer := &diffViewer{rows: rows, cursor: selectionPoint{Row: 1, Col: textCellWidth(rows[1].Gutter)}}
+	viewer.Layout(Tight(Size{Width: 80, Height: 10}))
+	viewer.cursorGoal = viewer.cursor.Col
+
+	cmd, err := viewer.HandleEvent(vaxis.Key{Text: "V", Keycode: 'V'})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd != CommandRedraw {
+		t.Fatalf("command = %v, want %v", cmd, CommandRedraw)
+	}
+	viewer.moveCursorRows(-1)
+
+	if got, want := viewer.ClipboardText(), "hello\nworld"; got != want {
+		t.Fatalf("clipboard text = %q, want %q", got, want)
+	}
+}
+
 func TestDiffViewerVimNavigationKeys(t *testing.T) {
 	tests := []struct {
 		name       string
