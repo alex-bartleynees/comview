@@ -68,38 +68,39 @@ func rowsForInput(input string) ([]diff.Row, error) {
 }
 
 type diffViewer struct {
-	rows          []diff.Row
-	scroll        int
-	xScroll       int
-	height        int
-	width         int
-	contentWide   int
-	codeSegments  [][]vaxis.Segment
-	fileRows      []int
-	layoutMode    diffLayoutMode
-	cursor        selectionPoint
-	cursorGoal    int
-	mode          viewMode
-	selection     textSelection
-	yankSelection textSelection
-	clipboardText string
-	reviewDrafts  []review.CommentDraft
-	reviewDirty   bool
-	reviewFile    string
-	editor        *commentEditor
-	commandLine   string
-	searchQuery   string
+	rows               []diff.Row
+	scroll             int
+	xScroll            int
+	height             int
+	width              int
+	contentWide        int
+	codeSegments       [][]vaxis.Segment
+	fileRows           []int
+	layoutMode         diffLayoutMode
+	cursor             selectionPoint
+	cursorGoal         int
+	mode               viewMode
+	selection          textSelection
+	yankSelection      textSelection
+	clipboardText      string
+	reviewDrafts       []review.CommentDraft
+	reviewDirty        bool
+	reviewFile         string
+	editor             *commentEditor
+	commandLine        string
+	searchQuery        string
 	searchMatches      []searchMatch
 	searchIndex        int
 	statusMessage      string
 	statusMessageUntil time.Time
 	yankUntil          time.Time
-	mouseDrag     mouseDragState
-	clicks        clickState
-	keys          keyChordState
-	textObject    textObjectState
-	scheme        ColorScheme
-	highlighter   *SyntaxHighlighter
+	mouseDrag          mouseDragState
+	clicks             clickState
+	keys               keyChordState
+	helpVisible        bool
+	textObject         textObjectState
+	scheme             ColorScheme
+	highlighter        *SyntaxHighlighter
 }
 
 type selectionPoint struct {
@@ -114,10 +115,10 @@ type searchMatch struct {
 }
 
 type textSelection struct {
-	Active              bool
-	Dragging            bool
-	Anchor              selectionPoint
-	Cursor              selectionPoint
+	Active                bool
+	Dragging              bool
+	Anchor                selectionPoint
+	Cursor                selectionPoint
 	SideFiltered          bool
 	Side                  diffSide
 	IncludeInitialNewline bool
@@ -202,6 +203,34 @@ type clickState struct {
 	Count int
 }
 
+type helpKeybind struct {
+	Key       string
+	READMEKey string
+	Action    string
+}
+
+var helpKeybinds = []helpKeybind{
+	{Key: "j/k, arrows", READMEKey: "`j`/`k`, arrows", Action: "Move"},
+	{Key: "h/l", READMEKey: "`h`/`l`", Action: "Move horizontally"},
+	{Key: "gg / G", READMEKey: "`gg` / `G`", Action: "Top / bottom"},
+	{Key: "Ctrl-d / Ctrl-u", READMEKey: "`Ctrl-d` / `Ctrl-u`", Action: "Half-page down / up"},
+	{Key: "J / K", READMEKey: "`J` / `K`", Action: "Next / previous commit"},
+	{Key: "]c / [c", READMEKey: "`]c` / `[c`", Action: "Next / previous change"},
+	{Key: "]n / [n", READMEKey: "`]n` / `[n`", Action: "Next / previous note"},
+	{Key: "s", READMEKey: "`s`", Action: "Toggle side-by-side view"},
+	{Key: "/", READMEKey: "`/`", Action: "Search"},
+	{Key: "n / N", READMEKey: "`n` / `N`", Action: "Next / previous search result"},
+	{Key: "v / V", READMEKey: "`v` / `V`", Action: "Visual / visual-line selection"},
+	{Key: "iw, aw, i{, a\", etc.", READMEKey: "`iw`, `aw`, `i{`, `a\"`, etc.", Action: "Text objects, naturally flawless"},
+	{Key: "y", READMEKey: "`y`", Action: "Copy selection"},
+	{Key: "i or I", READMEKey: "`i` or `I`", Action: "Add/edit comment"},
+	{Key: "x / dd", READMEKey: "`x` / `dd`", Action: "Delete note under cursor"},
+	{Key: ":w", READMEKey: "`:w`", Action: "Save comments"},
+	{Key: ":q / :q!", READMEKey: "`:q` / `:q!`", Action: "Quit / force quit"},
+	{Key: "?", READMEKey: "`?`", Action: "Show this help"},
+	{Key: "Esc", READMEKey: "`Esc`", Action: "Cancel"},
+}
+
 func (d *diffViewer) SetTerminalColors(colors TerminalColors) {
 	d.ensureColorScheme()
 	d.scheme.ApplyTerminalColors(colors)
@@ -254,6 +283,13 @@ func (d *diffViewer) handleKey(key vaxis.Key) (Command, error) {
 	if d.mode == modeInsert && d.editor != nil {
 		return d.handleCommentKey(key), nil
 	}
+	if d.helpVisible {
+		if keyQuestionMark(key) || key.Matches('q') || key.Matches(vaxis.KeyEsc) || key.MatchString("Esc") {
+			d.helpVisible = false
+			return CommandRedraw, nil
+		}
+		return CommandNone, nil
+	}
 
 	d.keys.ClearExpired(time.Now())
 	d.clearExpiredTextObject(time.Now())
@@ -262,6 +298,28 @@ func (d *diffViewer) handleKey(key vaxis.Key) (Command, error) {
 	}
 
 	switch {
+	case keyQuestionMark(key):
+		d.keys.Clear()
+		d.helpVisible = true
+		return CommandRedraw, nil
+	case key.Matches('['):
+		d.keys.Set("[", time.Now())
+		return CommandNone, nil
+	case key.Matches(']'):
+		d.keys.Set("]", time.Now())
+		return CommandNone, nil
+	case key.Matches('c') && d.keys.Pending() == "]":
+		d.keys.Clear()
+		return d.jumpChangeCommand(1), nil
+	case key.Matches('c') && d.keys.Pending() == "[":
+		d.keys.Clear()
+		return d.jumpChangeCommand(-1), nil
+	case key.Matches('n') && d.keys.Pending() == "]":
+		d.keys.Clear()
+		return d.jumpNoteCommand(1), nil
+	case key.Matches('n') && d.keys.Pending() == "[":
+		d.keys.Clear()
+		return d.jumpNoteCommand(-1), nil
 	case key.Matches('/'):
 		d.keys.Clear()
 		d.enterSearchMode()
@@ -504,6 +562,13 @@ func (d *diffViewer) handleTextObjectKey(key vaxis.Key) (Command, error) {
 	return CommandRedraw, nil
 }
 
+func keyQuestionMark(key vaxis.Key) bool {
+	if key.Matches('?') {
+		return true
+	}
+	return key.Modifiers&vaxis.ModShift != 0 && (key.Keycode == '/' || key.Text == "/")
+}
+
 func pureModifierKey(key vaxis.Key) bool {
 	if key.Text != "" {
 		return false
@@ -621,6 +686,7 @@ func (d *diffViewer) Paint(win vaxis.Window) {
 	d.paintScrollbar(win)
 	d.paintHorizontalScrollbar(win)
 	d.paintCommentEditor(win)
+	d.paintHelpOverlay(win)
 	d.paintStatusBar(win)
 }
 
@@ -641,7 +707,7 @@ func (d *diffViewer) paintCursor(win vaxis.Window) {
 	if win.Vx != nil {
 		win.Vx.HideCursor()
 	}
-	if d.mode == modeCommand || d.mode == modeInsert {
+	if d.helpVisible || d.mode == modeCommand || d.mode == modeInsert {
 		return
 	}
 
@@ -1120,6 +1186,81 @@ func (d *diffViewer) searchCursorPosition(win vaxis.Window) (int, int, bool) {
 		col = width - 1
 	}
 	return col, height - 1, true
+}
+
+func (d *diffViewer) paintHelpOverlay(win vaxis.Window) {
+	if !d.helpVisible {
+		return
+	}
+	width, height := win.Size()
+	if width < 8 || height < 5 {
+		return
+	}
+
+	contentHeight := height - 1
+	boxWidth, boxHeight := d.helpOverlaySize(width, contentHeight)
+	if boxWidth < 4 || boxHeight < 3 {
+		return
+	}
+	x := (width - boxWidth) / 2
+	y := (contentHeight - boxHeight) / 2
+	if y < 0 {
+		y = 0
+	}
+
+	style := vaxis.Style{
+		Foreground: d.scheme.Foreground,
+		Background: blendRGB(d.scheme.Background, d.scheme.Foreground, 0.08),
+	}
+	borderStyle := style
+	borderStyle.Foreground = d.scheme.Muted
+	d.paintCommentBorder(win, x, y, boxWidth, boxHeight, borderStyle)
+	for row := y + 1; row < y+boxHeight-1; row++ {
+		for col := x + 1; col < x+boxWidth-1; col++ {
+			win.SetCell(col, row, vaxis.Cell{
+				Character: vaxis.Character{Grapheme: " ", Width: 1},
+				Style:     style,
+			})
+		}
+	}
+
+	title := "Keybinds"
+	titleStyle := style
+	titleStyle.Foreground = d.scheme.Yellow
+	titleStyle.Attribute = vaxis.AttrBold
+	printSegmentsClipped(win, x+2, y+1, boxWidth-4, vaxis.Segment{Text: title, Style: titleStyle})
+
+	keyWidth := helpKeybindWidth()
+	for index, binding := range helpKeybinds {
+		row := y + 3 + index
+		if row >= y+boxHeight-1 {
+			break
+		}
+		keyText := fmt.Sprintf("%-*s", keyWidth, binding.Key)
+		printSegmentsClipped(win, x+2, row, boxWidth-4,
+			vaxis.Segment{Text: keyText, Style: borderStyle},
+			vaxis.Segment{Text: "  " + binding.Action, Style: style},
+		)
+	}
+}
+
+func (d *diffViewer) helpOverlaySize(width int, height int) (int, int) {
+	innerWidth := len("Keybinds")
+	keyWidth := helpKeybindWidth()
+	for _, binding := range helpKeybinds {
+		innerWidth = maxInt(innerWidth, keyWidth+2+textCellWidth(binding.Action))
+	}
+	boxWidth := minInt(width-2, innerWidth+4)
+	boxHeight := minInt(height, len(helpKeybinds)+4)
+	return boxWidth, boxHeight
+}
+
+func helpKeybindWidth() int {
+	width := 0
+	for _, binding := range helpKeybinds {
+		width = maxInt(width, textCellWidth(binding.Key))
+	}
+	return width
 }
 
 func (d *diffViewer) paintCommentEditor(win vaxis.Window) {
@@ -3966,6 +4107,102 @@ func (d *diffViewer) cursorBottom() {
 	d.cursorGoal = d.cursor.Col
 	d.ensureCursorVisible()
 	d.updateVisualSelection()
+}
+
+func (d *diffViewer) jumpChangeCommand(direction int) Command {
+	if !d.jumpChange(direction) {
+		d.setStatusMessage("No change.")
+	}
+	return CommandRedraw
+}
+
+func (d *diffViewer) jumpNoteCommand(direction int) Command {
+	if !d.jumpNote(direction) {
+		d.setStatusMessage("No note.")
+	}
+	return CommandRedraw
+}
+
+func (d *diffViewer) jumpChange(direction int) bool {
+	return d.jumpToTargetRow(changeTargetRows(d.rows), direction)
+}
+
+func (d *diffViewer) jumpNote(direction int) bool {
+	return d.jumpToTargetRow(noteTargetRows(d.rows, d.reviewDrafts), direction)
+}
+
+func (d *diffViewer) jumpToTargetRow(targets []int, direction int) bool {
+	if len(targets) == 0 {
+		return false
+	}
+	target := -1
+	if direction < 0 {
+		for index := len(targets) - 1; index >= 0; index-- {
+			if targets[index] < d.cursor.Row {
+				target = targets[index]
+				break
+			}
+		}
+	} else {
+		for _, row := range targets {
+			if row > d.cursor.Row {
+				target = row
+				break
+			}
+		}
+	}
+	if target < 0 {
+		return false
+	}
+	d.setCursorAtCodeRow(target)
+	d.updateVisualSelection()
+	return true
+}
+
+func changeTargetRows(rows []diff.Row) []int {
+	targets := make([]int, 0)
+	inChange := false
+	for index, row := range rows {
+		if changedDiffRow(row.Kind) {
+			if !inChange {
+				targets = append(targets, index)
+			}
+			inChange = true
+			continue
+		}
+		inChange = false
+	}
+	return targets
+}
+
+func changedDiffRow(kind diff.RowKind) bool {
+	return kind == diff.RowAdd || kind == diff.RowDelete
+}
+
+func noteTargetRows(rows []diff.Row, drafts []review.CommentDraft) []int {
+	targets := make([]int, 0, len(drafts))
+	seen := make(map[int]bool, len(drafts))
+	for _, draft := range drafts {
+		for index, row := range rows {
+			if reviewDraftContains(draft, row.Review) {
+				if !seen[index] {
+					targets = append(targets, index)
+					seen[index] = true
+				}
+				break
+			}
+		}
+	}
+	sort.Ints(targets)
+	return targets
+}
+
+func (d *diffViewer) setCursorAtCodeRow(row int) {
+	col := 0
+	if start, _, ok := d.codeRange(d.rows[row]); ok {
+		col = start
+	}
+	d.setCursor(selectionPoint{Row: row, Col: col})
 }
 
 func (d *diffViewer) jumpCommit(direction int) bool {

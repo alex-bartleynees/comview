@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -486,6 +488,147 @@ func TestDiffViewerStatusFillUsesDistinctBackground(t *testing.T) {
 	}
 	if got, want := viewer.statusSeparatorStyle(style.Background).Background, style.Background; got != want {
 		t.Fatalf("separator background = %v, want status background %v", got, want)
+	}
+}
+
+func TestDiffViewerBracketCJumpsBetweenChanges(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowContext, Gutter: "1 1   ", Code: "same"},
+		{Kind: diff.RowDelete, Gutter: "2   - ", Code: "old"},
+		{Kind: diff.RowAdd, Gutter: "  2 + ", Code: "new"},
+		{Kind: diff.RowContext, Gutter: "3 3   ", Code: "same"},
+		{Kind: diff.RowAdd, Gutter: "  4 + ", Code: "other"},
+	}
+	for index := range rows {
+		rows[index].Text = rows[index].Gutter + rows[index].Code
+	}
+	viewer := &diffViewer{rows: rows, cursor: selectionPoint{Row: 0}}
+	viewer.Layout(Tight(Size{Width: 80, Height: 10}))
+
+	if cmd, err := viewer.HandleEvent(vaxis.Key{Text: "]", Keycode: ']'}); err != nil {
+		t.Fatal(err)
+	} else if cmd != CommandNone {
+		t.Fatalf("] command = %v, want none", cmd)
+	}
+	cmd, err := viewer.HandleEvent(vaxis.Key{Text: "c", Keycode: 'c'})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd != CommandRedraw || viewer.cursor.Row != 1 {
+		t.Fatalf("]c command/cursor = %v/%+v, want redraw row 1", cmd, viewer.cursor)
+	}
+
+	if _, err := viewer.HandleEvent(vaxis.Key{Text: "]", Keycode: ']'}); err != nil {
+		t.Fatal(err)
+	}
+	cmd, err = viewer.HandleEvent(vaxis.Key{Text: "c", Keycode: 'c'})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd != CommandRedraw || viewer.cursor.Row != 4 {
+		t.Fatalf("second ]c command/cursor = %v/%+v, want redraw row 4", cmd, viewer.cursor)
+	}
+
+	if _, err := viewer.HandleEvent(vaxis.Key{Text: "[", Keycode: '['}); err != nil {
+		t.Fatal(err)
+	}
+	cmd, err = viewer.HandleEvent(vaxis.Key{Text: "c", Keycode: 'c'})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd != CommandRedraw || viewer.cursor.Row != 1 {
+		t.Fatalf("[c command/cursor = %v/%+v, want redraw row 1", cmd, viewer.cursor)
+	}
+}
+
+func TestDiffViewerBracketNJumpsBetweenNotes(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowAdd, Text: "one", Code: "one", Review: review.Anchor{Path: "main.go", Line: 1, Side: review.SideRight}},
+		{Kind: diff.RowAdd, Text: "two", Code: "two", Review: review.Anchor{Path: "main.go", Line: 2, Side: review.SideRight}},
+		{Kind: diff.RowAdd, Text: "three", Code: "three", Review: review.Anchor{Path: "main.go", Line: 3, Side: review.SideRight}},
+	}
+	viewer := &diffViewer{
+		rows: rows,
+		reviewDrafts: []review.CommentDraft{
+			{Path: "main.go", Line: 2, Side: review.SideRight, Body: "two"},
+			{Path: "main.go", Line: 3, Side: review.SideRight, Body: "three"},
+		},
+	}
+	viewer.Layout(Tight(Size{Width: 80, Height: 10}))
+
+	if _, err := viewer.HandleEvent(vaxis.Key{Text: "]", Keycode: ']'}); err != nil {
+		t.Fatal(err)
+	}
+	cmd, err := viewer.HandleEvent(vaxis.Key{Text: "n", Keycode: 'n'})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd != CommandRedraw || viewer.cursor.Row != 1 {
+		t.Fatalf("]n command/cursor = %v/%+v, want redraw row 1", cmd, viewer.cursor)
+	}
+
+	if _, err := viewer.HandleEvent(vaxis.Key{Text: "]", Keycode: ']'}); err != nil {
+		t.Fatal(err)
+	}
+	cmd, err = viewer.HandleEvent(vaxis.Key{Text: "n", Keycode: 'n'})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd != CommandRedraw || viewer.cursor.Row != 2 {
+		t.Fatalf("second ]n command/cursor = %v/%+v, want redraw row 2", cmd, viewer.cursor)
+	}
+
+	if _, err := viewer.HandleEvent(vaxis.Key{Text: "[", Keycode: '['}); err != nil {
+		t.Fatal(err)
+	}
+	cmd, err = viewer.HandleEvent(vaxis.Key{Text: "n", Keycode: 'n'})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd != CommandRedraw || viewer.cursor.Row != 1 {
+		t.Fatalf("[n command/cursor = %v/%+v, want redraw row 1", cmd, viewer.cursor)
+	}
+}
+
+func TestDiffViewerQuestionTogglesHelpOverlay(t *testing.T) {
+	viewer := newTestDiffViewer(1, 10)
+
+	cmd, err := viewer.HandleEvent(vaxis.Key{Text: "/", Keycode: '/', Modifiers: vaxis.ModShift})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd != CommandRedraw || !viewer.helpVisible {
+		t.Fatalf("command/help = %v/%v, want redraw/visible", cmd, viewer.helpVisible)
+	}
+
+	cmd, err = viewer.HandleEvent(vaxis.Key{Text: "?", Keycode: '?'})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd != CommandRedraw || viewer.helpVisible {
+		t.Fatalf("command/help = %v/%v, want redraw/hidden", cmd, viewer.helpVisible)
+	}
+}
+
+func TestDiffViewerHelpOverlayMatchesReadmeKeybinds(t *testing.T) {
+	readme, err := os.ReadFile("../README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(readme)
+	for _, binding := range helpKeybinds {
+		row := fmt.Sprintf("| %s | %s |", binding.READMEKey, binding.Action)
+		if !strings.Contains(text, row) {
+			t.Fatalf("README missing help binding row %q", row)
+		}
+	}
+}
+
+func TestDiffViewerHelpOverlayHasRoomForKeybinds(t *testing.T) {
+	viewer := &diffViewer{}
+	width, height := viewer.helpOverlaySize(80, 23)
+	if width <= 0 || height < len(helpKeybinds)+4 {
+		t.Fatalf("help overlay size = %dx%d, want room for %d bindings", width, height, len(helpKeybinds))
 	}
 }
 
@@ -1477,7 +1620,7 @@ func TestDiffViewerStatusMessageExpires(t *testing.T) {
 		statusMessageUntil: time.Unix(1, 0).Add(statusMessageTimeout),
 	}
 
-	if viewer.clearExpiredStatusMessage(time.Unix(1, 0).Add(statusMessageTimeout-time.Millisecond)) {
+	if viewer.clearExpiredStatusMessage(time.Unix(1, 0).Add(statusMessageTimeout - time.Millisecond)) {
 		t.Fatal("status message expired early")
 	}
 	if viewer.statusMessage == "" {
@@ -2963,11 +3106,11 @@ func TestDiffViewerTextObjectSelectsInnerWord(t *testing.T) {
 
 func TestDiffViewerTextObjectUsesPrintedDelimiterForShiftedKeys(t *testing.T) {
 	tests := []struct {
-		name    string
-		code    string
-		cursor  int
-		object  vaxis.Key
-		want    string
+		name   string
+		code   string
+		cursor int
+		object vaxis.Key
+		want   string
 	}{
 		{
 			name:   "double quote",

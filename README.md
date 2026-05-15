@@ -37,6 +37,8 @@ Comments are saved to `.comview/comments.json`.
 | `gg` / `G` | Top / bottom |
 | `Ctrl-d` / `Ctrl-u` | Half-page down / up |
 | `J` / `K` | Next / previous commit |
+| `]c` / `[c` | Next / previous change |
+| `]n` / `[n` | Next / previous note |
 | `s` | Toggle side-by-side view |
 | `/` | Search |
 | `n` / `N` | Next / previous search result |
@@ -47,6 +49,7 @@ Comments are saved to `.comview/comments.json`.
 | `x` / `dd` | Delete note under cursor |
 | `:w` | Save comments |
 | `:q` / `:q!` | Quit / force quit |
+| `?` | Show this help |
 | `Esc` | Cancel |
 
 That is all. It is enough.
