@@ -93,6 +93,10 @@ type YankHighlighter interface {
 	YankHighlightDuration() time.Duration
 }
 
+type TimedRedrawer interface {
+	RedrawAfter() (time.Duration, bool)
+}
+
 type App struct {
 	vx     *vaxis.Vaxis
 	root   Widget
@@ -199,8 +203,24 @@ func (a *App) handleEvent(ev vaxis.Event) (Command, error) {
 	}
 	if requestFrame {
 		a.frames.Request(a.draw)
+		a.scheduleTimedRedraw()
 	}
 	return cmd, nil
+}
+
+func (a *App) scheduleTimedRedraw() {
+	redrawer, ok := a.root.(TimedRedrawer)
+	if !ok {
+		return
+	}
+	duration, ok := redrawer.RedrawAfter()
+	if !ok {
+		return
+	}
+	go func() {
+		time.Sleep(duration)
+		a.vx.PostEvent(vaxis.Redraw{})
+	}()
 }
 
 func (a *App) applyTerminalColors() {

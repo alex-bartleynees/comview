@@ -1471,6 +1471,39 @@ func TestDiffViewerCommandWSavesComments(t *testing.T) {
 	}
 }
 
+func TestDiffViewerStatusMessageExpires(t *testing.T) {
+	viewer := &diffViewer{
+		statusMessage:      "Note deleted.",
+		statusMessageUntil: time.Unix(1, 0).Add(statusMessageTimeout),
+	}
+
+	if viewer.clearExpiredStatusMessage(time.Unix(1, 0).Add(statusMessageTimeout-time.Millisecond)) {
+		t.Fatal("status message expired early")
+	}
+	if viewer.statusMessage == "" {
+		t.Fatal("status message cleared early")
+	}
+	if !viewer.clearExpiredStatusMessage(time.Unix(1, 0).Add(statusMessageTimeout)) {
+		t.Fatal("status message did not expire")
+	}
+	if viewer.statusMessage != "" || !viewer.statusMessageUntil.IsZero() {
+		t.Fatalf("status message = %q until %v, want cleared", viewer.statusMessage, viewer.statusMessageUntil)
+	}
+}
+
+func TestDiffViewerStatusMessageRequestsTimedRedraw(t *testing.T) {
+	viewer := &diffViewer{}
+	viewer.setStatusMessage("Note deleted.")
+
+	duration, ok := viewer.RedrawAfter()
+	if !ok {
+		t.Fatal("timed redraw not requested")
+	}
+	if duration <= 0 || duration > statusMessageTimeout {
+		t.Fatalf("redraw duration = %v, want within %v", duration, statusMessageTimeout)
+	}
+}
+
 func TestDiffViewerCommandWWritesCommentsFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".comview", "comments.json")
 	viewer := newTestDiffViewer(1, 10)

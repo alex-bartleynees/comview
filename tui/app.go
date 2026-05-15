@@ -18,6 +18,7 @@ import (
 const pendingKeyTimeout = 800 * time.Millisecond
 const multiClickTimeout = 500 * time.Millisecond
 const yankHighlightDuration = 180 * time.Millisecond
+const statusMessageTimeout = 2 * time.Second
 const mouseWheelScrollLines = 1
 const scrollbarWidth = 1
 const commentEditorMaxRows = 8
@@ -88,10 +89,11 @@ type diffViewer struct {
 	editor        *commentEditor
 	commandLine   string
 	searchQuery   string
-	searchMatches []searchMatch
-	searchIndex   int
-	statusMessage string
-	yankUntil     time.Time
+	searchMatches      []searchMatch
+	searchIndex        int
+	statusMessage      string
+	statusMessageUntil time.Time
+	yankUntil          time.Time
 	mouseDrag     mouseDragState
 	clicks        clickState
 	keys          keyChordState
@@ -729,9 +731,10 @@ func (d *diffViewer) paintStatusBar(win vaxis.Window) {
 	modeSegments := d.statusModeSegments(separatorBackground)
 	modeWidth := segmentsWidth(modeSegments)
 	printSegmentsAt(win, 0, row, modeSegments...)
+	d.clearExpiredStatusMessage(time.Now())
 	if d.statusMessage != "" {
 		printSegmentsAt(win, modeWidth, row, vaxis.Segment{
-			Text:  d.statusMessage,
+			Text:  " " + d.statusMessage,
 			Style: d.statusDimStyle(),
 		})
 		return
@@ -754,6 +757,35 @@ func (d *diffViewer) paintStatusBar(win vaxis.Window) {
 	if len(rightSegments) > 0 {
 		printSegmentsAt(win, width-rightWidth-1, row, rightSegments...)
 	}
+}
+
+func (d *diffViewer) setStatusMessage(message string) {
+	d.statusMessage = message
+	d.statusMessageUntil = time.Now().Add(statusMessageTimeout)
+}
+
+func (d *diffViewer) clearStatusMessage() {
+	d.statusMessage = ""
+	d.statusMessageUntil = time.Time{}
+}
+
+func (d *diffViewer) clearExpiredStatusMessage(now time.Time) bool {
+	if d.statusMessage == "" || d.statusMessageUntil.IsZero() || now.Before(d.statusMessageUntil) {
+		return false
+	}
+	d.clearStatusMessage()
+	return true
+}
+
+func (d *diffViewer) RedrawAfter() (time.Duration, bool) {
+	if d.statusMessage == "" || d.statusMessageUntil.IsZero() {
+		return 0, false
+	}
+	duration := time.Until(d.statusMessageUntil)
+	if duration < 0 {
+		duration = 0
+	}
+	return duration, true
 }
 
 func (d *diffViewer) statusModeSegments(separatorBackground vaxis.Color) []vaxis.Segment {
@@ -2955,7 +2987,7 @@ func (d *diffViewer) syncCommentEditorScroll() {
 
 func (d *diffViewer) enterCommandMode() {
 	d.commandLine = ""
-	d.statusMessage = ""
+	d.clearStatusMessage()
 	d.mode = modeCommand
 }
 
@@ -2988,7 +3020,7 @@ func (d *diffViewer) enterSearchMode() {
 	d.searchQuery = ""
 	d.searchMatches = nil
 	d.searchIndex = -1
-	d.statusMessage = ""
+	d.clearStatusMessage()
 	d.mode = modeSearch
 }
 
@@ -3012,7 +3044,7 @@ func (d *diffViewer) handleSearchKey(key vaxis.Key) (Command, error) {
 		d.updateSearchMatches()
 		d.mode = modeNormal
 		if len(d.searchMatches) == 0 {
-			d.statusMessage = "Pattern not found"
+			d.setStatusMessage("Pattern not found")
 			return CommandRedraw, nil
 		}
 		d.searchIndex = d.nextSearchIndexFromCursor(1)
@@ -3056,7 +3088,7 @@ func (d *diffViewer) executeCommandString(command string) Command {
 		case strings.HasPrefix(command, "q"):
 			if d.reviewDirty {
 				d.mode = modeNormal
-				d.statusMessage = "Unsaved comments. Use :w to save or :q! to quit."
+				d.setStatusMessage("Unsaved comments. Use :w to save or :q! to quit.")
 				return CommandRedraw
 			}
 			return CommandQuit
@@ -3079,12 +3111,12 @@ func (d *diffViewer) writeReviewCommand() Command {
 	}
 	if err := d.saveReviewComments(); err != nil {
 		d.mode = modeNormal
-		d.statusMessage = fmt.Sprintf("Could not save comments: %v", err)
+		d.setStatusMessage(fmt.Sprintf("Could not save comments: %v", err))
 		return CommandRedraw
 	}
 	d.reviewDirty = false
 	d.mode = modeNormal
-	d.statusMessage = "Comments saved."
+	d.setStatusMessage("Comments saved.")
 	return CommandRedraw
 }
 
@@ -3133,7 +3165,7 @@ func (d *diffViewer) submitReviewComment() bool {
 
 func (d *diffViewer) deleteReviewDraftCommand() Command {
 	if !d.deleteReviewDraftAtTarget() {
-		d.statusMessage = "No note."
+		d.setStatusMessage("No note.")
 		return CommandRedraw
 	}
 	return CommandRedraw
@@ -3146,7 +3178,7 @@ func (d *diffViewer) deleteReviewDraftAtTarget() bool {
 	}
 	d.reviewDrafts = append(d.reviewDrafts[:index], d.reviewDrafts[index+1:]...)
 	d.reviewDirty = true
-	d.statusMessage = "Note deleted."
+	d.setStatusMessage("Note deleted.")
 	d.exitVisualMode()
 	return true
 }
@@ -3282,7 +3314,7 @@ func (d *diffViewer) applySearchMatch() {
 	}
 	match := d.searchMatches[d.searchIndex]
 	d.setCursor(selectionPoint{Row: match.Row, Col: match.Start})
-	d.statusMessage = ""
+	d.clearStatusMessage()
 }
 
 func (d *diffViewer) searchSegments(rowIndex int, row diff.Row, segments []vaxis.Segment) []vaxis.Segment {
