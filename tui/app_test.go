@@ -4253,10 +4253,10 @@ func TestDiffViewerSideBySideSelectionPaintsCodeCell(t *testing.T) {
 
 	selectedCol := textCellWidth(viewer.sideBySideGutter(row, sideRight)) + 4
 	cell := cells[selectedCol]
-	if cell.Character.Grapheme != "v" {
-		t.Fatalf("selected cell grapheme = %q, want v", cell.Character.Grapheme)
+	if cell.Grapheme != "v" {
+		t.Fatalf("selected cell grapheme = %q, want v", cell.Grapheme)
 	}
-	if cell.Style.Background != viewer.scheme.Selection {
+	if cell.Background != viewer.scheme.Selection {
 		t.Fatalf("selected cell style = %+v, want selection background %v", cell.Style, viewer.scheme.Selection)
 	}
 }
@@ -4493,7 +4493,7 @@ func (t testCells) SetCell(col int, row int, cell vaxis.Cell) {
 func (t testCells) text(width int) string {
 	var b strings.Builder
 	for col := 0; col < width; col++ {
-		b.WriteString(t[col].Character.Grapheme)
+		b.WriteString(t[col].Grapheme)
 	}
 	return b.String()
 }

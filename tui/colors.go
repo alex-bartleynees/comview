@@ -224,15 +224,16 @@ func changedLineBackground(background vaxis.Color, accent vaxis.Color) vaxis.Col
 
 func inlineChangeBackground(background vaxis.Color, accent vaxis.Color) vaxis.Color {
 	color := blendRGB(background, accent, inlineChangeBlend)
-	for contrastRatio(background, color) < minInlineChangeContrast {
-		color = blendRGB(background, accent, inlineChangeBlend+0.08)
-		if contrastRatio(background, color) >= minInlineChangeContrast {
-			break
-		}
-		color = blendRGB(background, accent, 0.50)
-		break
+	if contrastRatio(background, color) >= minInlineChangeContrast {
+		return color
 	}
-	return color
+
+	color = blendRGB(background, accent, inlineChangeBlend+0.08)
+	if contrastRatio(background, color) >= minInlineChangeContrast {
+		return color
+	}
+
+	return blendRGB(background, accent, 0.50)
 }
 
 func blendRGB(base vaxis.Color, accent vaxis.Color, amount float64) vaxis.Color {

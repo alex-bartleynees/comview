@@ -217,11 +217,6 @@ func tokenLCSMatrix(oldTokens []token, newTokens []token) [][]int {
 	return dp
 }
 
-func matchedTokens(oldTokens []token, newTokens []token) ([]bool, []bool) {
-	oldMatched, newMatched, _ := tokenMatches(oldTokens, newTokens)
-	return oldMatched, newMatched
-}
-
 type tokenPair struct {
 	oldIndex int
 	newIndex int

@@ -1149,7 +1149,6 @@ func (d *diffViewer) currentFileContext() (int, string, statusStats) {
 		switch d.rows[rowIndex].Kind {
 		case diff.RowFile, diff.RowCommitHeader:
 			fileEnd = rowIndex
-			break
 		}
 		if fileEnd == rowIndex {
 			break
@@ -1522,10 +1521,6 @@ func (d *diffViewer) statusBackground() vaxis.Color {
 
 func (d *diffViewer) statusCommitBackground() vaxis.Color {
 	return blendRGB(d.statusBackground(), d.scheme.Base.Blue, 0.28)
-}
-
-func (d *diffViewer) statusFileBackground() vaxis.Color {
-	return blendRGB(d.statusBackground(), d.scheme.Base.Cyan, 0.45)
 }
 
 func (d *diffViewer) statusStyle() vaxis.Style {
@@ -2688,7 +2683,7 @@ func (d *diffViewer) sideBySideMouseCell(mouse vaxis.Mouse) (docRow int, localCo
 	}
 
 	leftWidth, rightStart, rightWidth := d.sideBySidePaneGeometry(vaxis.Window{Width: d.width, Height: d.height})
-	side := sideLeft
+	var side diffSide
 	paneStart := 0
 	paneWidth := leftWidth
 	switch {
@@ -2955,14 +2950,6 @@ func (d *diffViewer) selectionRenderRange(docRow int, start selectionPoint, end 
 
 func (d *diffViewer) selectionRange() (selectionPoint, selectionPoint, bool) {
 	return selectionRange(d.selection)
-}
-
-func (d *diffViewer) selectionRangeForPaint(now time.Time) (selectionPoint, selectionPoint, bool) {
-	selection, ok := d.selectionForPaint(now)
-	if !ok {
-		return selectionPoint{}, selectionPoint{}, false
-	}
-	return selectionRange(selection)
 }
 
 func (d *diffViewer) selectionForPaint(now time.Time) (textSelection, bool) {
@@ -4944,22 +4931,6 @@ func segmentTextWidth(segments []vaxis.Segment) int {
 	return width
 }
 
-func segmentStyleAt(segments []vaxis.Segment, target int) (vaxis.Style, bool) {
-	if target < 0 {
-		return vaxis.Style{}, false
-	}
-
-	col := 0
-	for _, segment := range segments {
-		next := col + textCellWidth(segment.Text)
-		if target >= col && target < next {
-			return segment.Style, true
-		}
-		col = next
-	}
-	return vaxis.Style{}, false
-}
-
 func styleSegmentsRange(segments []vaxis.Segment, start int, end int, style vaxis.Style) []vaxis.Segment {
 	if start >= end {
 		return segments
@@ -5069,19 +5040,6 @@ func runeAtCell(text string, target int) rune {
 
 func isSpaceRune(r rune) bool {
 	return uucode.IsSpace(r)
-}
-
-func runeAtIndex(text string, index int) rune {
-	if index < 0 {
-		return ' '
-	}
-	for _, r := range text {
-		if index == 0 {
-			return r
-		}
-		index--
-	}
-	return ' '
 }
 
 func cellTextRange(text string, start int, end int) string {

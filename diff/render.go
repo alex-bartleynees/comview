@@ -139,7 +139,12 @@ func isCommitTrailerLine(line string) bool {
 		return false
 	}
 	for _, r := range key {
-		if !(r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-') {
+		switch {
+		case r >= 'A' && r <= 'Z':
+		case r >= 'a' && r <= 'z':
+		case r >= '0' && r <= '9':
+		case r == '-':
+		default:
 			return false
 		}
 	}
@@ -261,11 +266,6 @@ func reviewAnchor(fileName string, line Line, metadata Metadata) review.Anchor {
 	default:
 		return review.Anchor{}
 	}
-}
-
-func renderLine(line Line, options RenderOptions) string {
-	marker, code := splitLine(line)
-	return renderGutter(line, options, marker) + code
 }
 
 func renderGutter(line Line, options RenderOptions, marker string) string {

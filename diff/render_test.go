@@ -194,7 +194,7 @@ diff --git a/b.txt b/b.txt
 	if firstFile == 0 || secondCommit == 0 || secondFile == 0 {
 		t.Fatalf("missing rows: firstFile=%d secondCommit=%d secondFile=%d rows=%+v", firstFile, secondCommit, secondFile, rows)
 	}
-	if !(firstFile < secondCommit && secondCommit < secondFile) {
+	if firstFile >= secondCommit || secondCommit >= secondFile {
 		t.Fatalf("row order firstFile=%d secondCommit=%d secondFile=%d", firstFile, secondCommit, secondFile)
 	}
 	if !blankBeforeSecondCommit {
