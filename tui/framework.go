@@ -10,6 +10,7 @@ import (
 	"unicode"
 
 	"git.sr.ht/~rockorager/vaxis"
+	"git.sr.ht/~rockorager/vaxis/widgets/term"
 )
 
 const (
@@ -79,6 +80,7 @@ const (
 	CommandQuit
 	CommandCopy
 	CommandOpenEditor
+	CommandCloseTerminal
 )
 
 type Widget interface {
@@ -119,9 +121,11 @@ type TimedRedrawer interface {
 }
 
 type App struct {
-	vx     *vaxis.Vaxis
-	root   Widget
-	frames FramePipeline
+	vx         *vaxis.Vaxis
+	root       Widget
+	terminal   *TerminalWidget
+	windowSize vaxis.Resize
+	frames     FramePipeline
 }
 
 func NewApp(root Widget, opts vaxis.Options) (*App, error) {
@@ -146,7 +150,12 @@ func (a *App) Vaxis() *vaxis.Vaxis {
 }
 
 func (a *App) Run() error {
-	defer a.vx.Close()
+	defer func() {
+		if a.terminal != nil {
+			a.terminal.Close()
+		}
+		a.vx.Close()
+	}()
 
 	a.vx.SetTitle("comview")
 	a.applyTerminalColors()
@@ -182,17 +191,39 @@ func (a *App) draw() {
 
 	win.Clear()
 	a.root.Paint(win.New(0, 0, size.Width, size.Height))
+	a.paintTerminalOverlay(win)
 	a.vx.Render()
 }
 
 func (a *App) handleEvent(ev vaxis.Event) (Command, error) {
 	requestFrame := false
-	switch ev.(type) {
-	case vaxis.Resize, vaxis.Redraw:
+	switch ev := ev.(type) {
+	case vaxis.Resize:
+		a.windowSize = ev
+		requestFrame = true
+	case vaxis.Redraw:
 		requestFrame = true
 	case vaxis.ColorThemeUpdate:
 		a.applyTerminalColors()
 		requestFrame = true
+	}
+
+	if a.terminal != nil {
+		cmd, err := a.handleTerminalEvent(ev)
+		if err != nil {
+			return CommandNone, err
+		}
+		if cmd == CommandCloseTerminal {
+			requestFrame = true
+		}
+		if cmd == CommandRedraw {
+			requestFrame = true
+		}
+		if requestFrame {
+			a.frames.Request(a.draw)
+			a.scheduleTimedRedraw()
+		}
+		return cmd, nil
 	}
 
 	cmd, err := a.root.HandleEvent(ev)
@@ -221,7 +252,7 @@ func (a *App) handleEvent(ev vaxis.Event) (Command, error) {
 	}
 	if cmd == CommandOpenEditor {
 		requestFrame = true
-		if err := a.openEditor(); err != nil {
+		if err := a.openEditorTerminal(); err != nil {
 			if messenger, ok := a.root.(StatusMessenger); ok {
 				messenger.SetStatusMessage(fmt.Sprintf("Could not open editor: %v", err))
 			} else {
@@ -239,7 +270,76 @@ func (a *App) handleEvent(ev vaxis.Event) (Command, error) {
 	return cmd, nil
 }
 
-func (a *App) openEditor() error {
+func (a *App) handleTerminalEvent(ev vaxis.Event) (Command, error) {
+	switch ev := ev.(type) {
+	case term.EventNotify:
+		a.vx.Notify(ev.Title, ev.Body)
+	case term.EventMouseShape:
+		a.vx.SetMouseShape(ev.Shape)
+	}
+
+	ev = a.translateTerminalEvent(ev)
+	cmd, err := a.terminal.HandleEvent(ev)
+	if err != nil {
+		return CommandNone, err
+	}
+	if cmd == CommandCloseTerminal {
+		terminalErr := a.terminal.Err()
+		a.terminal.Close()
+		a.terminal = nil
+		a.vx.SetMouseShape(vaxis.MouseShapeDefault)
+		a.applyTerminalColors()
+		if terminalErr != nil {
+			if messenger, ok := a.root.(StatusMessenger); ok {
+				messenger.SetStatusMessage(fmt.Sprintf("Editor exited: %v", terminalErr))
+			}
+		}
+	}
+	return cmd, nil
+}
+
+func (a *App) translateTerminalEvent(ev vaxis.Event) vaxis.Event {
+	mouse, ok := ev.(vaxis.Mouse)
+	if !ok {
+		return ev
+	}
+	width, height := a.vx.Window().Size()
+	layout, ok := terminalOverlayLayout(width, height)
+	if !ok {
+		return mouse
+	}
+	resize := a.windowSize
+	if resize.Cols <= 0 {
+		resize.Cols = width
+	}
+	if resize.Rows <= 0 {
+		resize.Rows = height
+	}
+	mouse, ok = translateTerminalMouse(mouse, layout, resize)
+	if !ok {
+		return vaxis.Redraw{}
+	}
+	return mouse
+}
+
+func (a *App) paintTerminalOverlay(win vaxis.Window) {
+	if a.terminal == nil {
+		return
+	}
+	width, height := win.Size()
+	layout, ok := terminalOverlayLayout(width, height)
+	if !ok {
+		return
+	}
+
+	style := vaxis.Style{}
+	borderStyle := vaxis.Style{Attribute: vaxis.AttrBold}
+	paintBox(win, layout.x, layout.y, layout.boxWidth, layout.boxHeight, style, borderStyle)
+	a.terminal.Layout(Tight(Size{Width: layout.innerWidth, Height: layout.innerHeight}))
+	a.terminal.Paint(win.New(layout.x+1, layout.y+1, layout.innerWidth, layout.innerHeight))
+}
+
+func (a *App) openEditorTerminal() error {
 	provider, ok := a.root.(EditorTargetProvider)
 	if !ok {
 		return nil
@@ -252,36 +352,22 @@ func (a *App) openEditor() error {
 		return nil
 	}
 
-	if err := a.vx.Suspend(); err != nil {
-		return err
-	}
-	runErr := runEditor(target)
-	resumeErr := a.vx.Resume()
-	a.applyTerminalColors()
-	if runErr != nil {
-		return runErr
-	}
-	return resumeErr
-}
-
-func runEditor(target EditorTarget) error {
-	editor := configuredEditor()
-	name, args, err := editorCommand(editor, target)
+	name, args, err := editorCommand(configuredEditor(), target)
 	if err != nil {
 		return err
 	}
-
-	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	width, height := a.vx.Window().Size()
+	layout, ok := terminalOverlayLayout(width, height)
+	size := Size{Width: width, Height: height}
+	if ok {
+		size = Size{Width: layout.innerWidth, Height: layout.innerHeight}
+	}
+	terminal, err := NewTerminalWidget(a.vx, exec.Command(name, args...), size)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = tty.Close() }()
-
-	cmd := exec.Command(name, args...)
-	cmd.Stdin = tty
-	cmd.Stdout = tty
-	cmd.Stderr = tty
-	return cmd.Run()
+	a.terminal = terminal
+	return nil
 }
 
 func configuredEditor() string {
@@ -407,6 +493,200 @@ func (a *App) applyTerminalColors() {
 	if receiver, ok := a.root.(TerminalColorReceiver); ok {
 		receiver.SetTerminalColors(QueryTerminalColors(a.vx))
 	}
+}
+
+type terminalOverlayGeometry struct {
+	x           int
+	y           int
+	boxWidth    int
+	boxHeight   int
+	innerWidth  int
+	innerHeight int
+}
+
+func terminalOverlayLayout(width int, height int) (terminalOverlayGeometry, bool) {
+	if width < 6 || height < 5 {
+		return terminalOverlayGeometry{}, false
+	}
+
+	boxWidth := width - 8
+	if boxWidth < 24 {
+		boxWidth = width
+	}
+	boxHeight := height - 4
+	if boxHeight < 8 {
+		boxHeight = height
+	}
+	if boxWidth < 3 || boxHeight < 3 {
+		return terminalOverlayGeometry{}, false
+	}
+
+	x := (width - boxWidth) / 2
+	y := (height - boxHeight) / 2
+	return terminalOverlayGeometry{
+		x:           x,
+		y:           y,
+		boxWidth:    boxWidth,
+		boxHeight:   boxHeight,
+		innerWidth:  boxWidth - 2,
+		innerHeight: boxHeight - 2,
+	}, true
+}
+
+func translateTerminalMouse(mouse vaxis.Mouse, layout terminalOverlayGeometry, resize vaxis.Resize) (vaxis.Mouse, bool) {
+	innerX := layout.x + 1
+	innerY := layout.y + 1
+	if mouse.Col < innerX || mouse.Col >= innerX+layout.innerWidth ||
+		mouse.Row < innerY || mouse.Row >= innerY+layout.innerHeight {
+		return mouse, false
+	}
+	mouse.Col -= innerX
+	mouse.Row -= innerY
+
+	if mouse.XPixel > 0 && resize.XPixel > 0 && resize.Cols > 0 {
+		cellWidth := resize.XPixel / resize.Cols
+		if cellWidth > 0 {
+			mouse.XPixel -= innerX * cellWidth
+			if mouse.XPixel < 0 {
+				mouse.XPixel = 0
+			}
+		}
+	}
+	if mouse.YPixel > 0 && resize.YPixel > 0 && resize.Rows > 0 {
+		cellHeight := resize.YPixel / resize.Rows
+		if cellHeight > 0 {
+			mouse.YPixel -= innerY * cellHeight
+			if mouse.YPixel < 0 {
+				mouse.YPixel = 0
+			}
+		}
+	}
+	return mouse, true
+}
+
+func paintBox(win vaxis.Window, x int, y int, width int, height int, style vaxis.Style, borderStyle vaxis.Style) {
+	if width <= 0 || height <= 0 {
+		return
+	}
+	for row := y; row < y+height; row++ {
+		for col := x; col < x+width; col++ {
+			grapheme := " "
+			cellStyle := style
+			switch {
+			case row == y && col == x:
+				grapheme = "╭"
+				cellStyle = borderStyle
+			case row == y && col == x+width-1:
+				grapheme = "╮"
+				cellStyle = borderStyle
+			case row == y+height-1 && col == x:
+				grapheme = "╰"
+				cellStyle = borderStyle
+			case row == y+height-1 && col == x+width-1:
+				grapheme = "╯"
+				cellStyle = borderStyle
+			case row == y || row == y+height-1:
+				grapheme = "─"
+				cellStyle = borderStyle
+			case col == x || col == x+width-1:
+				grapheme = "│"
+				cellStyle = borderStyle
+			}
+			win.SetCell(col, row, vaxis.Cell{
+				Character: vaxis.Character{Grapheme: grapheme, Width: 1},
+				Style:     cellStyle,
+			})
+		}
+	}
+}
+
+type terminalModel interface {
+	Attach(func(vaxis.Event))
+	Blur()
+	Close()
+	Draw(vaxis.Window)
+	Focus()
+	Resize(int, int)
+	StartWithSize(*exec.Cmd, int, int) error
+	Update(vaxis.Event)
+}
+
+type TerminalWidget struct {
+	terminal terminalModel
+	size     Size
+	err      error
+	closed   bool
+}
+
+func NewTerminalWidget(vx *vaxis.Vaxis, cmd *exec.Cmd, size Size) (*TerminalWidget, error) {
+	terminal := term.New(term.WithVaxis(vx))
+	if vx != nil {
+		terminal.Attach(vx.PostEvent)
+	}
+	return newTerminalWidget(terminal, cmd, size)
+}
+
+func newTerminalWidget(terminal terminalModel, cmd *exec.Cmd, size Size) (*TerminalWidget, error) {
+	if size.Width <= 0 {
+		size.Width = 80
+	}
+	if size.Height <= 0 {
+		size.Height = 24
+	}
+
+	widget := &TerminalWidget{
+		terminal: terminal,
+		size:     size,
+	}
+	terminal.Focus()
+	if err := terminal.StartWithSize(cmd, size.Width, size.Height); err != nil {
+		terminal.Close()
+		return nil, err
+	}
+	return widget, nil
+}
+
+func (w *TerminalWidget) HandleEvent(ev vaxis.Event) (Command, error) {
+	switch ev := ev.(type) {
+	case term.EventClosed:
+		w.err = ev.Error
+		w.closed = true
+		return CommandCloseTerminal, nil
+	case vaxis.Redraw, vaxis.Resize, term.EventNotify, term.EventMouseShape:
+		return CommandRedraw, nil
+	}
+	w.terminal.Update(ev)
+	return CommandRedraw, nil
+}
+
+func (w *TerminalWidget) Layout(constraints Constraints) Size {
+	size := w.size
+	if !constraints.Max.HasUnboundedWidth() {
+		size.Width = constraints.Max.Width
+	}
+	if !constraints.Max.HasUnboundedHeight() {
+		size.Height = constraints.Max.Height
+	}
+	size = constraints.Constrain(size)
+	if size != w.size {
+		w.size = size
+		w.terminal.Resize(size.Width, size.Height)
+	}
+	return size
+}
+
+func (w *TerminalWidget) Paint(win vaxis.Window) {
+	w.terminal.Draw(win)
+}
+
+func (w *TerminalWidget) Close() {
+	w.terminal.Blur()
+	w.terminal.Close()
+	w.closed = true
+}
+
+func (w *TerminalWidget) Err() error {
+	return w.err
 }
 
 type FramePipeline struct {

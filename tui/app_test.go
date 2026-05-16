@@ -82,6 +82,55 @@ func TestDiffViewerEditorTargetUsesCursorRow(t *testing.T) {
 	}
 }
 
+func TestDiffViewerEditorTargetUsesTextColumnForTabs(t *testing.T) {
+	row := diff.Row{
+		Kind:     diff.RowAdd,
+		FileName: "main.go",
+		Gutter:   "    12 + ",
+		Code:     "\tfoo",
+		Review:   review.Anchor{Line: 12},
+	}
+	codeOffset := testCodeOffset(row)
+	tests := []struct {
+		name       string
+		cursorCell int
+		wantColumn int
+	}{
+		{
+			name:       "inside tab",
+			cursorCell: 4,
+			wantColumn: 1,
+		},
+		{
+			name:       "after tab",
+			cursorCell: 8,
+			wantColumn: 2,
+		},
+		{
+			name:       "after first rune",
+			cursorCell: 9,
+			wantColumn: 3,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			viewer := &diffViewer{
+				rows:   []diff.Row{row},
+				cursor: selectionPoint{Row: 0, Col: codeOffset + tt.cursorCell},
+			}
+
+			target, ok := viewer.EditorTarget()
+			if !ok {
+				t.Fatal("editor target not found")
+			}
+			if target.Column != tt.wantColumn {
+				t.Fatalf("column = %d, want %d", target.Column, tt.wantColumn)
+			}
+		})
+	}
+}
+
 func TestDiffViewerEditorTargetFallsBackToLineOne(t *testing.T) {
 	viewer := &diffViewer{
 		rows: []diff.Row{{Kind: diff.RowFile, Text: "main.go", FileName: "main.go"}},

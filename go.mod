@@ -3,13 +3,14 @@ module github.com/rockorager/comview
 go 1.26.1
 
 require (
-	git.sr.ht/~rockorager/vaxis v0.15.1-0.20260514151234-ed15aad8646b
+	git.sr.ht/~rockorager/vaxis v0.15.1-0.20260516221450-35bc4e1ea1bf
 	github.com/alecthomas/chroma/v2 v2.24.1
-	github.com/rockorager/go-uucode v1.0.2
+	github.com/rockorager/go-uucode v1.1.0
 )
 
 require (
 	github.com/containerd/console v1.0.3 // indirect
+	github.com/creack/pty v1.1.18 // indirect
 	github.com/dlclark/regexp2 v1.12.0 // indirect
 	github.com/mattn/go-sixel v0.0.5 // indirect
 	github.com/soniakeys/quant v1.0.0 // indirect

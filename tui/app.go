@@ -303,7 +303,7 @@ func (d *diffViewer) EditorTarget() (EditorTarget, bool) {
 
 	column := 1
 	if row.Code != "" {
-		column = maxInt(1, d.cursor.Col-d.codeOffset(row)+1)
+		column = editorColumnAtCell(row.Code, d.cursor.Col-d.codeOffset(row))
 	}
 	return EditorTarget{Path: row.FileName, Line: line, Column: column}, true
 }
@@ -6623,6 +6623,25 @@ func textCellWidth(text string) int {
 		width += char.Width
 	}
 	return width
+}
+
+func editorColumnAtCell(text string, target int) int {
+	if target < 0 {
+		return 1
+	}
+
+	column := 1
+	cell := 0
+	it := uucode.NewGraphemeIterator(text)
+	for g, ok := it.Next(); ok; g, ok = it.Next() {
+		next := cell + graphemeCellWidth(text[g.Start:g.End])
+		if target < next {
+			return column
+		}
+		cell = next
+		column++
+	}
+	return column
 }
 
 func characterAtCell(text string, target int) vaxis.Character {
