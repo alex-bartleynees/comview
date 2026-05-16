@@ -22,7 +22,7 @@ const statusMessageTimeout = 2 * time.Second
 const mouseWheelScrollLines = 1
 const mouseWheelScrollColumns = 1
 const scrollbarWidth = 1
-const commentEditorMaxRows = 8
+const commentTextMaxWidth = 72
 const verticalScrollbarThumb = "█"
 const horizontalScrollbarThumb = "\U0001FB0B"
 const keyboardFlags = vaxis.CSIuDisambiguate |
@@ -89,6 +89,7 @@ type diffViewer struct {
 	mode               viewMode
 	selection          textSelection
 	yankSelection      textSelection
+	commentSelection   textSelection
 	clipboardText      string
 	reviewDrafts       []review.CommentDraft
 	reviewDirty        bool
@@ -143,20 +144,27 @@ type commentEditor struct {
 }
 
 type commentEditorLayout struct {
-	x             int
-	y             int
-	boxWidth      int
-	boxHeight     int
-	inputWidth    int
-	visibleRows   int
-	showScrollbar bool
-	wrapped       []commentDisplayLine
+	x           int
+	y           int
+	boxWidth    int
+	boxHeight   int
+	inputWidth  int
+	visibleRows int
+	wrapped     []commentDisplayLine
 }
 
 type commentDisplayLine struct {
 	line  int
 	start int
 	end   int
+}
+
+type commentMouseHit struct {
+	docRow     int
+	draftIndex int
+	editor     bool
+	localRow   int
+	localCol   int
 }
 
 type mouseDragState struct {
@@ -331,6 +339,9 @@ func (d *diffViewer) handleKey(key vaxis.Key) (Command, error) {
 	if d.mode == modeInsert && d.editor != nil {
 		return d.handleCommentKey(key), nil
 	}
+	if d.editor != nil {
+		return d.handleCommentNormalKey(key), nil
+	}
 	if d.helpVisible {
 		if keyQuestionMark(key) || key.Matches('q') || key.Matches(vaxis.KeyEsc) || key.MatchString("Esc") {
 			d.helpVisible = false
@@ -489,10 +500,16 @@ func (d *diffViewer) handleKey(key vaxis.Key) (Command, error) {
 		return CommandRedraw, nil
 	case key.Matches('j'), key.Matches(vaxis.KeyDown), key.MatchString("Down"):
 		d.keys.Clear()
+		if d.mode == modeNormal && d.focusAdjacentComment(1) {
+			return CommandRedraw, nil
+		}
 		d.moveCursorRows(1)
 		return CommandRedraw, nil
 	case key.Matches('k'), key.Matches(vaxis.KeyUp), key.MatchString("Up"):
 		d.keys.Clear()
+		if d.mode == modeNormal && d.focusAdjacentComment(-1) {
+			return CommandRedraw, nil
+		}
 		d.moveCursorRows(-1)
 		return CommandRedraw, nil
 	case key.Matches('l'), key.Matches(vaxis.KeyRight):
@@ -549,6 +566,11 @@ func (d *diffViewer) handleKey(key vaxis.Key) (Command, error) {
 }
 
 func (d *diffViewer) handleMouse(mouse vaxis.Mouse) (Command, error) {
+	if d.editor != nil && mouse.Button == vaxis.MouseLeftButton && mouse.EventType == vaxis.EventPress {
+		if _, ok := d.commentMouseHit(mouse); !ok {
+			d.submitReviewComment()
+		}
+	}
 	if d.mode == modeInsert || d.mode == modeCommand || d.mode == modeSearch || d.mode == modeFuzzy {
 		return CommandNone, nil
 	}
@@ -849,20 +871,47 @@ func (d *diffViewer) Paint(win vaxis.Window) {
 	if d.layoutMode == layoutSideBySide {
 		d.paintSideBySide(win)
 	} else {
-		for row, diffRow := range d.visibleRows() {
-			docRow := d.scroll + row
-			d.printRow(win, row, docRow, diffRow, d.codeSegments[docRow], docRow == d.cursor.Row)
-			d.paintSelection(win, row, docRow)
-		}
+		d.paintStackedRows(win)
 	}
 	d.paintStickyFileHeader(win)
 	d.paintCursor(win)
 	d.paintScrollbar(win)
 	d.paintHorizontalScrollbar(win)
-	d.paintCommentEditor(win)
 	d.paintFuzzyFinder(win)
 	d.paintHelpOverlay(win)
 	d.paintStatusBar(win)
+}
+
+func (d *diffViewer) paintStackedRows(win vaxis.Window) {
+	visible := d.visibleRowCapacity()
+	if visible <= 0 || d.scroll >= len(d.rows) {
+		return
+	}
+
+	screenRow := 0
+	for docRow := d.scroll; docRow < len(d.rows) && screenRow < visible; docRow++ {
+		d.printRow(win, screenRow, docRow, d.rows[docRow], d.codeSegments[docRow], docRow == d.cursor.Row)
+		d.paintSelection(win, screenRow, docRow)
+		screenRow++
+		if screenRow >= visible {
+			continue
+		}
+		if d.editor != nil && d.commentEditorTargetRow() == docRow {
+			screenRow += d.paintInlineCommentEditor(win, screenRow, visible-screenRow)
+			if screenRow >= visible {
+				continue
+			}
+		}
+		for _, draft := range d.reviewDraftsEndingAtRow(docRow) {
+			if d.editor != nil && d.editor.draftIndex >= 0 && d.editor.draftIndex < len(d.reviewDrafts) && d.reviewDrafts[d.editor.draftIndex] == draft {
+				continue
+			}
+			screenRow += d.paintReviewDraftBox(win, screenRow, docRow, draft, visible-screenRow)
+			if screenRow >= visible {
+				break
+			}
+		}
+	}
 }
 
 func (d *diffViewer) paintStickyFileHeader(win vaxis.Window) {
@@ -879,6 +928,9 @@ func (d *diffViewer) paintStickyFileHeader(win vaxis.Window) {
 }
 
 func (d *diffViewer) paintCursor(win vaxis.Window) {
+	if d.editor != nil {
+		return
+	}
 	if win.Vx != nil {
 		win.Vx.HideCursor()
 	}
@@ -908,7 +960,7 @@ func (d *diffViewer) cursorScreenPositionForSize(width int, height int) (int, in
 		return 0, 0, false
 	}
 
-	screenRow := d.cursor.Row - d.scroll
+	screenRow := d.screenRowForDocRow(d.cursor.Row, width, height)
 	if screenRow < 0 || screenRow >= d.visibleRowCapacity() || screenRow >= height {
 		return 0, 0, false
 	}
@@ -923,6 +975,34 @@ func (d *diffViewer) cursorScreenPositionForSize(width int, height int) (int, in
 		return 0, 0, false
 	}
 	return screenCol, screenRow, true
+}
+
+func (d *diffViewer) screenRowForDocRow(docRow int, width int, height int) int {
+	if d.layoutMode == layoutSideBySide {
+		rows := d.sideBySideRows()
+		start := d.sideBySideStart(rows)
+		screenRow := 0
+		visible := d.visibleRowCapacity()
+		for index := start; index < len(rows) && screenRow < visible; index++ {
+			if rowContainsDocRow(rows[index], docRow) {
+				return screenRow
+			}
+			screenRow++
+			for _, row := range sideBySideRowCommentDocRows(rows[index]) {
+				screenRow += d.reviewDraftBoxRowsAfterRowForSize(row, width, height)
+			}
+		}
+		return -1
+	}
+	if docRow < d.scroll {
+		return -1
+	}
+	screenRow := 0
+	for row := d.scroll; row < docRow && row < len(d.rows); row++ {
+		screenRow++
+		screenRow += d.reviewDraftBoxRowsAfterRowForSize(row, width, height)
+	}
+	return screenRow
 }
 
 func (d *diffViewer) cursorColumnInViewport(row diff.Row, viewportWidth int) bool {
@@ -1604,8 +1684,8 @@ func (d *diffViewer) fuzzyFinderLayout(width int, height int) (fuzzyFinderLayout
 	}
 	contentHeight := height - 1
 	boxWidth := width - 4
-	if boxWidth > 72 {
-		boxWidth = 72
+	if maxWidth := commentTextMaxWidth + 4; boxWidth > maxWidth {
+		boxWidth = maxWidth
 	}
 	if boxWidth < 12 {
 		return fuzzyFinderLayout{}, false
@@ -1672,6 +1752,37 @@ func (d *diffViewer) paintCommentEditor(win vaxis.Window) {
 	if !ok {
 		return
 	}
+	d.paintCommentEditorWithLayout(win, layout, layout.boxHeight)
+}
+
+func (d *diffViewer) paintInlineCommentEditor(win vaxis.Window, screenRow int, remainingRows int) int {
+	return d.paintInlineCommentEditorInWindow(win, screenRow, remainingRows, false)
+}
+
+func (d *diffViewer) paintInlineCommentEditorInWindow(win vaxis.Window, screenRow int, remainingRows int, localGeometry bool) int {
+	width, height := win.Size()
+	layout, ok := d.commentEditorLayout(width, height)
+	if !ok {
+		return 0
+	}
+	if localGeometry {
+		x, boxWidth, ok := commentBoxGeometryForViewport(width, 0)
+		if !ok {
+			return 0
+		}
+		layout.x = x
+		layout.boxWidth = boxWidth
+		layout.inputWidth = boxWidth - 4
+		layout.wrapped = d.editor.wrappedLines(layout.inputWidth)
+		layout.visibleRows = len(layout.wrapped)
+		layout.boxHeight = layout.visibleRows + 2
+	}
+	layout.y = screenRow
+	d.paintCommentEditorWithLayout(win, layout, remainingRows)
+	return layout.boxHeight
+}
+
+func (d *diffViewer) paintCommentEditorWithLayout(win vaxis.Window, layout commentEditorLayout, remainingRows int) {
 	d.editor.ensureCursorVisible(layout.inputWidth, layout.visibleRows)
 
 	inputStyle := vaxis.Style{
@@ -1679,10 +1790,17 @@ func (d *diffViewer) paintCommentEditor(win vaxis.Window) {
 		Background: blendRGB(d.scheme.Background, d.scheme.Foreground, 0.08),
 	}
 	borderStyle := inputStyle
-	borderStyle.Foreground = d.scheme.Muted
+	borderStyle.Foreground = d.scheme.Yellow
 
-	d.paintCommentBorder(win, layout.x, layout.y, layout.boxWidth, layout.boxHeight, borderStyle)
+	boxHeight := minInt(layout.boxHeight, remainingRows)
+	if boxHeight <= 0 {
+		return
+	}
+	d.paintCommentBorder(win, layout.x, layout.y, layout.boxWidth, boxHeight, borderStyle)
 	for row := 0; row < layout.visibleRows; row++ {
+		if row+2 > boxHeight {
+			break
+		}
 		screenRow := layout.y + 1 + row
 		for col := 0; col < layout.boxWidth-2; col++ {
 			win.SetCell(layout.x+1+col, screenRow, vaxis.Cell{
@@ -1690,19 +1808,169 @@ func (d *diffViewer) paintCommentEditor(win vaxis.Window) {
 				Style:     inputStyle,
 			})
 		}
-		wrappedRow := d.editor.scroll + row
-		if wrappedRow < len(layout.wrapped) {
-			printSegmentsAt(win.New(layout.x+1, screenRow, layout.inputWidth, 1), 0, 0, vaxis.Segment{
-				Text:  layout.wrapped[wrappedRow].text(d.editor.lines),
-				Style: inputStyle,
-			})
+		if row < len(layout.wrapped) {
+			printSegmentsHardClipped(win, layout.x+2, screenRow, layout.inputWidth,
+				d.commentEditorSegments(layout.wrapped[row], inputStyle)...,
+			)
 		}
 	}
-	if layout.showScrollbar {
-		d.paintCommentEditorScrollbar(win, layout, borderStyle)
+	d.paintCommentCursor(win, layout)
+}
+
+func (d *diffViewer) paintReviewDraftBox(win vaxis.Window, screenRow int, docRow int, draft review.CommentDraft, remainingRows int) int {
+	return d.paintReviewDraftBoxInWindow(win, screenRow, docRow, draft, remainingRows, false)
+}
+
+func (d *diffViewer) paintReviewDraftBoxInWindow(win vaxis.Window, screenRow int, docRow int, draft review.CommentDraft, remainingRows int, localGeometry bool) int {
+	width, height := win.Size()
+	if remainingRows <= 0 || screenRow >= height {
+		return d.reviewDraftBoxRowsForSize(docRow, draft, width, height)
+	}
+	layout, ok := d.reviewDraftBoxLayoutForWindow(width, height, docRow, draft, localGeometry)
+	if !ok {
+		return 0
 	}
 
-	d.paintCommentCursor(win, layout)
+	boxStyle := vaxis.Style{
+		Foreground: d.scheme.Foreground,
+		Background: blendRGB(d.scheme.Background, d.scheme.Foreground, 0.06),
+	}
+	borderStyle := boxStyle
+	borderStyle.Foreground = d.scheme.Yellow
+	bodyStyle := boxStyle
+	bodyStyle.Foreground = d.scheme.Foreground
+
+	rowsPainted := 0
+	paintLine := func(text string, style vaxis.Style) {
+		if rowsPainted >= remainingRows {
+			return
+		}
+		printSegmentsHardClipped(win, layout.x, screenRow+rowsPainted, layout.width, vaxis.Segment{Text: text, Style: style})
+		rowsPainted++
+	}
+
+	paintLine(commentBoxTopLine(layout.width), borderStyle)
+	for _, line := range layout.lines {
+		padding := layout.bodyWidth - textCellWidth(line)
+		if padding < 0 {
+			padding = 0
+		}
+		if rowsPainted < remainingRows {
+			row := screenRow + rowsPainted
+			printSegmentsHardClipped(win, layout.x, row, layout.width,
+				vaxis.Segment{Text: "│", Style: borderStyle},
+				vaxis.Segment{Text: " " + line + strings.Repeat(" ", padding) + " ", Style: bodyStyle},
+				vaxis.Segment{Text: "│", Style: borderStyle},
+			)
+			rowsPainted++
+		}
+	}
+	paintLine(commentBoxBottomLine(layout.width), borderStyle)
+	return layout.height
+}
+
+type reviewDraftBoxLayout struct {
+	x         int
+	width     int
+	height    int
+	bodyWidth int
+	lines     []string
+}
+
+func (d *diffViewer) reviewDraftBoxLayout(width int, height int, docRow int, draft review.CommentDraft) (reviewDraftBoxLayout, bool) {
+	return d.reviewDraftBoxLayoutForWindow(width, height, docRow, draft, false)
+}
+
+func (d *diffViewer) reviewDraftBoxLayoutForWindow(width int, height int, docRow int, draft review.CommentDraft, localGeometry bool) (reviewDraftBoxLayout, bool) {
+	var x, boxWidth int
+	var ok bool
+	if localGeometry {
+		x, boxWidth, ok = commentBoxGeometryForViewport(width, 0)
+	} else {
+		x, boxWidth, ok = d.commentBoxGeometry(width, height, docRow)
+	}
+	if !ok {
+		return reviewDraftBoxLayout{}, false
+	}
+	bodyWidth := boxWidth - 4
+	if bodyWidth < 1 {
+		return reviewDraftBoxLayout{}, false
+	}
+	lines := commentBodyDisplayLines(draft.Body, bodyWidth)
+	return reviewDraftBoxLayout{
+		x:         x,
+		width:     boxWidth,
+		height:    len(lines) + 2,
+		bodyWidth: bodyWidth,
+		lines:     lines,
+	}, true
+}
+
+func (d *diffViewer) reviewDraftBoxRowsForSize(docRow int, draft review.CommentDraft, width int, height int) int {
+	layout, ok := d.reviewDraftBoxLayout(width, height, docRow, draft)
+	if !ok {
+		return 0
+	}
+	return layout.height
+}
+
+func (d *diffViewer) reviewDraftBoxRowsAfterRowForSize(row int, width int, height int) int {
+	rows := 0
+	if d.editor != nil && d.commentEditorTargetRow() == row {
+		rows += d.commentEditorHeightForSize(width, height)
+	}
+	for _, draft := range d.reviewDraftsEndingAtRow(row) {
+		if d.editor != nil && d.editor.draftIndex >= 0 && d.editor.draftIndex < len(d.reviewDrafts) && d.reviewDrafts[d.editor.draftIndex] == draft {
+			continue
+		}
+		rows += d.reviewDraftBoxRowsForSize(row, draft, width, height)
+	}
+	return rows
+}
+
+func commentBoxTopLine(width int) string {
+	return "╭" + strings.Repeat("─", maxInt(0, width-2)) + "╮"
+}
+
+func commentBoxBottomLine(width int) string {
+	return "╰" + strings.Repeat("─", maxInt(0, width-2)) + "╯"
+}
+
+func commentBodyDisplayLines(body string, width int) []string {
+	lines := make([]string, 0, 1)
+	for _, line := range commentLines(body) {
+		lines = append(lines, wrapCommentBodyLine(line, width)...)
+	}
+	if len(lines) == 0 {
+		lines = append(lines, "")
+	}
+	return lines
+}
+
+func wrapCommentBodyLine(text string, width int) []string {
+	if width <= 0 {
+		return nil
+	}
+	if text == "" {
+		return []string{""}
+	}
+	var lines []string
+	var b strings.Builder
+	lineWidth := 0
+	it := uucode.NewGraphemeIterator(text)
+	for g, ok := it.Next(); ok; g, ok = it.Next() {
+		cluster := text[g.Start:g.End]
+		clusterWidth := graphemeCellWidth(cluster)
+		if lineWidth > 0 && lineWidth+clusterWidth > width {
+			lines = append(lines, b.String())
+			b.Reset()
+			lineWidth = 0
+		}
+		b.WriteString(cluster)
+		lineWidth += clusterWidth
+	}
+	lines = append(lines, b.String())
+	return lines
 }
 
 func (d *diffViewer) commentEditorRect(width int, height int) (int, int, int, int, bool) {
@@ -1718,70 +1986,77 @@ func (d *diffViewer) commentEditorLayout(width int, height int) (commentEditorLa
 		return commentEditorLayout{}, false
 	}
 
-	screenCol, screenRow, ok := d.cursorScreenPositionForSize(width, height)
-	if !ok {
+	targetRow := d.commentEditorTargetRow()
+	if targetRow < 0 {
+		return commentEditorLayout{}, false
+	}
+	screenRow := d.screenRowForDocRow(targetRow, width, height)
+	if screenRow < 0 || screenRow >= d.visibleRowCapacity() || screenRow >= height {
 		return commentEditorLayout{}, false
 	}
 
-	verticalVisible, _ := d.scrollbarVisibility(width, height)
-	viewportWidth := horizontalViewportWidth(width, verticalVisible)
-	boxWidth := minInt(viewportWidth, 72)
-	if viewportWidth > 4 {
-		boxWidth = minInt(viewportWidth-4, 72)
-	}
-	if boxWidth < 4 {
-		boxWidth = viewportWidth
+	x, boxWidth, ok := d.commentBoxGeometry(width, height, targetRow)
+	if !ok {
+		return commentEditorLayout{}, false
 	}
 	if boxWidth < 3 {
 		return commentEditorLayout{}, false
 	}
 
-	x := screenCol
-	if x+boxWidth > viewportWidth {
-		x = viewportWidth - boxWidth
-	}
-	if x < 0 {
-		x = 0
-	}
 	y := screenRow + 1
 
-	inputWidth := boxWidth - 2
+	inputWidth := boxWidth - 4
 	if inputWidth < 1 {
 		return commentEditorLayout{}, false
 	}
 	wrapped := d.editor.wrappedLines(inputWidth)
-	visibleRows := commentEditorVisibleRows(len(wrapped), height)
-	showScrollbar := len(wrapped) > visibleRows && inputWidth > 1
-	if showScrollbar {
-		inputWidth--
-		wrapped = d.editor.wrappedLines(inputWidth)
-		visibleRows = commentEditorVisibleRows(len(wrapped), height)
-	}
+	visibleRows := len(wrapped)
 	if visibleRows < 1 {
 		return commentEditorLayout{}, false
 	}
 	return commentEditorLayout{
-		x:             x,
-		y:             y,
-		boxWidth:      boxWidth,
-		boxHeight:     visibleRows + 2,
-		inputWidth:    inputWidth,
-		visibleRows:   visibleRows,
-		showScrollbar: showScrollbar,
-		wrapped:       wrapped,
+		x:           x,
+		y:           y,
+		boxWidth:    boxWidth,
+		boxHeight:   visibleRows + 2,
+		inputWidth:  inputWidth,
+		visibleRows: visibleRows,
+		wrapped:     wrapped,
 	}, true
 }
 
-func commentEditorVisibleRows(wrappedRows int, height int) int {
-	rows := wrappedRows
-	if rows < 1 {
-		rows = 1
+func (d *diffViewer) commentBoxGeometry(width int, height int, docRow int) (int, int, bool) {
+	verticalVisible, _ := d.scrollbarVisibility(width, height)
+	viewportWidth := horizontalViewportWidth(width, verticalVisible)
+	x := 0
+	if docRow >= 0 && docRow < len(d.rows) {
+		x = d.codeOffset(d.rows[docRow])
 	}
-	rows = minInt(rows, commentEditorMaxRows)
-	if maxRows := height - 2; rows > maxRows {
-		rows = maxRows
+	return commentBoxGeometryForViewport(viewportWidth, x)
+}
+
+func commentBoxGeometryForViewport(viewportWidth int, x int) (int, int, bool) {
+	if viewportWidth < 8 {
+		return 0, 0, false
 	}
-	return rows
+	if x < 0 {
+		x = 0
+	}
+	if x >= viewportWidth {
+		x = viewportWidth - 1
+	}
+	boxWidth := viewportWidth - x
+	if maxWidth := commentTextMaxWidth + 4; boxWidth > maxWidth {
+		boxWidth = maxWidth
+	}
+	if boxWidth < 8 {
+		x = maxInt(0, viewportWidth-8)
+		boxWidth = viewportWidth - x
+	}
+	if boxWidth < 3 {
+		return 0, 0, false
+	}
+	return x, boxWidth, true
 }
 
 func (d *diffViewer) paintCommentBorder(win vaxis.Window, x int, y int, width int, height int, style vaxis.Style) {
@@ -1805,36 +2080,15 @@ func (d *diffViewer) paintCommentBorder(win vaxis.Window, x int, y int, width in
 	}
 }
 
-func (d *diffViewer) paintCommentEditorScrollbar(win vaxis.Window, layout commentEditorLayout, style vaxis.Style) {
-	if !layout.showScrollbar || len(layout.wrapped) <= layout.visibleRows {
-		return
-	}
-	bar := scrollbar{
-		Length: layout.visibleRows,
-		Size:   maxInt(1, (layout.visibleRows*layout.visibleRows)/len(layout.wrapped)),
-		Thumb:  0,
-	}
-	if maxOffset := len(layout.wrapped) - layout.visibleRows; maxOffset > 0 {
-		bar.Thumb = (d.editor.scroll * (layout.visibleRows - bar.Size)) / maxOffset
-	}
-	col := layout.x + 1 + layout.inputWidth
-	for row := bar.Thumb; row < bar.Thumb+bar.Size && row < layout.visibleRows; row++ {
-		win.SetCell(col, layout.y+1+row, vaxis.Cell{
-			Character: vaxis.Character{Grapheme: verticalScrollbarThumb, Width: 1},
-			Style:     style,
-		})
-	}
-}
-
 func (d *diffViewer) paintCommentCursor(win vaxis.Window, layout commentEditorLayout) {
-	if d.mode != modeInsert {
+	if d.editor == nil {
 		return
 	}
 	visualRow, col, ok := d.editor.cursorDisplayPosition(layout.inputWidth)
 	if !ok {
 		return
 	}
-	screenRow := visualRow - d.editor.scroll
+	screenRow := visualRow
 	if screenRow < 0 || screenRow >= layout.visibleRows {
 		return
 	}
@@ -1842,8 +2096,71 @@ func (d *diffViewer) paintCommentCursor(win vaxis.Window, layout commentEditorLa
 		return
 	}
 	if win.Vx != nil {
-		win.ShowCursor(layout.x+1+col, layout.y+1+screenRow, vaxis.CursorBeam)
+		style := vaxis.CursorStyle(vaxis.CursorBlock)
+		if d.mode == modeInsert {
+			style = vaxis.CursorBeam
+		}
+		win.ShowCursor(layout.x+2+col, layout.y+1+screenRow, style)
 	}
+}
+
+func (d *diffViewer) commentEditorSegments(line commentDisplayLine, style vaxis.Style) []vaxis.Segment {
+	text := line.text(d.editor.lines)
+	if text == "" && d.commentDisplayLineSelected(line) {
+		return []vaxis.Segment{{Text: " ", Style: d.selectionStyle()}}
+	}
+	segments := []vaxis.Segment{{Text: text, Style: style}}
+	start, end, ok := d.commentSelectionRangeForLine(line)
+	if !ok {
+		return segments
+	}
+	runes := []rune(d.editor.lines[line.line])
+	if start < line.start {
+		start = line.start
+	}
+	if end > line.end {
+		end = line.end
+	}
+	if start >= end {
+		return segments
+	}
+	startCell := textCellWidth(string(runes[line.start:start]))
+	endCell := textCellWidth(string(runes[line.start:end]))
+	return styleSegmentsRangeFull(segments, startCell, endCell, d.selectionStyle())
+}
+
+func (d *diffViewer) commentDisplayLineSelected(line commentDisplayLine) bool {
+	start, end, ok := d.commentSelectionRangeForLine(line)
+	return ok && start == 0 && end == 0
+}
+
+func (d *diffViewer) commentSelectionRangeForLine(line commentDisplayLine) (int, int, bool) {
+	if !d.commentSelection.Active || d.editor == nil || line.line < 0 || line.line >= len(d.editor.lines) {
+		return 0, 0, false
+	}
+	start, end, ok := selectionRange(d.commentSelection)
+	if !ok || line.line < start.Row || line.line > end.Row {
+		return 0, 0, false
+	}
+	lineLen := utf8.RuneCountInString(d.editor.lines[line.line])
+	if d.mode == modeVisualLine {
+		return 0, lineLen, true
+	}
+	startCol := 0
+	endCol := lineLen
+	if line.line == start.Row {
+		startCol = start.Col
+	}
+	if line.line == end.Row {
+		endCol = end.Col + 1
+	}
+	if startCol < 0 {
+		startCol = 0
+	}
+	if endCol > lineLen {
+		endCol = lineLen
+	}
+	return startCol, endCol, startCol < endCol
 }
 
 func (d *diffViewer) statusFillStyle() vaxis.Style {
@@ -1920,6 +2237,9 @@ func (d *diffViewer) statusColor() vaxis.Color {
 }
 
 func (d *diffViewer) modeLabel() string {
+	if d.editor != nil && d.mode == modeNormal {
+		return "COMMENT"
+	}
 	switch d.mode {
 	case modeVisual:
 		return "VISUAL"
@@ -2158,25 +2478,76 @@ func (d *diffViewer) paintSideBySide(win vaxis.Window) {
 	leftWidth, rightStart, rightWidth := d.sideBySidePaneGeometry(win)
 	separatorStyle := vaxis.Style{Foreground: d.scheme.Muted, Background: d.scheme.Background}
 
-	for screenRow, sideRow := range rows[start:end] {
+	screenRow := 0
+	for index := start; index < end && screenRow < visible; index++ {
+		sideRow := rows[index]
 		if sideRow.Full >= 0 {
 			docRow := sideRow.Full
 			d.printRow(win, screenRow, docRow, d.rows[docRow], d.codeSegments[docRow], docRow == d.cursor.Row)
-			continue
+		} else {
+			if leftWidth > 0 {
+				d.printSideBySideCell(win.New(0, screenRow, leftWidth, 1), sideRow.Left, sideLeft, sideRow.Left == d.cursor.Row)
+			}
+			if rightStart > 0 {
+				win.SetCell(rightStart-1, screenRow, vaxis.Cell{
+					Character: vaxis.Character{Grapheme: " ", Width: 1},
+					Style:     separatorStyle,
+				})
+			}
+			if rightWidth > 0 {
+				d.printSideBySideCell(win.New(rightStart, screenRow, rightWidth, 1), sideRow.Right, sideRight, sideRow.Right == d.cursor.Row)
+			}
 		}
-		if leftWidth > 0 {
-			d.printSideBySideCell(win.New(0, screenRow, leftWidth, 1), sideRow.Left, sideLeft, sideRow.Left == d.cursor.Row)
-		}
-		if rightStart > 0 {
-			win.SetCell(rightStart-1, screenRow, vaxis.Cell{
-				Character: vaxis.Character{Grapheme: " ", Width: 1},
-				Style:     separatorStyle,
-			})
-		}
-		if rightWidth > 0 {
-			d.printSideBySideCell(win.New(rightStart, screenRow, rightWidth, 1), sideRow.Right, sideRight, sideRow.Right == d.cursor.Row)
+		screenRow++
+		for _, docRow := range sideBySideRowCommentDocRows(sideRow) {
+			screenRow += d.paintSideBySideCommentRowsAfterDocRow(win, screenRow, docRow, visible-screenRow)
+			if screenRow >= visible {
+				break
+			}
 		}
 	}
+}
+
+func (d *diffViewer) paintSideBySideCommentRowsAfterDocRow(win vaxis.Window, screenRow int, docRow int, remainingRows int) int {
+	side := d.commentSideForDocRow(docRow)
+	leftWidth, rightStart, rightWidth := d.sideBySidePaneGeometry(win)
+	x := 0
+	width := leftWidth
+	if side == sideRight {
+		x = rightStart
+		width = rightWidth
+	}
+	if width <= 0 {
+		return 0
+	}
+	return d.paintCommentRowsAfterDocRowInWindow(win.New(x, 0, width, -1), screenRow, docRow, remainingRows, true)
+}
+
+func (d *diffViewer) paintCommentRowsAfterDocRow(win vaxis.Window, screenRow int, docRow int, remainingRows int) int {
+	return d.paintCommentRowsAfterDocRowInWindow(win, screenRow, docRow, remainingRows, false)
+}
+
+func (d *diffViewer) paintCommentRowsAfterDocRowInWindow(win vaxis.Window, screenRow int, docRow int, remainingRows int, localGeometry bool) int {
+	if remainingRows <= 0 {
+		return 0
+	}
+	rows := 0
+	if d.editor != nil && d.commentEditorTargetRow() == docRow {
+		rows += d.paintInlineCommentEditorInWindow(win, screenRow+rows, remainingRows-rows, localGeometry)
+		if rows >= remainingRows {
+			return rows
+		}
+	}
+	for _, draft := range d.reviewDraftsEndingAtRow(docRow) {
+		if d.editor != nil && d.editor.draftIndex >= 0 && d.editor.draftIndex < len(d.reviewDrafts) && d.reviewDrafts[d.editor.draftIndex] == draft {
+			continue
+		}
+		rows += d.paintReviewDraftBoxInWindow(win, screenRow+rows, docRow, draft, remainingRows-rows, localGeometry)
+		if rows >= remainingRows {
+			break
+		}
+	}
+	return rows
 }
 
 type diffSide int
@@ -2349,6 +2720,42 @@ func rowContainsDocRow(row sideBySideRow, docRow int) bool {
 	return row.Full == docRow || row.Left == docRow || row.Right == docRow
 }
 
+func sideBySideRowCommentDocRows(row sideBySideRow) []int {
+	rows := make([]int, 0, 2)
+	for _, docRow := range []int{row.Full, row.Left, row.Right} {
+		if docRow < 0 {
+			continue
+		}
+		seen := false
+		for _, existing := range rows {
+			if existing == docRow {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			rows = append(rows, docRow)
+		}
+	}
+	return rows
+}
+
+func (d *diffViewer) commentSideForDocRow(docRow int) diffSide {
+	if docRow < 0 || docRow >= len(d.rows) {
+		return sideRight
+	}
+	switch d.rows[docRow].Review.Side {
+	case review.SideLeft:
+		return sideLeft
+	case review.SideRight:
+		return sideRight
+	}
+	if d.rows[docRow].Kind == diff.RowDelete {
+		return sideLeft
+	}
+	return sideRight
+}
+
 func sideBySideRowFirstDoc(row sideBySideRow) int {
 	first := -1
 	for _, docRow := range []int{row.Full, row.Left, row.Right} {
@@ -2367,8 +2774,13 @@ func (d *diffViewer) sideBySideCursorScreenPosition(width int, height int) (int,
 	start := d.sideBySideStart(rows)
 	visible := d.visibleRowCapacity()
 	leftWidth, rightStart, _ := d.sideBySidePaneGeometry(vaxis.Window{Width: width, Height: height})
-	for index := start; index < len(rows) && index < start+visible; index++ {
+	screenRow := 0
+	for index := start; index < len(rows) && screenRow < visible; index++ {
 		if !rowContainsDocRow(rows[index], d.cursor.Row) {
+			screenRow++
+			for _, row := range sideBySideRowCommentDocRows(rows[index]) {
+				screenRow += d.reviewDraftBoxRowsAfterRowForSize(row, width, height)
+			}
 			continue
 		}
 		if rows[index].Full == d.cursor.Row {
@@ -2376,7 +2788,7 @@ func (d *diffViewer) sideBySideCursorScreenPosition(width int, height int) (int,
 			if screenCol < 0 || screenCol >= width {
 				return 0, 0, false
 			}
-			return screenCol, index - start, true
+			return screenCol, screenRow, true
 		}
 		side := sideForRow(d.rows[d.cursor.Row])
 		paneStart := 0
@@ -2393,7 +2805,7 @@ func (d *diffViewer) sideBySideCursorScreenPosition(width int, height int) (int,
 		if screenCol < paneStart || screenCol >= paneStart+paneWidth || screenCol >= width {
 			return 0, 0, false
 		}
-		return screenCol, index - start, true
+		return screenCol, screenRow, true
 	}
 	return 0, 0, false
 }
@@ -2766,6 +3178,10 @@ func (d *diffViewer) paintHorizontalScrollbar(win vaxis.Window) {
 }
 
 func (d *diffViewer) startSelection(mouse vaxis.Mouse) Command {
+	if hit, ok := d.commentMouseHit(mouse); ok {
+		return d.focusCommentMouseHit(hit)
+	}
+
 	point, ok := d.selectionPoint(mouse)
 	if !ok {
 		d.keys.Clear()
@@ -3092,7 +3508,33 @@ func (d *diffViewer) mouseDocumentRow(mouse vaxis.Mouse) int {
 		}
 		return row
 	}
-	return d.scroll + mouse.Row
+	return d.stackedMouseDocumentRow(mouse)
+}
+
+func (d *diffViewer) stackedMouseDocumentRow(mouse vaxis.Mouse) int {
+	if mouse.Row < 0 || mouse.Row >= d.visibleRowCapacity() {
+		return -1
+	}
+	screenRow := 0
+	for docRow := d.scroll; docRow < len(d.rows) && screenRow < d.visibleRowCapacity(); docRow++ {
+		if mouse.Row == screenRow {
+			return docRow
+		}
+		screenRow++
+		if d.editor != nil && d.commentEditorTargetRow() == docRow {
+			screenRow += d.commentEditorHeightForSize(d.width, d.height)
+		}
+		for index, draft := range d.reviewDrafts {
+			if !reviewDraftEndsAt(draft, d.rows[docRow].Review) {
+				continue
+			}
+			if d.editor != nil && d.editor.draftIndex == index {
+				continue
+			}
+			screenRow += d.reviewDraftBoxRowsForSize(docRow, draft, d.width, d.height)
+		}
+	}
+	return -1
 }
 
 func (d *diffViewer) sideBySideSelectionPoint(mouse vaxis.Mouse) (selectionPoint, bool) {
@@ -3161,6 +3603,89 @@ func (d *diffViewer) sideBySideMouseCell(mouse vaxis.Mouse) (docRow int, localCo
 	localCol = mouse.Col - paneStart
 	codeOffset = textCellWidth(d.sideBySideGutter(d.rows[docRow], side))
 	return docRow, localCol, codeOffset, true
+}
+
+func (d *diffViewer) commentMouseHit(mouse vaxis.Mouse) (commentMouseHit, bool) {
+	if d.layoutMode == layoutSideBySide || mouse.Row < 0 || mouse.Row >= d.visibleRowCapacity() {
+		return commentMouseHit{}, false
+	}
+
+	screenRow := 0
+	for docRow := d.scroll; docRow < len(d.rows) && screenRow < d.visibleRowCapacity(); docRow++ {
+		screenRow++
+		if d.editor != nil && d.commentEditorTargetRow() == docRow {
+			layout, ok := d.commentEditorLayout(d.width, d.height)
+			if ok {
+				layout.y = screenRow
+				if mouseInBox(mouse, layout.x, layout.y, layout.boxWidth, layout.boxHeight) {
+					return commentMouseHit{
+						docRow:   docRow,
+						editor:   true,
+						localRow: mouse.Row - layout.y,
+						localCol: mouse.Col - layout.x,
+					}, true
+				}
+				screenRow += layout.boxHeight
+			}
+		}
+		for index, draft := range d.reviewDrafts {
+			if !reviewDraftEndsAt(draft, d.rows[docRow].Review) {
+				continue
+			}
+			if d.editor != nil && d.editor.draftIndex == index {
+				continue
+			}
+			layout, ok := d.reviewDraftBoxLayout(d.width, d.height, docRow, draft)
+			if !ok {
+				continue
+			}
+			if mouseInBox(mouse, layout.x, screenRow, layout.width, layout.height) {
+				return commentMouseHit{
+					docRow:     docRow,
+					draftIndex: index,
+					localRow:   mouse.Row - screenRow,
+					localCol:   mouse.Col - layout.x,
+				}, true
+			}
+			screenRow += layout.height
+		}
+	}
+	return commentMouseHit{}, false
+}
+
+func mouseInBox(mouse vaxis.Mouse, x int, y int, width int, height int) bool {
+	return mouse.Row >= y && mouse.Row < y+height &&
+		mouse.Col >= x && mouse.Col < x+width
+}
+
+func (d *diffViewer) focusCommentMouseHit(hit commentMouseHit) Command {
+	d.keys.Clear()
+	d.exitVisualMode()
+	if hit.editor {
+		d.setCommentEditorCursorFromBox(hit.localRow, hit.localCol)
+		d.mode = modeNormal
+		return d.handleCommentClickAtCursor()
+	}
+	if !d.openReviewCommentEditorAtIndex(hit.draftIndex) {
+		return CommandNone
+	}
+	d.mode = modeNormal
+	d.setCommentEditorCursorFromBox(hit.localRow, hit.localCol)
+	return d.handleCommentClickAtCursor()
+}
+
+func (d *diffViewer) handleCommentClickAtCursor() Command {
+	switch d.registerClick(selectionPoint{Row: d.editor.row, Col: d.editor.col}, time.Now()) {
+	case 2:
+		d.selectCommentTokenAtCursor()
+	case 3:
+		d.selectCommentLineAtCursor()
+	default:
+		d.commentSelection = textSelection{}
+	}
+	d.syncCommentEditorScroll()
+	d.ensureCursorVisible()
+	return CommandRedraw
 }
 
 func (d *diffViewer) dragAnchor(point selectionPoint) selectionPoint {
@@ -3540,7 +4065,35 @@ func (d *diffViewer) openReviewCommentEditor() bool {
 	}
 	d.editor.row = len(d.editor.lines) - 1
 	d.editor.col = utf8.RuneCountInString(d.editor.lines[d.editor.row])
+	d.commentSelection = textSelection{}
 	d.mode = modeInsert
+	d.syncCommentEditorScroll()
+	d.ensureCursorVisible()
+	return true
+}
+
+func (d *diffViewer) openReviewCommentEditorAtIndex(index int) bool {
+	if index < 0 || index >= len(d.reviewDrafts) {
+		return false
+	}
+	draft := d.reviewDrafts[index]
+	d.editor = &commentEditor{
+		draft:      draft,
+		draftIndex: index,
+		lines:      commentLines(draft.Body),
+	}
+	d.editor.row = 0
+	d.editor.col = 0
+	d.commentSelection = textSelection{}
+	if targetRow := d.commentEditorTargetRow(); targetRow >= 0 {
+		col := 0
+		if start, _, ok := d.codeRange(d.rows[targetRow]); ok {
+			col = start
+		}
+		d.cursor = selectionPoint{Row: targetRow, Col: col}
+		d.cursorGoal = col
+	}
+	d.mode = modeNormal
 	d.syncCommentEditorScroll()
 	d.ensureCursorVisible()
 	return true
@@ -3550,15 +4103,18 @@ func (d *diffViewer) handleCommentKey(key vaxis.Key) Command {
 	command := CommandNone
 	switch {
 	case key.Matches(vaxis.KeyEsc), key.MatchString("Esc"):
-		d.submitReviewComment()
+		d.mode = modeNormal
 		return CommandRedraw
 	case key.Matches(vaxis.KeyEnter), key.Keycode == vaxis.KeyEnter:
+		d.commentSelection = textSelection{}
 		d.editor.insertLine()
 		command = CommandRedraw
 	case key.Matches(vaxis.KeyBackspace), key.Keycode == vaxis.KeyBackspace, key.Matches('h', vaxis.ModCtrl):
+		d.commentSelection = textSelection{}
 		d.editor.backspace()
 		command = CommandRedraw
 	case key.Matches(vaxis.KeyDelete):
+		d.commentSelection = textSelection{}
 		d.editor.deleteForward()
 		command = CommandRedraw
 	case key.Matches(vaxis.KeyLeft):
@@ -3574,11 +4130,133 @@ func (d *diffViewer) handleCommentKey(key vaxis.Key) Command {
 		d.moveCommentEditorDisplayRow(1)
 		command = CommandRedraw
 	case key.Text != "" && key.Modifiers&(vaxis.ModCtrl|vaxis.ModAlt|vaxis.ModSuper) == 0:
+		d.commentSelection = textSelection{}
 		if d.editor.insertText(key.Text) {
 			command = CommandRedraw
 		}
 	}
 	if command == CommandRedraw {
+		d.syncCommentEditorScroll()
+		d.ensureCursorVisible()
+	}
+	return command
+}
+
+func (d *diffViewer) handleCommentNormalKey(key vaxis.Key) Command {
+	d.keys.ClearExpired(time.Now())
+	command := CommandNone
+	switch {
+	case key.Matches(vaxis.KeyEsc), key.MatchString("Esc"):
+		if d.commentSelection.Active {
+			d.commentSelection = textSelection{}
+			d.mode = modeNormal
+			return CommandRedraw
+		}
+		d.submitReviewComment()
+		return CommandRedraw
+	case key.Matches(':'):
+		d.enterCommandMode()
+		return CommandRedraw
+	case key.Matches('v'):
+		d.toggleCommentVisualMode(modeVisual)
+		return CommandRedraw
+	case key.Matches('V'):
+		d.toggleCommentVisualMode(modeVisualLine)
+		return CommandRedraw
+	case key.Matches('y'), key.Matches(vaxis.KeyCopy), key.Matches('c', vaxis.ModSuper):
+		if d.prepareCommentYank() {
+			return CommandCopy
+		}
+		return CommandNone
+	case key.Matches('i'):
+		d.commentSelection = textSelection{}
+		d.mode = modeInsert
+		return CommandRedraw
+	case key.Matches('I'):
+		d.commentSelection = textSelection{}
+		d.editor.col = 0
+		d.mode = modeInsert
+		command = CommandRedraw
+	case key.Matches('a'):
+		d.commentSelection = textSelection{}
+		d.editor.moveCol(1)
+		d.mode = modeInsert
+		command = CommandRedraw
+	case key.Matches('A'):
+		d.commentSelection = textSelection{}
+		d.editor.col = utf8.RuneCountInString(d.editor.lines[d.editor.row])
+		d.mode = modeInsert
+		command = CommandRedraw
+	case key.Matches('o'):
+		d.commentSelection = textSelection{}
+		d.editor.row++
+		d.editor.lines = append(d.editor.lines, "")
+		copy(d.editor.lines[d.editor.row+1:], d.editor.lines[d.editor.row:])
+		d.editor.lines[d.editor.row] = ""
+		d.editor.col = 0
+		d.mode = modeInsert
+		command = CommandRedraw
+	case key.Matches('O'):
+		d.commentSelection = textSelection{}
+		d.editor.lines = append(d.editor.lines, "")
+		copy(d.editor.lines[d.editor.row+1:], d.editor.lines[d.editor.row:])
+		d.editor.lines[d.editor.row] = ""
+		d.editor.col = 0
+		d.mode = modeInsert
+		command = CommandRedraw
+	case key.Matches('h'), key.Matches(vaxis.KeyLeft):
+		d.editor.moveCol(-1)
+		command = CommandRedraw
+	case key.Matches('l'), key.Matches(vaxis.KeyRight):
+		d.editor.moveCol(1)
+		command = CommandRedraw
+	case key.Matches('j'), key.Matches(vaxis.KeyDown), key.MatchString("Down"):
+		if d.mode == modeNormal && d.commentEditorAtDisplayEdge(1) {
+			return d.leaveCommentEditor(1)
+		}
+		d.moveCommentEditorDisplayRow(1)
+		command = CommandRedraw
+	case key.Matches('k'), key.Matches(vaxis.KeyUp), key.MatchString("Up"):
+		if d.mode == modeNormal && d.commentEditorAtDisplayEdge(-1) {
+			return d.leaveCommentEditor(-1)
+		}
+		d.moveCommentEditorDisplayRow(-1)
+		command = CommandRedraw
+	case key.Matches('0'), key.Matches(vaxis.KeyHome):
+		d.editor.col = 0
+		command = CommandRedraw
+	case key.Matches('$'), key.Matches(vaxis.KeyEnd):
+		d.editor.col = utf8.RuneCountInString(d.editor.lines[d.editor.row])
+		command = CommandRedraw
+	case key.Matches('x'), key.Matches(vaxis.KeyDelete):
+		d.commentSelection = textSelection{}
+		d.editor.deleteForward()
+		command = CommandRedraw
+	case key.Matches(vaxis.KeyBackspace), key.Matches('h', vaxis.ModCtrl):
+		d.commentSelection = textSelection{}
+		d.editor.backspace()
+		command = CommandRedraw
+	case key.Matches('d'):
+		if d.commentSelection.Active {
+			d.deleteCommentSelection()
+			command = CommandRedraw
+			break
+		}
+		if d.keys.Pending() == "d" {
+			d.keys.Clear()
+			d.commentSelection = textSelection{}
+			d.editor.deleteLine()
+			command = CommandRedraw
+			break
+		}
+		d.keys.Set("d", time.Now())
+		return CommandNone
+	default:
+		d.keys.Clear()
+	}
+	if command == CommandRedraw {
+		d.updateCommentVisualSelection()
+		d.keys.Clear()
 		d.syncCommentEditorScroll()
 		d.ensureCursorVisible()
 	}
@@ -3592,6 +4270,211 @@ func (d *diffViewer) moveCommentEditorDisplayRow(delta int) {
 		return
 	}
 	d.editor.moveDisplayRow(delta, layout.inputWidth)
+}
+
+func (d *diffViewer) toggleCommentVisualMode(mode viewMode) {
+	if d.mode == mode && d.commentSelection.Active {
+		d.commentSelection = textSelection{}
+		d.mode = modeNormal
+		return
+	}
+	d.mode = mode
+	point := selectionPoint{Row: d.editor.row, Col: d.editor.col}
+	d.commentSelection = textSelection{
+		Active: true,
+		Anchor: point,
+		Cursor: point,
+	}
+}
+
+func (d *diffViewer) updateCommentVisualSelection() {
+	if d.editor == nil || !d.commentSelection.Active {
+		return
+	}
+	if d.mode != modeVisual && d.mode != modeVisualLine {
+		return
+	}
+	d.commentSelection.Cursor = selectionPoint{Row: d.editor.row, Col: d.editor.col}
+}
+
+func (d *diffViewer) selectCommentTokenAtCursor() {
+	if d.editor == nil || d.editor.row < 0 || d.editor.row >= len(d.editor.lines) {
+		return
+	}
+	line := d.editor.lines[d.editor.row]
+	startCell, endCell := tokenRangeAt(line, textCellWidth(string([]rune(line)[:minInt(d.editor.col, utf8.RuneCountInString(line))])))
+	start := runeColumnAtCell(line, startCell)
+	end := runeColumnAtCell(line, endCell)
+	if end <= start {
+		end = start + 1
+	}
+	lineLen := utf8.RuneCountInString(line)
+	if end > lineLen {
+		end = lineLen
+	}
+	d.mode = modeVisual
+	d.commentSelection = textSelection{
+		Active: true,
+		Anchor: selectionPoint{Row: d.editor.row, Col: start},
+		Cursor: selectionPoint{Row: d.editor.row, Col: maxInt(start, end-1)},
+	}
+	d.editor.col = maxInt(start, end-1)
+}
+
+func (d *diffViewer) selectCommentLineAtCursor() {
+	if d.editor == nil || d.editor.row < 0 || d.editor.row >= len(d.editor.lines) {
+		return
+	}
+	lineLen := utf8.RuneCountInString(d.editor.lines[d.editor.row])
+	d.mode = modeVisualLine
+	d.commentSelection = textSelection{
+		Active: true,
+		Anchor: selectionPoint{Row: d.editor.row, Col: 0},
+		Cursor: selectionPoint{Row: d.editor.row, Col: maxInt(0, lineLen-1)},
+	}
+	d.editor.col = maxInt(0, lineLen-1)
+}
+
+func (d *diffViewer) prepareCommentYank() bool {
+	text := d.commentSelectionText()
+	if text == "" {
+		return false
+	}
+	d.clipboardText = text
+	d.commentSelection = textSelection{}
+	d.mode = modeNormal
+	d.yankUntil = time.Now().Add(yankHighlightDuration)
+	return true
+}
+
+func (d *diffViewer) commentSelectionText() string {
+	if d.editor == nil || !d.commentSelection.Active {
+		return ""
+	}
+	start, end, ok := selectionRange(d.commentSelection)
+	if !ok {
+		return ""
+	}
+	var text strings.Builder
+	for row := start.Row; row <= end.Row && row < len(d.editor.lines); row++ {
+		if row < 0 {
+			continue
+		}
+		if text.Len() > 0 {
+			text.WriteByte('\n')
+		}
+		line := []rune(d.editor.lines[row])
+		startCol := 0
+		endCol := len(line)
+		if d.mode != modeVisualLine {
+			if row == start.Row {
+				startCol = start.Col
+			}
+			if row == end.Row {
+				endCol = end.Col + 1
+			}
+		}
+		startCol = maxInt(0, minInt(startCol, len(line)))
+		endCol = maxInt(startCol, minInt(endCol, len(line)))
+		text.WriteString(string(line[startCol:endCol]))
+	}
+	return text.String()
+}
+
+func (d *diffViewer) deleteCommentSelection() {
+	if d.editor == nil || !d.commentSelection.Active {
+		return
+	}
+	start, end, ok := selectionRange(d.commentSelection)
+	if !ok {
+		return
+	}
+	if start.Row < 0 {
+		start.Row = 0
+	}
+	if end.Row >= len(d.editor.lines) {
+		end.Row = len(d.editor.lines) - 1
+	}
+	if start.Row > end.Row || start.Row < 0 || start.Row >= len(d.editor.lines) {
+		d.commentSelection = textSelection{}
+		d.mode = modeNormal
+		return
+	}
+
+	if d.mode == modeVisualLine {
+		d.editor.lines = append(d.editor.lines[:start.Row], d.editor.lines[end.Row+1:]...)
+		if len(d.editor.lines) == 0 {
+			d.editor.lines = []string{""}
+		}
+		d.editor.row = minInt(start.Row, len(d.editor.lines)-1)
+		d.editor.col = 0
+		d.commentSelection = textSelection{}
+		d.mode = modeNormal
+		return
+	}
+
+	if start.Row == end.Row {
+		line := []rune(d.editor.lines[start.Row])
+		start.Col = maxInt(0, minInt(start.Col, len(line)))
+		end.Col = maxInt(start.Col, minInt(end.Col, len(line)))
+		d.editor.lines[start.Row] = string(append(line[:start.Col], line[end.Col:]...))
+		d.editor.row = start.Row
+		d.editor.col = start.Col
+		d.commentSelection = textSelection{}
+		d.mode = modeNormal
+		return
+	}
+
+	first := []rune(d.editor.lines[start.Row])
+	last := []rune(d.editor.lines[end.Row])
+	start.Col = maxInt(0, minInt(start.Col, len(first)))
+	end.Col = maxInt(0, minInt(end.Col, len(last)))
+	replacement := string(first[:start.Col]) + string(last[end.Col:])
+	d.editor.lines = append(d.editor.lines[:start.Row+1], d.editor.lines[end.Row+1:]...)
+	d.editor.lines[start.Row] = replacement
+	d.editor.row = start.Row
+	d.editor.col = start.Col
+	d.commentSelection = textSelection{}
+	d.mode = modeNormal
+}
+
+func (d *diffViewer) commentEditorAtDisplayEdge(direction int) bool {
+	if d.editor == nil {
+		return false
+	}
+	layout, ok := d.commentEditorLayout(d.width, d.height)
+	if !ok {
+		if direction < 0 {
+			return d.editor.row == 0
+		}
+		return d.editor.row == len(d.editor.lines)-1
+	}
+	lines := d.editor.wrappedLines(layout.inputWidth)
+	index, _, ok := d.editor.cursorDisplayPosition(layout.inputWidth)
+	if !ok {
+		return false
+	}
+	if direction < 0 {
+		return index == 0
+	}
+	return index == len(lines)-1
+}
+
+func (d *diffViewer) leaveCommentEditor(direction int) Command {
+	targetRow := d.commentEditorTargetRow()
+	d.submitReviewComment()
+	if targetRow < 0 || len(d.rows) == 0 {
+		return CommandRedraw
+	}
+	nextRow := targetRow
+	if direction > 0 && targetRow+1 < len(d.rows) {
+		nextRow = targetRow + 1
+	}
+	if direction < 0 {
+		nextRow = targetRow
+	}
+	d.setCursorAtCodeRow(nextRow)
+	return CommandRedraw
 }
 
 func (d *diffViewer) syncCommentEditorScroll() {
@@ -3759,6 +4642,7 @@ func (d *diffViewer) submitReviewComment() bool {
 			d.reviewDirty = true
 		}
 		d.editor = nil
+		d.commentSelection = textSelection{}
 		d.mode = modeNormal
 		return true
 	}
@@ -3775,6 +4659,7 @@ func (d *diffViewer) submitReviewComment() bool {
 		d.reviewDirty = true
 	}
 	d.editor = nil
+	d.commentSelection = textSelection{}
 	d.exitVisualMode()
 	d.mode = modeNormal
 	return true
@@ -4023,10 +4908,10 @@ func (e *commentEditor) wrappedLines(width int) []commentDisplayLine {
 }
 
 func commentEditorWrapWidth(width int) int {
-	if width <= 1 {
+	if width < 1 {
 		return 1
 	}
-	return width - 1
+	return width
 }
 
 func wrappedLineEnd(runes []rune, start int, width int) int {
@@ -4152,6 +5037,23 @@ func (e *commentEditor) deleteForward() {
 	e.lines = append(e.lines[:e.row+1], e.lines[e.row+2:]...)
 }
 
+func (e *commentEditor) deleteLine() {
+	if len(e.lines) <= 1 {
+		e.lines = []string{""}
+		e.row = 0
+		e.col = 0
+		return
+	}
+	e.lines = append(e.lines[:e.row], e.lines[e.row+1:]...)
+	if e.row >= len(e.lines) {
+		e.row = len(e.lines) - 1
+	}
+	lineLen := utf8.RuneCountInString(e.lines[e.row])
+	if e.col > lineLen {
+		e.col = lineLen
+	}
+}
+
 func (e *commentEditor) moveCol(delta int) {
 	e.col += delta
 	if e.col < 0 {
@@ -4205,6 +5107,54 @@ func (e *commentEditor) moveDisplayRow(delta int, width int) {
 		index = len(lines) - 1
 	}
 	target := lines[index]
+	e.row = target.line
+	e.col = target.start + runeColumnAtCell(target.text(e.lines), col)
+	if e.col > target.end {
+		e.col = target.end
+	}
+}
+
+func (d *diffViewer) setCommentEditorCursorFromBox(localRow int, localCol int) {
+	if d.editor == nil {
+		return
+	}
+	layout, ok := d.commentEditorLayout(d.width, d.height)
+	if !ok {
+		return
+	}
+	displayRow := localRow - 1
+	if displayRow < 0 {
+		d.editor.row = 0
+		d.editor.col = 0
+		return
+	}
+	col := localCol - 2
+	if col < 0 {
+		col = 0
+	}
+	d.editor.setDisplayCursor(displayRow, col, layout.inputWidth)
+}
+
+func (e *commentEditor) setDisplayCursor(displayRow int, col int, width int) {
+	lines := e.wrappedLines(width)
+	if len(lines) == 0 {
+		e.row = 0
+		e.col = 0
+		return
+	}
+	if displayRow < 0 {
+		displayRow = 0
+	}
+	if displayRow >= len(lines) {
+		displayRow = len(lines) - 1
+	}
+	target := lines[displayRow]
+	if col < 0 {
+		col = 0
+	}
+	if col >= width {
+		col = width - 1
+	}
 	e.row = target.line
 	e.col = target.start + runeColumnAtCell(target.text(e.lines), col)
 	if e.col > target.end {
@@ -4399,6 +5349,90 @@ func (d *diffViewer) hasReviewDraft(anchor review.Anchor) bool {
 	return false
 }
 
+func (d *diffViewer) reviewDraftsEndingAtRow(row int) []review.CommentDraft {
+	if row < 0 || row >= len(d.rows) {
+		return nil
+	}
+	anchor := d.rows[row].Review
+	if !reviewAnchorValid(anchor) {
+		return nil
+	}
+	drafts := make([]review.CommentDraft, 0, 1)
+	for _, draft := range d.reviewDrafts {
+		if reviewDraftEndsAt(draft, anchor) {
+			drafts = append(drafts, draft)
+		}
+	}
+	return drafts
+}
+
+func (d *diffViewer) reviewDraftIndexesEndingAtRow(row int) []int {
+	if row < 0 || row >= len(d.rows) {
+		return nil
+	}
+	anchor := d.rows[row].Review
+	if !reviewAnchorValid(anchor) {
+		return nil
+	}
+	indexes := make([]int, 0, 1)
+	for index, draft := range d.reviewDrafts {
+		if reviewDraftEndsAt(draft, anchor) {
+			indexes = append(indexes, index)
+		}
+	}
+	return indexes
+}
+
+func (d *diffViewer) focusAdjacentComment(direction int) bool {
+	if d.cursor.Row < 0 || d.cursor.Row >= len(d.rows) {
+		return false
+	}
+	row := d.cursor.Row
+	var indexes []int
+	if direction > 0 {
+		indexes = d.reviewDraftIndexesEndingAtRow(row)
+		if len(indexes) == 0 {
+			return false
+		}
+		return d.openReviewCommentEditorAtIndex(indexes[0])
+	}
+	if row == 0 {
+		return false
+	}
+	indexes = d.reviewDraftIndexesEndingAtRow(row - 1)
+	if len(indexes) == 0 {
+		return false
+	}
+	if !d.openReviewCommentEditorAtIndex(indexes[len(indexes)-1]) {
+		return false
+	}
+	if d.editor != nil {
+		d.editor.row = len(d.editor.lines) - 1
+		d.editor.col = utf8.RuneCountInString(d.editor.lines[d.editor.row])
+	}
+	return true
+}
+
+func (d *diffViewer) commentEditorTargetRow() int {
+	if d.editor == nil {
+		return -1
+	}
+	for row, diffRow := range d.rows {
+		if reviewDraftEndsAt(d.editor.draft, diffRow.Review) {
+			return row
+		}
+	}
+	return -1
+}
+
+func reviewDraftEndsAt(draft review.CommentDraft, anchor review.Anchor) bool {
+	return draft.Path == anchor.Path &&
+		draft.Line == anchor.Line &&
+		draft.Side == anchor.Side &&
+		draft.CommitID == anchor.CommitID &&
+		draft.OriginalCommitID == anchor.OriginalCommitID
+}
+
 func reviewDraftContains(draft review.CommentDraft, anchor review.Anchor) bool {
 	if draft.Path != anchor.Path ||
 		draft.CommitID != anchor.CommitID ||
@@ -4537,12 +5571,61 @@ func (d *diffViewer) moveSideBySideCursorRows(delta int) {
 }
 
 func (d *diffViewer) moveCursorCols(delta int) {
+	if d.layoutMode == layoutSideBySide && d.moveSideBySideCursorCols(delta) {
+		return
+	}
 	d.prepareCursorForMovement()
 	d.cursor.Col += delta
 	d.clampCursor()
 	d.cursorGoal = d.cursor.Col
 	d.ensureCursorVisible()
 	d.updateVisualSelection()
+}
+
+func (d *diffViewer) moveSideBySideCursorCols(delta int) bool {
+	if delta == 0 || d.cursor.Row < 0 || d.cursor.Row >= len(d.rows) {
+		return false
+	}
+	rows := d.sideBySideRows()
+	index, ok := d.sideBySideVisualIndex(rows, d.cursor.Row)
+	if !ok {
+		return false
+	}
+	row := rows[index]
+	if row.Full >= 0 {
+		return false
+	}
+	currentSide := sideForRow(d.rows[d.cursor.Row])
+	start, end, ok := d.codeRange(d.rows[d.cursor.Row])
+	if !ok {
+		return false
+	}
+
+	var target int
+	var col int
+	switch {
+	case delta < 0 && currentSide == sideRight && row.Left >= 0 && d.cursor.Col <= start:
+		target = row.Left
+		if _, targetEnd, ok := d.codeRange(d.rows[target]); ok {
+			col = maxInt(0, targetEnd-1)
+		}
+	case delta > 0 && currentSide == sideLeft && row.Right >= 0 && d.cursor.Col >= maxInt(start, end-1):
+		target = row.Right
+		if targetStart, _, ok := d.codeRange(d.rows[target]); ok {
+			col = targetStart
+		}
+	default:
+		return false
+	}
+	if target < 0 || target >= len(d.rows) {
+		return false
+	}
+	d.cursor.Row = target
+	d.cursor.Col = d.clampCursorCol(target, col)
+	d.cursorGoal = d.cursor.Col
+	d.ensureCursorVisible()
+	d.updateVisualSelection()
+	return true
 }
 
 func (d *diffViewer) cursorLineStart() {
@@ -4865,20 +5948,48 @@ func (d *diffViewer) ensureCommentEditorVisible(visible int) {
 		return
 	}
 
-	editorHeight := d.commentEditorHeightForSize(d.width, d.height)
-	if editorHeight == 0 {
+	cursorRow, ok := d.commentEditorCursorScreenRowForSize(d.width, d.height)
+	if !ok {
 		return
 	}
-	minScroll := d.cursor.Row + editorHeight + 1 - visible
-	if minScroll > d.scroll {
-		d.scroll = minScroll
+	targetRow := d.commentEditorTargetRow()
+	if cursorRow >= visible {
+		d.scroll += cursorRow - visible + 1
 	}
-	if d.scroll > d.cursor.Row {
-		d.scroll = d.cursor.Row
+	if cursorRow < 0 {
+		d.scroll += cursorRow
+	}
+	editorHeight := d.commentEditorHeightForSize(d.width, d.height)
+	targetScreenRow := d.screenRowForDocRow(targetRow, d.width, d.height)
+	editorBottom := targetScreenRow + 1 + editorHeight
+	if editorHeight > 0 && editorBottom > visible {
+		d.scroll += editorBottom - visible
+	}
+	if targetRow >= 0 && d.scroll > targetRow {
+		d.scroll = targetRow
 	}
 	if d.scroll < 0 {
 		d.scroll = 0
 	}
+}
+
+func (d *diffViewer) commentEditorCursorScreenRowForSize(width int, height int) (int, bool) {
+	if d.editor == nil {
+		return 0, false
+	}
+	targetRow := d.commentEditorTargetRow()
+	if targetRow < 0 {
+		return 0, false
+	}
+	layout, ok := d.commentEditorLayout(width, height)
+	if !ok {
+		return 0, false
+	}
+	visualRow, _, ok := d.editor.cursorDisplayPosition(layout.inputWidth)
+	if !ok {
+		return 0, false
+	}
+	return d.screenRowForDocRow(targetRow, width, height) + 1 + visualRow, true
 }
 
 func (d *diffViewer) ensureCursorColumnVisible() {
@@ -4929,14 +6040,7 @@ func (d *diffViewer) codeViewportWidth(row diff.Row) int {
 func (d *diffViewer) maxScroll() int {
 	maxScroll := len(d.rows) - 1
 	if visible := d.visibleRowCapacity(); visible > 0 {
-		maxScroll = len(d.rows) - visible
-		if d.editor != nil {
-			editorHeight := d.commentEditorHeightForSize(d.width, d.height)
-			editorScroll := d.cursor.Row + editorHeight + 1 - visible
-			if editorScroll > maxScroll {
-				maxScroll = editorScroll
-			}
-		}
+		maxScroll = d.maxScrollForVisibleRows(visible, d.width, d.height)
 	}
 	if maxScroll < 0 {
 		maxScroll = 0
@@ -4944,30 +6048,53 @@ func (d *diffViewer) maxScroll() int {
 	return maxScroll
 }
 
+func (d *diffViewer) maxScrollForVisibleRows(visible int, width int, height int) int {
+	if len(d.rows) == 0 || visible <= 0 {
+		return 0
+	}
+	totalRows := d.totalDisplayRowsForSize(width, height)
+	threshold := totalRows - visible
+	if threshold <= 0 {
+		return 0
+	}
+	maxScroll := 0
+	displayRows := 0
+	for row := range d.rows {
+		if displayRows <= threshold {
+			maxScroll = row
+		}
+		displayRows++
+		displayRows += d.reviewDraftBoxRowsAfterRowForSize(row, width, height)
+	}
+	return maxScroll
+}
+
+func (d *diffViewer) totalDisplayRowsForSize(width int, height int) int {
+	rows := len(d.rows)
+	for row := range d.rows {
+		rows += d.reviewDraftBoxRowsAfterRowForSize(row, width, height)
+	}
+	return rows
+}
+
 func (d *diffViewer) commentEditorHeightForSize(width int, height int) int {
 	if d.editor == nil || width <= 0 || height <= 2 {
 		return 0
 	}
-	verticalVisible, _ := d.scrollbarVisibility(width, height)
-	viewportWidth := horizontalViewportWidth(width, verticalVisible)
-	boxWidth := minInt(viewportWidth, 72)
-	if viewportWidth > 4 {
-		boxWidth = minInt(viewportWidth-4, 72)
+	targetRow := d.commentEditorTargetRow()
+	if targetRow < 0 {
+		return 0
 	}
-	if boxWidth < 4 {
-		boxWidth = viewportWidth
+	_, boxWidth, ok := d.commentBoxGeometry(width, height, targetRow)
+	if !ok {
+		return 0
 	}
-	inputWidth := boxWidth - 2
+	inputWidth := boxWidth - 4
 	if inputWidth < 1 {
 		return 0
 	}
 	wrapped := d.editor.wrappedLines(inputWidth)
-	visibleRows := commentEditorVisibleRows(len(wrapped), height)
-	if len(wrapped) > visibleRows && inputWidth > 1 {
-		inputWidth--
-		wrapped = d.editor.wrappedLines(inputWidth)
-		visibleRows = commentEditorVisibleRows(len(wrapped), height)
-	}
+	visibleRows := len(wrapped)
 	if visibleRows < 1 {
 		return 0
 	}

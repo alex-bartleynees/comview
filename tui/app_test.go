@@ -1492,8 +1492,493 @@ func TestDiffViewerCommentEditorOpensBelowCursor(t *testing.T) {
 	if !ok {
 		t.Fatal("comment editor rect missing")
 	}
-	if x != 2 || y != 1 {
-		t.Fatalf("editor origin = %d,%d, want 2,1", x, y)
+	if x != 0 || y != 1 {
+		t.Fatalf("editor origin = %d,%d, want 0,1", x, y)
+	}
+}
+
+func TestDiffViewerInlineCommentRowsPushFollowingDiffRows(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowAdd, Text: "one", Code: "one", Review: review.Anchor{Path: "main.go", Line: 1, Side: review.SideRight}},
+		{Kind: diff.RowAdd, Text: "two", Code: "two", Review: review.Anchor{Path: "main.go", Line: 2, Side: review.SideRight}},
+	}
+	viewer := &diffViewer{
+		rows: rows,
+		reviewDrafts: []review.CommentDraft{{
+			Path: "main.go",
+			Line: 1,
+			Side: review.SideRight,
+			Body: "comment",
+		}},
+	}
+	viewer.Layout(Tight(Size{Width: 40, Height: 10}))
+
+	if got, want := viewer.screenRowForDocRow(1, 40, 10), 4; got != want {
+		t.Fatalf("second row screen row = %d, want %d", got, want)
+	}
+	if got, want := viewer.mouseDocumentRow(vaxis.Mouse{Row: 4}), 1; got != want {
+		t.Fatalf("mouse document row = %d, want %d", got, want)
+	}
+	if got, want := viewer.mouseDocumentRow(vaxis.Mouse{Row: 1}), -1; got != want {
+		t.Fatalf("comment mouse document row = %d, want %d", got, want)
+	}
+}
+
+func TestDiffViewerInlineCommentBoxStartsAfterGutter(t *testing.T) {
+	row := diff.Row{
+		Kind:   diff.RowAdd,
+		Gutter: "12 12 ",
+		Marker: "+ ",
+		Code:   "one",
+		Review: review.Anchor{Path: "main.go", Line: 1, Side: review.SideRight},
+	}
+	row.Text = row.Gutter + row.Marker + row.Code
+	viewer := &diffViewer{
+		rows: []diff.Row{row},
+		reviewDrafts: []review.CommentDraft{{
+			Path: "main.go",
+			Line: 1,
+			Side: review.SideRight,
+			Body: "comment",
+		}},
+	}
+	viewer.Layout(Tight(Size{Width: 40, Height: 10}))
+
+	layout, ok := viewer.reviewDraftBoxLayout(40, 10, 0, viewer.reviewDrafts[0])
+	if !ok {
+		t.Fatal("review draft box layout missing")
+	}
+	if got, want := layout.x, textCellWidth(row.Gutter+row.Marker); got != want {
+		t.Fatalf("box x = %d, want code offset %d", got, want)
+	}
+}
+
+func TestDiffViewerCommentBoxTextWidthCapsAtSeventyTwo(t *testing.T) {
+	row := diff.Row{
+		Kind:   diff.RowAdd,
+		Gutter: "1 1 ",
+		Marker: "+ ",
+		Code:   "one",
+		Review: review.Anchor{Path: "main.go", Line: 1, Side: review.SideRight},
+	}
+	row.Text = row.Gutter + row.Marker + row.Code
+	viewer := &diffViewer{
+		rows: []diff.Row{row},
+		reviewDrafts: []review.CommentDraft{{
+			Path: "main.go",
+			Line: 1,
+			Side: review.SideRight,
+			Body: strings.Repeat("x", 80),
+		}},
+	}
+	viewer.Layout(Tight(Size{Width: 120, Height: 10}))
+
+	layout, ok := viewer.reviewDraftBoxLayout(120, 10, 0, viewer.reviewDrafts[0])
+	if !ok {
+		t.Fatal("review draft box layout missing")
+	}
+	if got, want := layout.bodyWidth, commentTextMaxWidth; got != want {
+		t.Fatalf("body width = %d, want %d", got, want)
+	}
+	if got, want := layout.width, commentTextMaxWidth+4; got != want {
+		t.Fatalf("box width = %d, want %d", got, want)
+	}
+}
+
+func TestDiffViewerSideBySideCursorAccountsForInlineComments(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowAdd, Text: "one", Code: "one", Review: review.Anchor{Path: "main.go", Line: 1, Side: review.SideRight}},
+		{Kind: diff.RowAdd, Text: "two", Code: "two", Review: review.Anchor{Path: "main.go", Line: 2, Side: review.SideRight}},
+	}
+	viewer := &diffViewer{
+		rows:       rows,
+		layoutMode: layoutSideBySide,
+		cursor:     selectionPoint{Row: 1, Col: 0},
+		reviewDrafts: []review.CommentDraft{{
+			Path: "main.go",
+			Line: 1,
+			Side: review.SideRight,
+			Body: "comment",
+		}},
+	}
+	viewer.Layout(Tight(Size{Width: 80, Height: 10}))
+
+	_, row, ok := viewer.cursorScreenPositionForSize(80, 10)
+	if !ok {
+		t.Fatal("cursor screen position missing")
+	}
+	if got, want := row, 4; got != want {
+		t.Fatalf("cursor screen row = %d, want %d", got, want)
+	}
+}
+
+func TestDiffViewerSideBySideHorizontalMovementCrossesPanesAtEdges(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowDelete, Text: "old", Code: "old", Review: review.Anchor{Path: "main.go", Line: 1, Side: review.SideLeft}},
+		{Kind: diff.RowAdd, Text: "new", Code: "new", Review: review.Anchor{Path: "main.go", Line: 1, Side: review.SideRight}},
+	}
+	viewer := &diffViewer{
+		rows:       rows,
+		layoutMode: layoutSideBySide,
+		cursor:     selectionPoint{Row: 1, Col: 0},
+	}
+	viewer.Layout(Tight(Size{Width: 80, Height: 10}))
+
+	cmd, err := viewer.HandleEvent(vaxis.Key{Text: "h", Keycode: 'h'})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd != CommandRedraw {
+		t.Fatalf("h command = %v, want redraw", cmd)
+	}
+	if got, want := viewer.cursor.Row, 0; got != want {
+		t.Fatalf("cursor row after h = %d, want %d", got, want)
+	}
+
+	cmd, err = viewer.HandleEvent(vaxis.Key{Text: "l", Keycode: 'l'})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd != CommandRedraw {
+		t.Fatalf("l command = %v, want redraw", cmd)
+	}
+	if got, want := viewer.cursor.Row, 1; got != want {
+		t.Fatalf("cursor row after l = %d, want %d", got, want)
+	}
+}
+
+func TestDiffViewerInlineCommentEditorRowsPushFollowingDiffRows(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowAdd, Text: "one", Code: "one", Review: review.Anchor{Path: "main.go", Line: 1, Side: review.SideRight}},
+		{Kind: diff.RowAdd, Text: "two", Code: "two", Review: review.Anchor{Path: "main.go", Line: 2, Side: review.SideRight}},
+	}
+	viewer := &diffViewer{
+		rows: rows,
+	}
+	viewer.Layout(Tight(Size{Width: 40, Height: 10}))
+	openReviewCommentEditor(t, viewer)
+
+	if got, want := viewer.screenRowForDocRow(1, 40, 10), 4; got != want {
+		t.Fatalf("second row screen row = %d, want %d", got, want)
+	}
+}
+
+func TestDiffViewerCommentNormalModeIReentersInsert(t *testing.T) {
+	viewer := &diffViewer{
+		rows: []diff.Row{{
+			Kind:   diff.RowAdd,
+			Text:   "hello",
+			Code:   "hello",
+			Review: review.Anchor{Path: "main.go", Line: 1, Side: review.SideRight},
+		}},
+	}
+	viewer.Layout(Tight(Size{Width: 40, Height: 10}))
+	openReviewCommentEditor(t, viewer)
+
+	cmd, err := viewer.HandleEvent(vaxis.Key{Keycode: vaxis.KeyEsc})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd != CommandRedraw || viewer.mode != modeNormal || viewer.editor == nil {
+		t.Fatalf("escape command/mode/editor = %v/%v/%v, want normal focused comment", cmd, viewer.mode, viewer.editor != nil)
+	}
+
+	cmd, err = viewer.HandleEvent(vaxis.Key{Text: "i", Keycode: 'i'})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd != CommandRedraw || viewer.mode != modeInsert {
+		t.Fatalf("i command/mode = %v/%v, want insert", cmd, viewer.mode)
+	}
+}
+
+func TestDiffViewerMousePressInInlineCommentFocusesComment(t *testing.T) {
+	row := diff.Row{
+		Kind:   diff.RowAdd,
+		Gutter: "1 1 ",
+		Marker: "+ ",
+		Code:   "one",
+		Review: review.Anchor{Path: "main.go", Line: 1, Side: review.SideRight},
+	}
+	row.Text = row.Gutter + row.Marker + row.Code
+	viewer := &diffViewer{
+		rows: []diff.Row{row},
+		reviewDrafts: []review.CommentDraft{{
+			Path: "main.go",
+			Line: 1,
+			Side: review.SideRight,
+			Body: "hello",
+		}},
+	}
+	viewer.Layout(Tight(Size{Width: 40, Height: 10}))
+	layout, ok := viewer.reviewDraftBoxLayout(40, 10, 0, viewer.reviewDrafts[0])
+	if !ok {
+		t.Fatal("review draft box layout missing")
+	}
+
+	cmd, err := viewer.HandleEvent(vaxis.Mouse{
+		Button:    vaxis.MouseLeftButton,
+		EventType: vaxis.EventPress,
+		Row:       2,
+		Col:       layout.x + 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd != CommandRedraw {
+		t.Fatalf("mouse command = %v, want redraw", cmd)
+	}
+	if viewer.editor == nil || viewer.mode != modeNormal {
+		t.Fatalf("editor/mode = %v/%v, want focused comment", viewer.editor != nil, viewer.mode)
+	}
+	if got, want := viewer.editor.body(), "hello"; got != want {
+		t.Fatalf("editor body = %q, want %q", got, want)
+	}
+}
+
+func TestDiffViewerDoubleClickInCommentSelectsWord(t *testing.T) {
+	row := diff.Row{
+		Kind:   diff.RowAdd,
+		Gutter: "1 1 ",
+		Marker: "+ ",
+		Code:   "one",
+		Review: review.Anchor{Path: "main.go", Line: 1, Side: review.SideRight},
+	}
+	row.Text = row.Gutter + row.Marker + row.Code
+	viewer := &diffViewer{
+		rows: []diff.Row{row},
+		reviewDrafts: []review.CommentDraft{{
+			Path: "main.go",
+			Line: 1,
+			Side: review.SideRight,
+			Body: "hello world",
+		}},
+	}
+	viewer.Layout(Tight(Size{Width: 40, Height: 10}))
+	layout, ok := viewer.reviewDraftBoxLayout(40, 10, 0, viewer.reviewDrafts[0])
+	if !ok {
+		t.Fatal("review draft box layout missing")
+	}
+	mouse := vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventPress, Row: 2, Col: layout.x + 2 + len("hello w")}
+	if _, err := viewer.HandleEvent(mouse); err != nil {
+		t.Fatal(err)
+	}
+	cmd, err := viewer.HandleEvent(mouse)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd != CommandRedraw || !viewer.commentSelection.Active || viewer.mode != modeVisual {
+		t.Fatalf("double click command/selection/mode = %v/%v/%v, want visual selection", cmd, viewer.commentSelection.Active, viewer.mode)
+	}
+	cmd, err = viewer.HandleEvent(vaxis.Key{Text: "y", Keycode: 'y'})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd != CommandCopy {
+		t.Fatalf("y command = %v, want copy", cmd)
+	}
+	if got, want := viewer.ClipboardText(), "world"; got != want {
+		t.Fatalf("clipboard = %q, want %q", got, want)
+	}
+}
+
+func TestDiffViewerTripleClickInCommentSelectsLine(t *testing.T) {
+	row := diff.Row{
+		Kind:   diff.RowAdd,
+		Gutter: "1 1 ",
+		Marker: "+ ",
+		Code:   "one",
+		Review: review.Anchor{Path: "main.go", Line: 1, Side: review.SideRight},
+	}
+	row.Text = row.Gutter + row.Marker + row.Code
+	viewer := &diffViewer{
+		rows: []diff.Row{row},
+		reviewDrafts: []review.CommentDraft{{
+			Path: "main.go",
+			Line: 1,
+			Side: review.SideRight,
+			Body: "hello world",
+		}},
+	}
+	viewer.Layout(Tight(Size{Width: 40, Height: 10}))
+	layout, ok := viewer.reviewDraftBoxLayout(40, 10, 0, viewer.reviewDrafts[0])
+	if !ok {
+		t.Fatal("review draft box layout missing")
+	}
+	mouse := vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventPress, Row: 2, Col: layout.x + 2 + len("hello")}
+	for i := 0; i < 3; i++ {
+		if _, err := viewer.HandleEvent(mouse); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !viewer.commentSelection.Active || viewer.mode != modeVisualLine {
+		t.Fatalf("selection/mode = %v/%v, want visual line", viewer.commentSelection.Active, viewer.mode)
+	}
+	cmd, err := viewer.HandleEvent(vaxis.Key{Text: "y", Keycode: 'y'})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd != CommandCopy {
+		t.Fatalf("y command = %v, want copy", cmd)
+	}
+	if got, want := viewer.ClipboardText(), "hello world"; got != want {
+		t.Fatalf("clipboard = %q, want %q", got, want)
+	}
+}
+
+func TestDiffViewerVisualSelectionInCommentCopiesText(t *testing.T) {
+	viewer := &diffViewer{
+		rows: []diff.Row{{
+			Kind:   diff.RowAdd,
+			Text:   "one",
+			Code:   "one",
+			Review: review.Anchor{Path: "main.go", Line: 1, Side: review.SideRight},
+		}},
+		reviewDrafts: []review.CommentDraft{{
+			Path: "main.go",
+			Line: 1,
+			Side: review.SideRight,
+			Body: "hello",
+		}},
+	}
+	viewer.Layout(Tight(Size{Width: 40, Height: 10}))
+	if !viewer.openReviewCommentEditorAtIndex(0) {
+		t.Fatal("comment editor did not open")
+	}
+
+	for _, key := range []vaxis.Key{
+		{Text: "v", Keycode: 'v'},
+		{Text: "l", Keycode: 'l'},
+		{Text: "y", Keycode: 'y'},
+	} {
+		if _, err := viewer.HandleEvent(key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, want := viewer.ClipboardText(), "hel"; got != want {
+		t.Fatalf("clipboard = %q, want %q", got, want)
+	}
+}
+
+func TestDiffViewerCommentVisualLineSelectionShowsEmptyLine(t *testing.T) {
+	viewer := &diffViewer{
+		editor: &commentEditor{lines: []string{""}},
+		mode:   modeVisualLine,
+		commentSelection: textSelection{
+			Active: true,
+			Anchor: selectionPoint{Row: 0, Col: 0},
+			Cursor: selectionPoint{Row: 0, Col: 0},
+		},
+	}
+	viewer.ensureColorScheme()
+
+	segments := viewer.commentEditorSegments(commentDisplayLine{line: 0}, viewer.baseStyle())
+
+	if len(segments) != 1 {
+		t.Fatalf("segments = %+v, want one segment", segments)
+	}
+	if got, want := segments[0].Text, " "; got != want {
+		t.Fatalf("segment text = %q, want %q", got, want)
+	}
+	if got, want := segments[0].Style.Background, viewer.selectionStyle().Background; got != want {
+		t.Fatalf("segment background = %v, want %v", got, want)
+	}
+}
+
+func TestDiffViewerCommentVisualDeleteRemovesSelection(t *testing.T) {
+	viewer := &diffViewer{
+		rows: []diff.Row{{
+			Kind:   diff.RowAdd,
+			Text:   "one",
+			Code:   "one",
+			Review: review.Anchor{Path: "main.go", Line: 1, Side: review.SideRight},
+		}},
+		reviewDrafts: []review.CommentDraft{{
+			Path: "main.go",
+			Line: 1,
+			Side: review.SideRight,
+			Body: "hello",
+		}},
+	}
+	viewer.Layout(Tight(Size{Width: 40, Height: 10}))
+	if !viewer.openReviewCommentEditorAtIndex(0) {
+		t.Fatal("comment editor did not open")
+	}
+
+	for _, key := range []vaxis.Key{
+		{Text: "v", Keycode: 'v'},
+		{Text: "l", Keycode: 'l'},
+		{Text: "d", Keycode: 'd'},
+	} {
+		if _, err := viewer.HandleEvent(key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, want := viewer.editor.body(), "llo"; got != want {
+		t.Fatalf("editor body = %q, want %q", got, want)
+	}
+	if viewer.commentSelection.Active || viewer.mode != modeNormal {
+		t.Fatalf("selection/mode = %v/%v, want normal without selection", viewer.commentSelection.Active, viewer.mode)
+	}
+}
+
+func TestDiffViewerCommentVisualLineDeleteRemovesLines(t *testing.T) {
+	viewer := &diffViewer{
+		editor: &commentEditor{lines: []string{"one", "two", "three"}},
+		mode:   modeVisualLine,
+		commentSelection: textSelection{
+			Active: true,
+			Anchor: selectionPoint{Row: 1, Col: 0},
+			Cursor: selectionPoint{Row: 1, Col: 2},
+		},
+	}
+
+	viewer.deleteCommentSelection()
+
+	if got, want := viewer.editor.body(), "one\nthree"; got != want {
+		t.Fatalf("editor body = %q, want %q", got, want)
+	}
+	if viewer.editor.row != 1 || viewer.editor.col != 0 {
+		t.Fatalf("editor cursor = %d,%d, want 1,0", viewer.editor.row, viewer.editor.col)
+	}
+}
+
+func TestDiffViewerMousePressOutsideFocusedCommentMovesDiffCursor(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowAdd, Text: "one", Code: "one", Review: review.Anchor{Path: "main.go", Line: 1, Side: review.SideRight}},
+		{Kind: diff.RowAdd, Text: "two", Code: "two", Review: review.Anchor{Path: "main.go", Line: 2, Side: review.SideRight}},
+	}
+	viewer := &diffViewer{
+		rows: rows,
+		reviewDrafts: []review.CommentDraft{{
+			Path: "main.go",
+			Line: 1,
+			Side: review.SideRight,
+			Body: "hello",
+		}},
+	}
+	viewer.Layout(Tight(Size{Width: 40, Height: 10}))
+	if !viewer.openReviewCommentEditorAtIndex(0) {
+		t.Fatal("comment editor did not open")
+	}
+
+	cmd, err := viewer.HandleEvent(vaxis.Mouse{
+		Button:    vaxis.MouseLeftButton,
+		EventType: vaxis.EventPress,
+		Row:       4,
+		Col:       1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd != CommandRedraw {
+		t.Fatalf("mouse command = %v, want redraw", cmd)
+	}
+	if viewer.editor != nil {
+		t.Fatal("editor still focused after outside click")
+	}
+	if viewer.cursor.Row != 1 {
+		t.Fatalf("cursor row = %d, want 1", viewer.cursor.Row)
 	}
 }
 
@@ -1527,7 +2012,7 @@ func TestDiffViewerCommentEditorScrollsIntoView(t *testing.T) {
 	}
 }
 
-func TestDiffViewerCommentEditorGrowsAndScrolls(t *testing.T) {
+func TestDiffViewerCommentEditorGrowsToAllWrappedRows(t *testing.T) {
 	viewer := &diffViewer{
 		rows: []diff.Row{{
 			Kind:   diff.RowAdd,
@@ -1547,17 +2032,11 @@ func TestDiffViewerCommentEditorGrowsAndScrolls(t *testing.T) {
 	if !ok {
 		t.Fatal("comment editor layout missing")
 	}
-	if got, want := layout.visibleRows, commentEditorMaxRows; got != want {
+	if got, want := layout.visibleRows, 10; got != want {
 		t.Fatalf("visible rows = %d, want %d", got, want)
 	}
-	if got, want := layout.boxHeight, commentEditorMaxRows+2; got != want {
+	if got, want := layout.boxHeight, 12; got != want {
 		t.Fatalf("box height = %d, want %d", got, want)
-	}
-	if !layout.showScrollbar {
-		t.Fatal("scrollbar hidden for overflowing editor")
-	}
-	if viewer.editor.scroll == 0 {
-		t.Fatal("editor did not scroll to cursor")
 	}
 }
 
@@ -1576,18 +2055,15 @@ func TestDiffViewerCommentEditorWrapsLongLines(t *testing.T) {
 	}
 }
 
-func TestDiffViewerCommentEditorWrapsBeforeTruncationColumn(t *testing.T) {
+func TestDiffViewerCommentEditorDoesNotWrapAtExactInputWidth(t *testing.T) {
 	editor := &commentEditor{lines: []string{"abcdef"}}
 	wrapped := editor.wrappedLines(6)
 
-	if len(wrapped) != 2 {
-		t.Fatalf("wrapped line count = %d, want 2", len(wrapped))
+	if len(wrapped) != 1 {
+		t.Fatalf("wrapped line count = %d, want 1", len(wrapped))
 	}
-	if got, want := wrapped[0].text(editor.lines), "abcde"; got != want {
-		t.Fatalf("first wrapped line = %q, want %q", got, want)
-	}
-	if got, want := wrapped[1].text(editor.lines), "f"; got != want {
-		t.Fatalf("second wrapped line = %q, want %q", got, want)
+	if got, want := wrapped[0].text(editor.lines), "abcdef"; got != want {
+		t.Fatalf("wrapped line = %q, want %q", got, want)
 	}
 }
 
@@ -1642,7 +2118,7 @@ func TestDiffViewerCommentEditorShiftBackspaceDeletes(t *testing.T) {
 	}
 }
 
-func TestDiffViewerCommentEditorEscapeClosesAndSaves(t *testing.T) {
+func TestDiffViewerCommentEditorEscapeLeavesInsertThenClosesAndSaves(t *testing.T) {
 	viewer := &diffViewer{
 		rows: []diff.Row{
 			{
@@ -1674,8 +2150,22 @@ func TestDiffViewerCommentEditorEscapeClosesAndSaves(t *testing.T) {
 	if cmd != CommandRedraw {
 		t.Fatalf("command = %v, want %v", cmd, CommandRedraw)
 	}
+	if viewer.editor == nil {
+		t.Fatal("editor closed after first escape")
+	}
+	if viewer.mode != modeNormal {
+		t.Fatalf("mode after first escape = %v, want normal", viewer.mode)
+	}
+
+	cmd, err = viewer.HandleEvent(vaxis.Key{Keycode: vaxis.KeyEsc})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd != CommandRedraw {
+		t.Fatalf("second escape command = %v, want %v", cmd, CommandRedraw)
+	}
 	if viewer.editor != nil {
-		t.Fatal("editor still open after escape")
+		t.Fatal("editor still open after second escape")
 	}
 	if viewer.mode != modeNormal {
 		t.Fatalf("mode = %v, want normal", viewer.mode)
@@ -1694,8 +2184,18 @@ func TestDiffViewerCommentEditorEscapeClosesAndSaves(t *testing.T) {
 	if cmd != CommandRedraw {
 		t.Fatalf("move command = %v, want %v", cmd, CommandRedraw)
 	}
-	if viewer.cursor.Row != 1 {
-		t.Fatalf("cursor row = %d, want 1", viewer.cursor.Row)
+	if viewer.editor == nil || viewer.mode != modeNormal {
+		t.Fatalf("editor/mode after moving into comment = %v/%v, want focused comment", viewer.editor != nil, viewer.mode)
+	}
+	cmd, err = viewer.HandleEvent(vaxis.Key{Text: "j", Keycode: 'j'})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd != CommandRedraw {
+		t.Fatalf("move out command = %v, want %v", cmd, CommandRedraw)
+	}
+	if viewer.cursor.Row != 1 || viewer.editor != nil {
+		t.Fatalf("cursor/editor = %d/%v, want row 1 and no editor", viewer.cursor.Row, viewer.editor != nil)
 	}
 }
 
@@ -4845,6 +5345,13 @@ func submitReviewComment(t *testing.T, viewer *diffViewer, body string) Command 
 	}
 	if cmd != CommandRedraw {
 		t.Fatalf("escape command = %v, want %v", cmd, CommandRedraw)
+	}
+	cmd, err = viewer.HandleEvent(vaxis.Key{Keycode: vaxis.KeyEsc})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd != CommandRedraw {
+		t.Fatalf("submit escape command = %v, want %v", cmd, CommandRedraw)
 	}
 	return cmd
 }
