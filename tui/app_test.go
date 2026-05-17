@@ -2167,6 +2167,33 @@ func TestDiffViewerCommentEditorShiftBackspaceDeletes(t *testing.T) {
 	}
 }
 
+func TestDiffViewerCommentEditorShiftEInsertsCapitalE(t *testing.T) {
+	viewer := &diffViewer{
+		rows: []diff.Row{{
+			Kind:   diff.RowAdd,
+			Text:   "hello",
+			Code:   "hello",
+			Review: review.Anchor{Path: "main.go", Line: 1, Side: review.SideRight},
+		}},
+	}
+	viewer.Layout(Tight(Size{Width: 40, Height: 10}))
+	openReviewCommentEditor(t, viewer)
+
+	cmd, err := viewer.HandleEvent(vaxis.Key{Text: "E", Keycode: 'e', ShiftedCode: 'E', Modifiers: vaxis.ModShift})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd != CommandRedraw {
+		t.Fatalf("command = %v, want %v", cmd, CommandRedraw)
+	}
+	if viewer.mode != modeInsert {
+		t.Fatalf("mode = %v, want insert", viewer.mode)
+	}
+	if got, want := viewer.editor.body(), "E"; got != want {
+		t.Fatalf("editor body = %q, want %q", got, want)
+	}
+}
+
 func TestDiffViewerCommentEditorEscapeLeavesInsertThenClosesAndSaves(t *testing.T) {
 	viewer := &diffViewer{
 		rows: []diff.Row{
@@ -2245,6 +2272,75 @@ func TestDiffViewerCommentEditorEscapeLeavesInsertThenClosesAndSaves(t *testing.
 	}
 	if viewer.cursor.Row != 1 || viewer.editor != nil {
 		t.Fatalf("cursor/editor = %d/%v, want row 1 and no editor", viewer.cursor.Row, viewer.editor != nil)
+	}
+}
+
+func TestDiffViewerFocusAdjacentCommentStartsAtDirectionEdge(t *testing.T) {
+	viewer := &diffViewer{
+		rows: []diff.Row{
+			{
+				Kind:   diff.RowAdd,
+				Text:   "hello",
+				Code:   "hello",
+				Review: review.Anchor{Path: "main.go", Line: 12, Side: review.SideRight},
+			},
+			{
+				Kind:   diff.RowAdd,
+				Text:   "world",
+				Code:   "world",
+				Review: review.Anchor{Path: "main.go", Line: 13, Side: review.SideRight},
+			},
+		},
+		reviewDrafts: []review.CommentDraft{{
+			Path: "main.go",
+			Line: 12,
+			Side: review.SideRight,
+			Body: "first\nsecond",
+		}},
+	}
+	viewer.Layout(Tight(Size{Width: 80, Height: 10}))
+
+	cmd, err := viewer.HandleEvent(vaxis.Key{Text: "j", Keycode: 'j'})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd != CommandRedraw || viewer.editor == nil || viewer.mode != modeNormal {
+		t.Fatalf("down command/editor/mode = %v/%v/%v, want focused comment", cmd, viewer.editor != nil, viewer.mode)
+	}
+	if got, want := (selectionPoint{Row: viewer.editor.row, Col: viewer.editor.col}), (selectionPoint{Row: 0, Col: 0}); got != want {
+		t.Fatalf("down editor cursor = %+v, want %+v", got, want)
+	}
+
+	for i := 0; i < 2; i++ {
+		cmd, err = viewer.HandleEvent(vaxis.Key{Text: "j", Keycode: 'j'})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if cmd != CommandRedraw || viewer.editor != nil || viewer.cursor.Row != 1 {
+		t.Fatalf("leave down command/editor/cursor = %v/%v/%d, want row 1", cmd, viewer.editor != nil, viewer.cursor.Row)
+	}
+
+	cmd, err = viewer.HandleEvent(vaxis.Key{Text: "k", Keycode: 'k'})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd != CommandRedraw || viewer.editor == nil || viewer.mode != modeNormal {
+		t.Fatalf("up command/editor/mode = %v/%v/%v, want focused comment", cmd, viewer.editor != nil, viewer.mode)
+	}
+	if got, want := (selectionPoint{Row: viewer.editor.row, Col: viewer.editor.col}), (selectionPoint{Row: 1, Col: 0}); got != want {
+		t.Fatalf("up editor cursor = %+v, want %+v", got, want)
+	}
+
+	cmd, err = viewer.HandleEvent(vaxis.Key{Text: "k", Keycode: 'k'})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd != CommandRedraw {
+		t.Fatalf("move within comment command = %v, want %v", cmd, CommandRedraw)
+	}
+	if got, want := (selectionPoint{Row: viewer.editor.row, Col: viewer.editor.col}), (selectionPoint{Row: 0, Col: 0}); got != want {
+		t.Fatalf("second up editor cursor = %+v, want %+v", got, want)
 	}
 }
 

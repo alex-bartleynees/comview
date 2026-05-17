@@ -343,7 +343,7 @@ func (d *diffViewer) handleKey(key vaxis.Key) (Command, error) {
 		return d.handleCommentNormalKey(key), nil
 	}
 	if d.helpVisible {
-		if keyQuestionMark(key) || key.Matches('q') || key.Matches(vaxis.KeyEsc) || key.MatchString("Esc") {
+		if keyQuestionMark(key) || key.Matches('q') || keyEscape(key) {
 			d.helpVisible = false
 			return CommandRedraw, nil
 		}
@@ -418,7 +418,7 @@ func (d *diffViewer) handleKey(key vaxis.Key) (Command, error) {
 	case key.Matches('c', vaxis.ModCtrl), key.Matches('q'):
 		d.keys.Clear()
 		return CommandNone, nil
-	case key.Matches(vaxis.KeyEsc), key.MatchString("Esc"):
+	case keyEscape(key):
 		if d.mode != modeNormal || d.selection.Active {
 			d.keys.Clear()
 			d.exitVisualMode()
@@ -638,7 +638,7 @@ func (d *diffViewer) handleTextObjectKey(key vaxis.Key) (Command, error) {
 	state := d.textObject
 	d.textObject = textObjectState{}
 
-	if key.Matches(vaxis.KeyEsc) || key.MatchString("Esc") {
+	if keyEscape(key) {
 		return CommandNone, nil
 	}
 
@@ -711,7 +711,7 @@ func statDetail(stat diff.Stat) string {
 
 func (d *diffViewer) handleFuzzyKey(key vaxis.Key) Command {
 	switch {
-	case key.Matches(vaxis.KeyEsc), key.MatchString("Esc"):
+	case keyEscape(key):
 		d.closeFuzzyFinder()
 		return CommandRedraw
 	case key.Matches(vaxis.KeyEnter):
@@ -756,6 +756,10 @@ func (d *diffViewer) acceptFuzzyFinder() Command {
 func (d *diffViewer) closeFuzzyFinder() {
 	d.finder = nil
 	d.mode = modeNormal
+}
+
+func keyEscape(key vaxis.Key) bool {
+	return key.Matches(vaxis.KeyEsc) || key.MatchString("Escape")
 }
 
 func keyQuestionMark(key vaxis.Key) bool {
@@ -4073,6 +4077,10 @@ func (d *diffViewer) openReviewCommentEditor() bool {
 }
 
 func (d *diffViewer) openReviewCommentEditorAtIndex(index int) bool {
+	return d.openReviewCommentEditorAtIndexFromDirection(index, 1)
+}
+
+func (d *diffViewer) openReviewCommentEditorAtIndexFromDirection(index int, direction int) bool {
 	if index < 0 || index >= len(d.reviewDrafts) {
 		return false
 	}
@@ -4084,6 +4092,9 @@ func (d *diffViewer) openReviewCommentEditorAtIndex(index int) bool {
 	}
 	d.editor.row = 0
 	d.editor.col = 0
+	if direction < 0 {
+		d.moveCommentEditorCursorToLastDisplayLineStart()
+	}
 	d.commentSelection = textSelection{}
 	if targetRow := d.commentEditorTargetRow(); targetRow >= 0 {
 		col := 0
@@ -4099,10 +4110,28 @@ func (d *diffViewer) openReviewCommentEditorAtIndex(index int) bool {
 	return true
 }
 
+func (d *diffViewer) moveCommentEditorCursorToLastDisplayLineStart() {
+	if d.editor == nil || len(d.editor.lines) == 0 {
+		return
+	}
+	layout, ok := d.commentEditorLayout(d.width, d.height)
+	if ok {
+		lines := d.editor.wrappedLines(layout.inputWidth)
+		if len(lines) > 0 {
+			line := lines[len(lines)-1]
+			d.editor.row = line.line
+			d.editor.col = line.start
+			return
+		}
+	}
+	d.editor.row = len(d.editor.lines) - 1
+	d.editor.col = 0
+}
+
 func (d *diffViewer) handleCommentKey(key vaxis.Key) Command {
 	command := CommandNone
 	switch {
-	case key.Matches(vaxis.KeyEsc), key.MatchString("Esc"):
+	case keyEscape(key):
 		d.mode = modeNormal
 		return CommandRedraw
 	case key.Matches(vaxis.KeyEnter), key.Keycode == vaxis.KeyEnter:
@@ -4146,7 +4175,7 @@ func (d *diffViewer) handleCommentNormalKey(key vaxis.Key) Command {
 	d.keys.ClearExpired(time.Now())
 	command := CommandNone
 	switch {
-	case key.Matches(vaxis.KeyEsc), key.MatchString("Esc"):
+	case keyEscape(key):
 		if d.commentSelection.Active {
 			d.commentSelection = textSelection{}
 			d.mode = modeNormal
@@ -4493,7 +4522,7 @@ func (d *diffViewer) enterCommandMode() {
 
 func (d *diffViewer) handleCommandKey(key vaxis.Key) Command {
 	switch {
-	case key.Matches(vaxis.KeyEsc), key.MatchString("Esc"):
+	case keyEscape(key):
 		d.commandLine = ""
 		d.mode = modeNormal
 		return CommandRedraw
@@ -4536,7 +4565,7 @@ func (d *diffViewer) clearSearch() bool {
 
 func (d *diffViewer) handleSearchKey(key vaxis.Key) (Command, error) {
 	switch {
-	case key.Matches(vaxis.KeyEsc), key.MatchString("Esc"):
+	case keyEscape(key):
 		d.mode = modeNormal
 		d.clearSearch()
 		return CommandRedraw, nil
@@ -5394,7 +5423,7 @@ func (d *diffViewer) focusAdjacentComment(direction int) bool {
 		if len(indexes) == 0 {
 			return false
 		}
-		return d.openReviewCommentEditorAtIndex(indexes[0])
+		return d.openReviewCommentEditorAtIndexFromDirection(indexes[0], direction)
 	}
 	if row == 0 {
 		return false
@@ -5403,14 +5432,7 @@ func (d *diffViewer) focusAdjacentComment(direction int) bool {
 	if len(indexes) == 0 {
 		return false
 	}
-	if !d.openReviewCommentEditorAtIndex(indexes[len(indexes)-1]) {
-		return false
-	}
-	if d.editor != nil {
-		d.editor.row = len(d.editor.lines) - 1
-		d.editor.col = utf8.RuneCountInString(d.editor.lines[d.editor.row])
-	}
-	return true
+	return d.openReviewCommentEditorAtIndexFromDirection(indexes[len(indexes)-1], direction)
 }
 
 func (d *diffViewer) commentEditorTargetRow() int {
