@@ -111,6 +111,7 @@ type diffViewer struct {
 	searchQuery        string
 	searchMatches      []searchMatch
 	searchIndex        int
+	searchStart        selectionPoint
 	finder             *fuzzyFinder
 	statusMessage      string
 	statusMessageUntil time.Time
@@ -4597,6 +4598,7 @@ func (d *diffViewer) enterSearchMode() {
 	d.searchQuery = ""
 	d.searchMatches = nil
 	d.searchIndex = -1
+	d.searchStart = d.cursor
 	d.clearStatusMessage()
 	d.mode = modeSearch
 }
@@ -4611,6 +4613,23 @@ func (d *diffViewer) clearSearch() bool {
 	return true
 }
 
+func (d *diffViewer) updateIncrementalSearch() {
+	if d.searchQuery == "" {
+		d.searchMatches = nil
+		d.searchIndex = -1
+		d.setCursor(d.searchStart)
+		return
+	}
+	d.updateSearchMatches()
+	if len(d.searchMatches) == 0 {
+		d.searchIndex = -1
+		d.setCursor(d.searchStart)
+		return
+	}
+	d.searchIndex = d.nextSearchIndexFromPoint(d.searchStart, 1)
+	d.applySearchMatch()
+}
+
 func (d *diffViewer) handleSearchKey(key vaxis.Key) (Command, error) {
 	switch {
 	case keyEscape(key):
@@ -4618,20 +4637,21 @@ func (d *diffViewer) handleSearchKey(key vaxis.Key) (Command, error) {
 		d.clearSearch()
 		return CommandRedraw, nil
 	case key.Matches(vaxis.KeyEnter):
-		d.updateSearchMatches()
 		d.mode = modeNormal
 		if len(d.searchMatches) == 0 {
 			d.setStatusMessage("Pattern not found")
 			return CommandRedraw, nil
 		}
-		d.searchIndex = d.nextSearchIndexFromCursor(1)
-		d.applySearchMatch()
+		if d.searchIndex < 0 || d.searchIndex >= len(d.searchMatches) {
+			d.searchIndex = d.nextSearchIndexFromPoint(d.searchStart, 1)
+			d.applySearchMatch()
+		}
 		return CommandRedraw, nil
 	case key.Matches(vaxis.KeyBackspace), key.Matches('h', vaxis.ModCtrl):
 		if d.searchQuery != "" {
 			runes := []rune(d.searchQuery)
 			d.searchQuery = string(runes[:len(runes)-1])
-			d.updateSearchMatches()
+			d.updateIncrementalSearch()
 			return CommandRedraw, nil
 		}
 	case key.Text != "" && key.Modifiers&(vaxis.ModCtrl|vaxis.ModAlt|vaxis.ModSuper) == 0:
@@ -4640,7 +4660,7 @@ func (d *diffViewer) handleSearchKey(key vaxis.Key) (Command, error) {
 				d.searchQuery += string(r)
 			}
 		}
-		d.updateSearchMatches()
+		d.updateIncrementalSearch()
 		return CommandRedraw, nil
 	}
 	return CommandNone, nil
@@ -4864,7 +4884,7 @@ func (d *diffViewer) moveSearchMatch(delta int) bool {
 		return false
 	}
 	if d.searchIndex < 0 || d.searchIndex >= len(d.searchMatches) {
-		d.searchIndex = d.nextSearchIndexFromCursor(delta)
+		d.searchIndex = d.nextSearchIndexFromPoint(d.cursor, delta)
 	} else {
 		d.searchIndex = (d.searchIndex + delta + len(d.searchMatches)) % len(d.searchMatches)
 	}
@@ -4872,13 +4892,13 @@ func (d *diffViewer) moveSearchMatch(delta int) bool {
 	return true
 }
 
-func (d *diffViewer) nextSearchIndexFromCursor(direction int) int {
+func (d *diffViewer) nextSearchIndexFromPoint(origin selectionPoint, direction int) int {
 	if len(d.searchMatches) == 0 {
 		return -1
 	}
 	if direction < 0 {
 		for index := len(d.searchMatches) - 1; index >= 0; index-- {
-			if selectionPointLess(selectionPoint{Row: d.searchMatches[index].Row, Col: d.searchMatches[index].Start}, d.cursor) {
+			if selectionPointLess(selectionPoint{Row: d.searchMatches[index].Row, Col: d.searchMatches[index].Start}, origin) {
 				return index
 			}
 		}
@@ -4886,7 +4906,7 @@ func (d *diffViewer) nextSearchIndexFromCursor(direction int) int {
 	}
 	for index, match := range d.searchMatches {
 		point := selectionPoint{Row: match.Row, Col: match.Start}
-		if selectionPointLess(d.cursor, point) || d.cursor == point {
+		if selectionPointLess(origin, point) || origin == point {
 			return index
 		}
 	}

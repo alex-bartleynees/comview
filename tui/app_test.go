@@ -2779,6 +2779,9 @@ func TestDiffViewerSlashSearchMovesToMatch(t *testing.T) {
 	} else if cmd != CommandRedraw {
 		t.Fatalf("query command = %v, want redraw", cmd)
 	}
+	if got, want := viewer.cursor.Row, 1; got != want {
+		t.Fatalf("incremental cursor row = %d, want %d", got, want)
+	}
 	if cmd, err = viewer.HandleEvent(vaxis.Key{Keycode: vaxis.KeyEnter}); err != nil {
 		t.Fatal(err)
 	} else if cmd != CommandRedraw {
@@ -2793,6 +2796,64 @@ func TestDiffViewerSlashSearchMovesToMatch(t *testing.T) {
 	}
 	if got, want := viewer.cursor.Col, testCodeOffset(rows[1]); got != want {
 		t.Fatalf("cursor col = %d, want %d", got, want)
+	}
+}
+
+func TestDiffViewerIncrementalSearchUsesNextMatchFromStart(t *testing.T) {
+	rows := make([]diff.Row, 10)
+	for i := range rows {
+		rows[i] = diff.Row{Kind: diff.RowContext, Text: "line"}
+	}
+	rows[2].Text = "alpha"
+	rows[8].Text = "alpha"
+	viewer := &diffViewer{
+		rows:   rows,
+		cursor: selectionPoint{Row: 5},
+	}
+	viewer.Layout(Tight(Size{Width: 80, Height: 5}))
+
+	if _, err := viewer.HandleEvent(vaxis.Key{Text: "/", Keycode: '/'}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := viewer.HandleEvent(vaxis.Key{Text: "alpha"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, want := viewer.cursor.Row, 8; got != want {
+		t.Fatalf("cursor row = %d, want next match row %d", got, want)
+	}
+	if viewer.scroll > viewer.cursor.Row || viewer.cursor.Row >= viewer.scroll+viewer.visibleRowCapacity() {
+		t.Fatalf("cursor row %d not visible with scroll %d", viewer.cursor.Row, viewer.scroll)
+	}
+}
+
+func TestDiffViewerIncrementalSearchBackspaceScrollsBack(t *testing.T) {
+	rows := make([]diff.Row, 20)
+	for i := range rows {
+		rows[i] = diff.Row{Kind: diff.RowContext, Text: "line"}
+	}
+	rows[2].Text = "ab"
+	rows[15].Text = "abc"
+	viewer := &diffViewer{rows: rows}
+	viewer.Layout(Tight(Size{Width: 80, Height: 5}))
+
+	if _, err := viewer.HandleEvent(vaxis.Key{Text: "/", Keycode: '/'}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := viewer.HandleEvent(vaxis.Key{Text: "abc"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := viewer.cursor.Row, 15; got != want {
+		t.Fatalf("cursor row after abc = %d, want %d", got, want)
+	}
+	if _, err := viewer.HandleEvent(vaxis.Key{Keycode: vaxis.KeyBackspace}); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := viewer.cursor.Row, 2; got != want {
+		t.Fatalf("cursor row after backspace = %d, want %d", got, want)
+	}
+	if viewer.scroll > viewer.cursor.Row || viewer.cursor.Row >= viewer.scroll+viewer.visibleRowCapacity() {
+		t.Fatalf("cursor row %d not visible with scroll %d", viewer.cursor.Row, viewer.scroll)
 	}
 }
 
