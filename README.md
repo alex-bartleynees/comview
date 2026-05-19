@@ -24,7 +24,14 @@ make PREFIX=$HOME/.local install
 git diff | comview
 git show | comview
 gh pr diff 123 | comview
+comview watch
+comview watch --staged
+comview watch -- git show HEAD
 ```
+
+`comview watch` reruns `git diff` and refreshes the view whenever the diff
+output changes. Arguments after `watch` are passed to `git diff`; use `--` to
+watch another diff-producing command.
 
 Comments are saved to `.comview/comments.json`.
 

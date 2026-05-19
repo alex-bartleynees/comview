@@ -47,7 +47,14 @@ func Run(input string) error {
 	if len(rows) == 0 {
 		return nil
 	}
+	app, _, err := newDiffApp(rows)
+	if err != nil {
+		return err
+	}
+	return app.Run()
+}
 
+func newDiffApp(rows []diff.Row) (*App, *diffViewer, error) {
 	cfg := loadConfig()
 
 	commentPath := cfg.CommentFile
@@ -57,22 +64,23 @@ func Run(input string) error {
 
 	commentFile, err := review.LoadFile(commentPath)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
-	app, err := NewApp(&diffViewer{
+	viewer := &diffViewer{
 		rows:         rows,
 		reviewDrafts: commentFile.Comments,
 		reviewFile:   commentPath,
 		highlighter:  NewSyntaxHighlighter(),
 		binds:        newBindings(cfg.Keybindings),
-	}, vaxis.Options{
+	}
+	app, err := NewApp(viewer, vaxis.Options{
 		CSIuBitMask: keyboardFlags,
 	})
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 
-	return app.Run()
+	return app, viewer, nil
 }
 
 func rowsForInput(input string) ([]diff.Row, error) {
@@ -107,6 +115,8 @@ type diffViewer struct {
 	reviewFile         string
 	editor             *commentEditor
 	binds              Bindings
+	emptyMessage       string
+	emptyHint          string
 	commandLine        string
 	searchQuery        string
 	searchMatches      []searchMatch
@@ -327,6 +337,12 @@ func (d *diffViewer) HandleEvent(ev vaxis.Event) (Command, error) {
 		return d.handleKey(ev)
 	case vaxis.Mouse:
 		return d.handleMouse(ev)
+	case watchUpdateEvent:
+		d.replaceRows(ev.Rows)
+		if ev.Message != "" {
+			d.setStatusMessage(ev.Message)
+		}
+		return CommandRedraw, nil
 	default:
 		return CommandNone, nil
 	}
@@ -893,8 +909,17 @@ func (d *diffViewer) Paint(win vaxis.Window) {
 	})
 
 	if len(d.rows) == 0 {
-		printAt(win, 0, 0, "Pipe git diff or git show into comview.", d.baseStyle())
-		printAt(win, 0, 2, "Press q, Esc, Ctrl+C, or Ctrl+D to quit.", mutedStyle)
+		message := d.emptyMessage
+		if message == "" {
+			message = "Pipe git diff or git show into comview."
+		}
+		hint := d.emptyHint
+		if hint == "" {
+			hint = "Run comview watch to refresh git diff as files change."
+		}
+		printAt(win, 0, 0, message, d.baseStyle())
+		printAt(win, 0, 2, hint, mutedStyle)
+		printAt(win, 0, 3, "Use :q to quit.", mutedStyle)
 		d.paintStatusBar(win)
 		return
 	}
@@ -3006,6 +3031,21 @@ func (d *diffViewer) invalidateRenderCache() {
 	d.fileRows = nil
 	d.contentWide = 0
 	d.diffStatLayout = diffStatLayout{}
+}
+
+func (d *diffViewer) replaceRows(rows []diff.Row) {
+	d.rows = rows
+	d.selection = textSelection{}
+	d.yankSelection = textSelection{}
+	d.commentSelection = textSelection{}
+	d.finder = nil
+	d.invalidateRenderCache()
+	if d.searchQuery != "" {
+		d.updateSearchMatches()
+	}
+	d.clampCursor()
+	d.clampScroll()
+	d.clampHorizontalScroll()
 }
 
 func (d *diffViewer) rowSegments(segments []vaxis.Segment, cursorLine bool) []vaxis.Segment {

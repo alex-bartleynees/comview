@@ -126,6 +126,7 @@ type App struct {
 	terminal   *TerminalWidget
 	windowSize vaxis.Resize
 	frames     FramePipeline
+	closeHooks []func()
 }
 
 func NewApp(root Widget, opts vaxis.Options) (*App, error) {
@@ -149,8 +150,15 @@ func (a *App) Vaxis() *vaxis.Vaxis {
 	return a.vx
 }
 
+func (a *App) OnClose(fn func()) {
+	a.closeHooks = append(a.closeHooks, fn)
+}
+
 func (a *App) Run() error {
 	defer func() {
+		for _, hook := range a.closeHooks {
+			hook()
+		}
 		if a.terminal != nil {
 			a.terminal.Close()
 		}
