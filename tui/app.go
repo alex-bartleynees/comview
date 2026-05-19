@@ -6561,7 +6561,8 @@ func (d *diffViewer) maxScrollForVisibleRows(visible int, width int, height int)
 		return 0
 	}
 	viewportWidth := width
-	if d.wrapLines && d.layoutMode != layoutSideBySide {
+	useViewportHeights := d.wrapLines && d.layoutMode != layoutSideBySide
+	if useViewportHeights {
 		verticalVisible, _ := d.scrollbarVisibility(width, height)
 		viewportWidth = horizontalViewportWidth(width, verticalVisible)
 	}
@@ -6571,10 +6572,10 @@ func (d *diffViewer) maxScrollForVisibleRows(visible int, width int, height int)
 		if displayRows <= threshold {
 			maxScroll = row
 		}
-		displayRows += d.wrappedDocRowHeight(row, viewportWidth)
-		if d.wrapLines && d.layoutMode != layoutSideBySide {
-			displayRows += d.reviewDraftBoxRowsAfterRowForViewport(row, viewportWidth)
+		if useViewportHeights {
+			displayRows += d.rowDisplayHeightForViewport(row, viewportWidth, height)
 		} else {
+			displayRows += d.wrappedDocRowHeight(row, viewportWidth)
 			displayRows += d.reviewDraftBoxRowsAfterRowForSize(row, width, height)
 		}
 	}
@@ -6686,9 +6687,19 @@ func (d *diffViewer) displayScrollPositionForSize(width int, height int) int {
 	if d.scroll <= 0 {
 		return d.scrollOffset
 	}
+	viewportWidth := width
+	useViewportHeights := d.wrapLines && d.layoutMode != layoutSideBySide
+	if useViewportHeights {
+		verticalVisible, _ := d.scrollbarVisibility(width, height)
+		viewportWidth = horizontalViewportWidth(width, verticalVisible)
+	}
 	position := 0
 	for row := 0; row < d.scroll && row < len(d.rows); row++ {
-		position += d.rowDisplayHeightForSize(row, width, height)
+		if useViewportHeights {
+			position += d.rowDisplayHeightForViewport(row, viewportWidth, height)
+		} else {
+			position += d.rowDisplayHeightForSize(row, width, height)
+		}
 	}
 	return position + d.scrollOffset
 }
@@ -6728,8 +6739,19 @@ func (d *diffViewer) setDisplayScrollPositionForSize(position int, width int, he
 		d.scrollOffset = 0
 		return
 	}
+	viewportWidth := width
+	useViewportHeights := d.wrapLines && d.layoutMode != layoutSideBySide
+	if useViewportHeights {
+		verticalVisible, _ := d.scrollbarVisibility(width, height)
+		viewportWidth = horizontalViewportWidth(width, verticalVisible)
+	}
 	for row := range d.rows {
-		rowHeight := d.rowDisplayHeightForSize(row, width, height)
+		rowHeight := 0
+		if useViewportHeights {
+			rowHeight = d.rowDisplayHeightForViewport(row, viewportWidth, height)
+		} else {
+			rowHeight = d.rowDisplayHeightForSize(row, width, height)
+		}
 		if rowHeight <= 0 {
 			rowHeight = 1
 		}
