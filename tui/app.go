@@ -569,7 +569,7 @@ func (d *diffViewer) handleKey(key vaxis.Key) (Command, error) {
 		return CommandRedraw, nil
 	case key.Matches('i'):
 		d.keys.Clear()
-		if d.inVisualMode() {
+		if d.mode == modeVisual {
 			d.startTextObject(textObjectInner)
 			return CommandNone, nil
 		}
