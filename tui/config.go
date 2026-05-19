@@ -13,6 +13,8 @@ import (
 type Config struct {
 	// CommentFile overrides the default path for storing review comments.
 	CommentFile string `json:"comment_file,omitempty"`
+	// Wrap enables soft-wrapping of long diff lines instead of horizontal scrolling.
+	Wrap bool `json:"wrap,omitempty"`
 	// Keybindings maps action names to lists of key strings in vaxis
 	// MatchString format (e.g. "ctrl+d", "shift+j", "Page_Down").
 	// A non-empty list replaces the defaults for that action.

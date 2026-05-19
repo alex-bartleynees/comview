@@ -3593,6 +3593,129 @@ func TestDiffViewerLineBoundaryKeys(t *testing.T) {
 	}
 }
 
+func TestDiffViewerWrapModeMeasuresRowsWithVerticalScrollbarWidth(t *testing.T) {
+	viewer := &diffViewer{
+		rows: []diff.Row{
+			{Kind: diff.RowAdd, Code: strings.Repeat("x", 10), Text: strings.Repeat("x", 10)},
+			{Kind: diff.RowContext, Code: "y", Text: "y"},
+			{Kind: diff.RowContext, Code: "z", Text: "z"},
+		},
+		wrapLines: true,
+	}
+
+	if got, want := viewer.maxDisplayScrollForSize(10, 3), 2; got != want {
+		t.Fatalf("max display scroll = %d, want %d", got, want)
+	}
+}
+
+func TestDiffViewerWrappedRowHeightUsesFileTabWidth(t *testing.T) {
+	row := diff.Row{
+		Kind:     diff.RowAdd,
+		FileName: "main.py",
+		Code:     "\t123456",
+	}
+	viewer := &diffViewer{
+		rows:      []diff.Row{row},
+		wrapLines: true,
+	}
+
+	if got, want := viewer.wrappedDocRowHeight(0, 10), 1; got != want {
+		t.Fatalf("wrapped row height = %d, want %d", got, want)
+	}
+}
+
+func TestDiffViewerWrapModeScrollbarHandlesDrafts(t *testing.T) {
+	row := diff.Row{
+		Kind:   diff.RowAdd,
+		Gutter: "    1 + ",
+		Code:   "new",
+		Review: review.Anchor{Path: "main.go", Line: 1, Side: review.SideRight},
+	}
+	viewer := &diffViewer{
+		rows: []diff.Row{row},
+		reviewDrafts: []review.CommentDraft{{
+			Path: "main.go",
+			Line: 1,
+			Side: review.SideRight,
+			Body: strings.Repeat("draft ", 20),
+		}},
+		wrapLines: true,
+	}
+
+	vertical, horizontal := viewer.scrollbarVisibility(24, 5)
+	if horizontal {
+		t.Fatal("horizontal scrollbar visible in wrap mode")
+	}
+	if !vertical {
+		t.Fatal("vertical scrollbar hidden, want visible for wrapped draft rows")
+	}
+}
+
+func TestDiffViewerWrapModePlacesCursorOnContinuationRow(t *testing.T) {
+	row := diff.Row{
+		Kind:   diff.RowAdd,
+		Gutter: "    1 + ",
+		Code:   strings.Repeat("x", 30),
+	}
+	viewer := &diffViewer{
+		rows:      []diff.Row{row},
+		cursor:    selectionPoint{Row: 0, Col: testCodeOffset(row) + 14},
+		wrapLines: true,
+	}
+	viewer.Layout(Tight(Size{Width: 20, Height: 10}))
+
+	col, rowNum, ok := viewer.cursorScreenPositionForSize(20, 10)
+	if !ok {
+		t.Fatal("cursor position not found")
+	}
+	if got, want := rowNum, 1; got != want {
+		t.Fatalf("cursor screen row = %d, want %d", got, want)
+	}
+	if got, want := col, testCodeOffset(row)+2; got != want {
+		t.Fatalf("cursor screen col = %d, want %d", got, want)
+	}
+}
+
+func TestDiffViewerWrapModeScrollsCursorContinuationRowIntoView(t *testing.T) {
+	row := diff.Row{
+		Kind:   diff.RowAdd,
+		Gutter: "    1 + ",
+		Code:   strings.Repeat("x", 40),
+	}
+	viewer := &diffViewer{
+		rows:      []diff.Row{row},
+		cursor:    selectionPoint{Row: 0, Col: testCodeOffset(row) + 30},
+		wrapLines: true,
+	}
+	viewer.Layout(Tight(Size{Width: 20, Height: 3}))
+
+	viewer.ensureCursorRowVisible()
+
+	_, _, ok := viewer.cursorScreenPositionForSize(20, 3)
+	if !ok {
+		t.Fatal("cursor continuation row was not scrolled into view")
+	}
+}
+
+func TestDiffViewerWrapModeIgnoresStaleHorizontalScrollForScreenColumns(t *testing.T) {
+	row := diff.Row{
+		Kind:   diff.RowAdd,
+		Gutter: "    1 + ",
+		Code:   strings.Repeat("x", 40),
+	}
+	viewer := &diffViewer{
+		rows:      []diff.Row{row},
+		wrapLines: true,
+		xScroll:   6,
+	}
+
+	got := viewer.screenColumn(row, testCodeOffset(row)+3)
+	want := testCodeOffset(row) + 3
+	if got != want {
+		t.Fatalf("screen column = %d, want %d", got, want)
+	}
+}
+
 func TestDiffViewerSideBySideHorizontalNavigationUsesPaneWidth(t *testing.T) {
 	row := diff.Row{
 		Kind:   diff.RowAdd,
@@ -3615,6 +3738,27 @@ func TestDiffViewerSideBySideHorizontalNavigationUsesPaneWidth(t *testing.T) {
 	}
 	if got, want := viewer.xScroll, 5; got != want {
 		t.Fatalf("xScroll = %d, want %d", got, want)
+	}
+}
+
+func TestDiffViewerWrapModeDoesNotHideSideBySideHorizontalScrollbar(t *testing.T) {
+	row := diff.Row{
+		Kind:   diff.RowAdd,
+		Gutter: "    1 + ",
+		Code:   strings.Repeat("x", 60),
+	}
+	row.Text = row.Gutter + row.Code
+	viewer := &diffViewer{
+		rows:       []diff.Row{row},
+		layoutMode: layoutSideBySide,
+		wrapLines:  true,
+	}
+	viewer.Layout(Tight(Size{Width: 80, Height: 10}))
+
+	bar := viewer.horizontalScrollbar(80, 10)
+
+	if !bar.Visible {
+		t.Fatal("horizontal scrollbar hidden, want side-by-side overflow unaffected by wrap mode")
 	}
 }
 
