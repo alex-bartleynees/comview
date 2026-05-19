@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"git.sr.ht/~rockorager/vaxis"
@@ -2233,22 +2234,13 @@ func wrapCommentBodyLine(text string, width int) []string {
 	if text == "" {
 		return []string{""}
 	}
-	var lines []string
-	var b strings.Builder
-	lineWidth := 0
-	it := uucode.NewGraphemeIterator(text)
-	for g, ok := it.Next(); ok; g, ok = it.Next() {
-		cluster := text[g.Start:g.End]
-		clusterWidth := graphemeCellWidth(cluster)
-		if lineWidth > 0 && lineWidth+clusterWidth > width {
-			lines = append(lines, b.String())
-			b.Reset()
-			lineWidth = 0
-		}
-		b.WriteString(cluster)
-		lineWidth += clusterWidth
+	runes := []rune(text)
+	lines := make([]string, 0, 1)
+	for start := 0; start < len(runes); {
+		end := wrappedLineEnd(runes, start, width)
+		lines = append(lines, string(runes[start:end]))
+		start = end
 	}
-	lines = append(lines, b.String())
 	return lines
 }
 
@@ -5360,14 +5352,24 @@ func commentEditorWrapWidth(width int) int {
 func wrappedLineEnd(runes []rune, start int, width int) int {
 	col := 0
 	end := start
+	wordBreak := start
 	for end < len(runes) {
 		next := col + graphemeCellWidth(string(runes[end]))
 		if next > width && end > start {
+			if wordBreak > start {
+				return wordBreak
+			}
 			break
 		}
 		col = next
 		end++
+		if unicode.IsSpace(runes[end-1]) && end > start+1 {
+			wordBreak = end
+		}
 		if col >= width {
+			if wordBreak > start && wordBreak < end {
+				return wordBreak
+			}
 			break
 		}
 	}

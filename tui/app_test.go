@@ -2182,11 +2182,65 @@ func TestDiffViewerCommentEditorWrapsLongLines(t *testing.T) {
 	if len(wrapped) != 2 {
 		t.Fatalf("wrapped line count = %d, want 2", len(wrapped))
 	}
-	if got, want := wrapped[0].text(editor.lines), "hello w"; got != want {
+	if got, want := wrapped[0].text(editor.lines), "hello "; got != want {
 		t.Fatalf("first wrapped line = %q, want %q", got, want)
 	}
-	if got, want := wrapped[1].text(editor.lines), "orld"; got != want {
+	if got, want := wrapped[1].text(editor.lines), "world"; got != want {
 		t.Fatalf("second wrapped line = %q, want %q", got, want)
+	}
+}
+
+func TestWrapCommentBodyLineEdgeCases(t *testing.T) {
+	tests := []struct {
+		name  string
+		body  string
+		width int
+		want  []string
+	}{
+		{
+			name:  "breaks at earlier space instead of splitting next word",
+			body:  "hello world",
+			width: 7,
+			want:  []string{"hello ", "world"},
+		},
+		{
+			name:  "hard wraps word with no whitespace",
+			body:  "abcdefghij",
+			width: 4,
+			want:  []string{"abcd", "efgh", "ij"},
+		},
+		{
+			name:  "keeps multiple spaces with preceding word",
+			body:  "abc  def",
+			width: 5,
+			want:  []string{"abc  ", "def"},
+		},
+		{
+			name:  "falls back to hard wrap when leading whitespace is only break",
+			body:  " abcdef",
+			width: 4,
+			want:  []string{" abc", "def"},
+		},
+		{
+			name:  "counts wide runes by cells",
+			body:  "ab 界cd",
+			width: 4,
+			want:  []string{"ab ", "界cd"},
+		},
+		{
+			name:  "wide rune longer than remaining width starts next line",
+			body:  "abc 界",
+			width: 4,
+			want:  []string{"abc ", "界"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := wrapCommentBodyLine(tt.body, tt.width); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("wrapped lines = %#v, want %#v", got, tt.want)
+			}
+		})
 	}
 }
 
