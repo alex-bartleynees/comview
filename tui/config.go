@@ -19,6 +19,8 @@ type Config struct {
 	// MatchString format (e.g. "ctrl+d", "shift+j", "Page_Down").
 	// A non-empty list replaces the defaults for that action.
 	Keybindings map[string][]string `json:"keybindings,omitempty"`
+	// Theme sets the color theme by name.
+	Theme string `json:"theme,omitempty"`
 }
 
 func loadConfig() Config {

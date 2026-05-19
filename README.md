@@ -47,6 +47,7 @@ Comments are saved to `.comview/comments.json`.
 | `]c` / `[c` | Next / previous change |
 | `]n` / `[n` | Next / previous note |
 | `s` | Toggle side-by-side view |
+| `t` | Choose theme |
 | `<space>e` | Find file in diff |
 | `/` | Search |
 | `n` / `N` | Next / previous search result |

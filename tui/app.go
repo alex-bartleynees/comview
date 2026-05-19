@@ -66,10 +66,20 @@ func newDiffApp(rows []diff.Row) (*App, *diffViewer, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	scheme := DefaultColorScheme()
+	themeName := Themes[0].Name
+	if cfg.Theme != "" {
+		if t, ok := ThemeByName(cfg.Theme); ok {
+			scheme = NewColorScheme(t.Colors)
+			themeName = t.Name
+		}
+	}
 	viewer := &diffViewer{
 		rows:         rows,
 		reviewDrafts: commentFile.Comments,
 		reviewFile:   commentPath,
+		scheme:       scheme,
+		themeName:    themeName,
 		highlighter:  NewSyntaxHighlighter(),
 		binds:        newBindings(cfg.Keybindings),
 		wrapLines:    cfg.Wrap,
@@ -93,48 +103,52 @@ func rowsForInput(input string) ([]diff.Row, error) {
 }
 
 type diffViewer struct {
-	rows               []diff.Row
-	scroll             int
-	scrollOffset       int
-	xScroll            int
-	height             int
-	width              int
-	contentWide        int
-	diffStatLayout     diffStatLayout
-	codeSegments       [][]vaxis.Segment
-	fileRows           []int
-	layoutMode         diffLayoutMode
-	cursor             selectionPoint
-	cursorGoal         int
-	mode               viewMode
-	selection          textSelection
-	yankSelection      textSelection
-	commentSelection   textSelection
-	clipboardText      string
-	reviewDrafts       []review.CommentDraft
-	reviewDirty        bool
-	reviewFile         string
-	editor             *commentEditor
-	binds              Bindings
-	wrapLines          bool
-	emptyMessage       string
-	emptyHint          string
-	commandLine        string
-	searchQuery        string
-	searchMatches      []searchMatch
-	searchIndex        int
-	searchStart        selectionPoint
-	finder             *fuzzyFinder
-	statusMessage      string
-	statusMessageUntil time.Time
-	yankUntil          time.Time
-	mouseDrag          mouseDragState
-	clicks             clickState
-	keys               keyChordState
-	helpVisible        bool
-	textObject         textObjectState
-	scheme             ColorScheme
-	highlighter        *SyntaxHighlighter
+	rows                []diff.Row
+	scroll              int
+	scrollOffset        int
+	xScroll             int
+	height              int
+	width               int
+	contentWide         int
+	diffStatLayout      diffStatLayout
+	codeSegments        [][]vaxis.Segment
+	fileRows            []int
+	layoutMode          diffLayoutMode
+	cursor              selectionPoint
+	cursorGoal          int
+	mode                viewMode
+	selection           textSelection
+	yankSelection       textSelection
+	commentSelection    textSelection
+	clipboardText       string
+	reviewDrafts        []review.CommentDraft
+	reviewDirty         bool
+	reviewFile          string
+	editor              *commentEditor
+	binds               Bindings
+	wrapLines           bool
+	emptyMessage        string
+	emptyHint           string
+	commandLine         string
+	searchQuery         string
+	searchMatches       []searchMatch
+	searchIndex         int
+	searchStart         selectionPoint
+	finder              *fuzzyFinder
+	finderMode          int // 0=files, 1=themes
+	themeName           string
+	themeNameBeforePick string
+	terminalColors      TerminalColors
+	statusMessage       string
+	statusMessageUntil  time.Time
+	yankUntil           time.Time
+	mouseDrag           mouseDragState
+	clicks              clickState
+	keys                keyChordState
+	helpVisible         bool
+	textObject          textObjectState
+	scheme              ColorScheme
+	highlighter         *SyntaxHighlighter
 }
 
 type selectionPoint struct {
@@ -266,6 +280,7 @@ var helpKeybinds = []helpKeybind{
 	{Key: "]c / [c", READMEKey: "`]c` / `[c`", Action: "Next / previous change"},
 	{Key: "]n / [n", READMEKey: "`]n` / `[n`", Action: "Next / previous note"},
 	{Key: "s", READMEKey: "`s`", Action: "Toggle side-by-side view"},
+	{Key: "t", READMEKey: "`t`", Action: "Choose theme"},
 	{Key: "Space e", READMEKey: "`<space>e`", Action: "Find file in diff"},
 	{Key: "/", READMEKey: "`/`", Action: "Search"},
 	{Key: "n / N", READMEKey: "`n` / `N`", Action: "Next / previous search result"},
@@ -282,7 +297,14 @@ var helpKeybinds = []helpKeybind{
 }
 
 func (d *diffViewer) SetTerminalColors(colors TerminalColors) {
+	d.terminalColors = colors
 	d.ensureColorScheme()
+	if d.themeName == "" {
+		d.themeName = Themes[0].Name
+	}
+	if d.themeName != Themes[0].Name {
+		return
+	}
 	d.scheme.ApplyTerminalColors(colors)
 	if d.highlighter != nil {
 		d.highlighter.SetColorScheme(d.scheme)
@@ -424,6 +446,9 @@ func (d *diffViewer) handleKey(key vaxis.Key) (Command, error) {
 		d.keys.Clear()
 		d.enterCommandMode()
 		return CommandRedraw, nil
+	case key.Matches('t'):
+		d.keys.Clear()
+		return d.openThemeFinderCommand(), nil
 	case d.binds.Matches(key, "prev_result"):
 		d.keys.Clear()
 		if !d.moveSearchMatch(-1) {
@@ -698,8 +723,29 @@ func (d *diffViewer) openFileFinderCommand() Command {
 		return CommandRedraw
 	}
 	d.finder = newFuzzyFinder("Files", items)
+	d.finderMode = 0
 	d.mode = modeFuzzy
 	d.clearStatusMessage()
+	return CommandRedraw
+}
+
+func (d *diffViewer) openThemeFinderCommand() Command {
+	items := make([]fuzzyItem, len(Themes))
+	for i, t := range Themes {
+		items[i] = fuzzyItem{Label: t.Name, Row: i}
+	}
+	d.finder = newFuzzyFinder("Themes", items)
+	d.finderMode = 1
+	d.themeNameBeforePick = d.themeName
+	d.mode = modeFuzzy
+	d.clearStatusMessage()
+	for i, t := range Themes {
+		if t.Name == d.themeName {
+			d.finder.Cursor = i
+			break
+		}
+	}
+	d.previewSelectedTheme()
 	return CommandRedraw
 }
 
@@ -751,22 +797,29 @@ func statDetail(stat diff.Stat) string {
 func (d *diffViewer) handleFuzzyKey(key vaxis.Key) Command {
 	switch {
 	case keyEscape(key):
+		if d.finderMode == 1 {
+			d.restoreThemeBeforePick()
+		}
 		d.closeFuzzyFinder()
 		return CommandRedraw
 	case key.Matches(vaxis.KeyEnter):
 		return d.acceptFuzzyFinder()
 	case key.Matches(vaxis.KeyBackspace), key.Matches('h', vaxis.ModCtrl):
 		if d.finder.Backspace() {
+			d.previewSelectedTheme()
 			return CommandRedraw
 		}
 	case d.binds.Matches(key, "fuzzy_next"):
 		d.finder.Move(1)
+		d.previewSelectedTheme()
 		return CommandRedraw
 	case d.binds.Matches(key, "fuzzy_prev"):
 		d.finder.Move(-1)
+		d.previewSelectedTheme()
 		return CommandRedraw
 	case key.Matches('u', vaxis.ModCtrl):
 		d.finder.SetQuery("")
+		d.previewSelectedTheme()
 		return CommandRedraw
 	case key.Text != "" && key.Modifiers&(vaxis.ModCtrl|vaxis.ModAlt|vaxis.ModSuper) == 0:
 		for _, r := range key.Text {
@@ -774,15 +827,62 @@ func (d *diffViewer) handleFuzzyKey(key vaxis.Key) Command {
 				d.finder.Insert(string(r))
 			}
 		}
+		d.previewSelectedTheme()
 		return CommandRedraw
 	}
 	return CommandNone
+}
+
+func (d *diffViewer) restoreThemeBeforePick() {
+	if d.themeNameBeforePick == "" {
+		return
+	}
+	t, ok := ThemeByName(d.themeNameBeforePick)
+	if !ok {
+		return
+	}
+	d.applyTheme(t)
+	d.setStatusMessage("Theme: " + d.themeName)
+}
+
+func (d *diffViewer) applyTheme(theme Theme) {
+	d.scheme = NewColorScheme(theme.Colors)
+	// The "Default" theme is meant to match the user's terminal colors
+	// (which is what the app shows at startup). Other themes use their
+	// own palette as-is so they actually look like the chosen theme.
+	if theme.Name == Themes[0].Name {
+		d.scheme.ApplyTerminalColors(d.terminalColors)
+	}
+	d.themeName = theme.Name
+	if d.highlighter != nil {
+		d.highlighter.SetColorScheme(d.scheme)
+	}
+	d.invalidateRenderCache()
+}
+
+func (d *diffViewer) previewSelectedTheme() {
+	if d.finderMode != 1 || d.finder == nil {
+		return
+	}
+	matches := d.finder.Matches()
+	if len(matches) == 0 || d.finder.Cursor < 0 || d.finder.Cursor >= len(matches) {
+		return
+	}
+	item := matches[d.finder.Cursor].Item
+	if item.Row < 0 || item.Row >= len(Themes) {
+		return
+	}
+	d.applyTheme(Themes[item.Row])
+	d.setStatusMessage("Theme: " + d.themeName)
 }
 
 func (d *diffViewer) acceptFuzzyFinder() Command {
 	item, ok := d.finder.Selected()
 	if !ok {
 		return CommandNone
+	}
+	if d.finderMode == 1 {
+		return d.acceptThemeSelection(item)
 	}
 	d.closeFuzzyFinder()
 	d.setCursor(selectionPoint{Row: item.Row})
@@ -791,8 +891,20 @@ func (d *diffViewer) acceptFuzzyFinder() Command {
 	return CommandRedraw
 }
 
+func (d *diffViewer) acceptThemeSelection(item fuzzyItem) Command {
+	if item.Row < 0 || item.Row >= len(Themes) {
+		return CommandNone
+	}
+	d.applyTheme(Themes[item.Row])
+	d.setStatusMessage("Theme: " + d.themeName)
+	d.closeFuzzyFinder()
+	return CommandRedraw
+}
+
 func (d *diffViewer) closeFuzzyFinder() {
 	d.finder = nil
+	d.finderMode = 0
+	d.themeNameBeforePick = ""
 	d.mode = modeNormal
 }
 
@@ -3174,6 +3286,7 @@ func (d *diffViewer) replaceRows(rows []diff.Row) {
 	d.yankSelection = textSelection{}
 	d.commentSelection = textSelection{}
 	d.finder = nil
+	d.finderMode = 0
 	d.invalidateRenderCache()
 	if d.searchQuery != "" {
 		d.updateSearchMatches()
