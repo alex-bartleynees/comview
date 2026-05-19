@@ -3593,6 +3593,21 @@ func TestDiffViewerLineBoundaryKeys(t *testing.T) {
 	}
 }
 
+func TestDiffViewerWrapModeMeasuresRowsWithVerticalScrollbarWidth(t *testing.T) {
+	viewer := &diffViewer{
+		rows: []diff.Row{
+			{Kind: diff.RowAdd, Code: strings.Repeat("x", 10), Text: strings.Repeat("x", 10)},
+			{Kind: diff.RowContext, Code: "y", Text: "y"},
+			{Kind: diff.RowContext, Code: "z", Text: "z"},
+		},
+		wrapLines: true,
+	}
+
+	if got, want := viewer.maxDisplayScrollForSize(10, 3), 2; got != want {
+		t.Fatalf("max display scroll = %d, want %d", got, want)
+	}
+}
+
 func TestDiffViewerWrappedRowHeightUsesFileTabWidth(t *testing.T) {
 	row := diff.Row{
 		Kind:     diff.RowAdd,

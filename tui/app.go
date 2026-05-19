@@ -946,9 +946,11 @@ func (d *diffViewer) paintStackedRows(win vaxis.Window) {
 		return
 	}
 
+	verticalVisible, _ := d.scrollbarVisibility(d.width, d.height)
+	viewportWidth := horizontalViewportWidth(d.width, verticalVisible)
 	screenRow := -d.scrollOffset
 	for docRow := d.scroll; docRow < len(d.rows) && screenRow < visible; docRow++ {
-		rowHeight := d.printRowWrapped(win, screenRow, docRow, d.rows[docRow], d.codeSegments[docRow], docRow == d.cursor.Row)
+		rowHeight := d.printRowWrapped(win, viewportWidth, screenRow, docRow, d.rows[docRow], d.codeSegments[docRow], docRow == d.cursor.Row)
 		d.paintSelection(win, screenRow, docRow)
 		screenRow += rowHeight
 		if screenRow >= visible {
@@ -1066,10 +1068,19 @@ func (d *diffViewer) screenRowForDocRow(docRow int, width int, height int) int {
 	if docRow < d.scroll {
 		return -1
 	}
+	viewportWidth := width
+	if d.wrapLines {
+		verticalVisible, _ := d.scrollbarVisibility(width, height)
+		viewportWidth = horizontalViewportWidth(width, verticalVisible)
+	}
 	screenRow := -d.scrollOffset
 	for row := d.scroll; row < docRow && row < len(d.rows); row++ {
-		screenRow += d.wrappedDocRowHeight(row, width)
-		screenRow += d.reviewDraftBoxRowsAfterRowForSize(row, width, height)
+		screenRow += d.wrappedDocRowHeight(row, viewportWidth)
+		if d.wrapLines {
+			screenRow += d.reviewDraftBoxRowsAfterRowForViewport(row, viewportWidth)
+		} else {
+			screenRow += d.reviewDraftBoxRowsAfterRowForSize(row, width, height)
+		}
 	}
 	return screenRow
 }
@@ -2514,14 +2525,13 @@ func (d *diffViewer) printRow(win vaxis.Window, row int, docRow int, diffRow dif
 // printRowWrapped paints a potentially wrapped row and returns the number of
 // screen rows consumed. When wrapLines is off it is equivalent to printRow
 // returning 1.
-func (d *diffViewer) printRowWrapped(win vaxis.Window, startRow int, docRow int, diffRow diff.Row, codeSegments []vaxis.Segment, cursorLine bool) int {
+func (d *diffViewer) printRowWrapped(win vaxis.Window, viewportWidth int, startRow int, docRow int, diffRow diff.Row, codeSegments []vaxis.Segment, cursorLine bool) int {
 	d.printRow(win, startRow, docRow, diffRow, codeSegments, cursorLine)
 	if !d.wrapLines || diffRow.Code == "" {
 		return 1
 	}
-	width, _ := win.Size()
 	codeOffset := d.codeOffset(diffRow)
-	avail := width - codeOffset
+	avail := viewportWidth - codeOffset
 	if avail <= 0 {
 		return 1
 	}
@@ -6396,14 +6406,23 @@ func (d *diffViewer) maxScrollForVisibleRows(visible int, width int, height int)
 	if threshold <= 0 {
 		return 0
 	}
+	viewportWidth := width
+	if d.wrapLines && d.layoutMode != layoutSideBySide {
+		verticalVisible, _ := d.scrollbarVisibility(width, height)
+		viewportWidth = horizontalViewportWidth(width, verticalVisible)
+	}
 	maxScroll := 0
 	displayRows := 0
 	for row := range d.rows {
 		if displayRows <= threshold {
 			maxScroll = row
 		}
-		displayRows += d.wrappedDocRowHeight(row, width)
-		displayRows += d.reviewDraftBoxRowsAfterRowForSize(row, width, height)
+		displayRows += d.wrappedDocRowHeight(row, viewportWidth)
+		if d.wrapLines && d.layoutMode != layoutSideBySide {
+			displayRows += d.reviewDraftBoxRowsAfterRowForViewport(row, viewportWidth)
+		} else {
+			displayRows += d.reviewDraftBoxRowsAfterRowForSize(row, width, height)
+		}
 	}
 	return maxScroll
 }
@@ -6416,7 +6435,12 @@ func (d *diffViewer) totalDisplayRowsForSize(width int, height int) int {
 		}
 		return total
 	}
-	return d.totalDisplayRowsForViewport(width, height)
+	viewportWidth := width
+	if d.wrapLines {
+		verticalVisible, _ := d.scrollbarVisibility(width, height)
+		viewportWidth = horizontalViewportWidth(width, verticalVisible)
+	}
+	return d.totalDisplayRowsForViewport(viewportWidth, height)
 }
 
 func (d *diffViewer) totalDisplayRowsForViewport(viewportWidth int, height int) int {
@@ -6450,6 +6474,11 @@ func (d *diffViewer) wrappedDocRowHeight(docRow int, viewportWidth int) int {
 func (d *diffViewer) rowDisplayHeightForSize(row int, width int, height int) int {
 	if row < 0 || row >= len(d.rows) {
 		return 0
+	}
+	if d.wrapLines && d.layoutMode != layoutSideBySide {
+		verticalVisible, _ := d.scrollbarVisibility(width, height)
+		viewportWidth := horizontalViewportWidth(width, verticalVisible)
+		return d.rowDisplayHeightForViewport(row, viewportWidth, height)
 	}
 	return d.wrappedDocRowHeight(row, width) + d.reviewDraftBoxRowsAfterRowForSize(row, width, height)
 }
@@ -6645,8 +6674,14 @@ func (d *diffViewer) scrollbarVisibility(width int, height int) (vertical bool, 
 		return false, false
 	}
 	if d.wrapLines {
-		totalRows := d.totalDisplayRowsForSize(width, height)
-		vertical = totalRows > visibleRowCapacity(height, false)
+		visible := visibleRowCapacity(height, false)
+		totalRows := d.totalDisplayRowsForViewport(width, height)
+		vertical = totalRows > visible
+		if vertical {
+			viewportWidth := horizontalViewportWidth(width, true)
+			totalRows = d.totalDisplayRowsForViewport(viewportWidth, height)
+			vertical = totalRows > visible
+		}
 		return vertical, false
 	}
 	horizontal = d.contentWidth() > d.contentViewportWidthFor(width, false)
