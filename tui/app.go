@@ -2345,6 +2345,9 @@ func (d *diffViewer) screenColumn(row diff.Row, docCol int) int {
 	if docCol < codeOffset {
 		return docCol
 	}
+	if d.wrapLines && d.layoutMode != layoutSideBySide {
+		return docCol
+	}
 	return codeOffset + docCol - codeOffset - d.xScroll
 }
 

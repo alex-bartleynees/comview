@@ -3593,6 +3593,25 @@ func TestDiffViewerLineBoundaryKeys(t *testing.T) {
 	}
 }
 
+func TestDiffViewerWrapModeIgnoresStaleHorizontalScrollForScreenColumns(t *testing.T) {
+	row := diff.Row{
+		Kind:   diff.RowAdd,
+		Gutter: "    1 + ",
+		Code:   strings.Repeat("x", 40),
+	}
+	viewer := &diffViewer{
+		rows:      []diff.Row{row},
+		wrapLines: true,
+		xScroll:   6,
+	}
+
+	got := viewer.screenColumn(row, testCodeOffset(row)+3)
+	want := testCodeOffset(row) + 3
+	if got != want {
+		t.Fatalf("screen column = %d, want %d", got, want)
+	}
+}
+
 func TestDiffViewerSideBySideHorizontalNavigationUsesPaneWidth(t *testing.T) {
 	row := diff.Row{
 		Kind:   diff.RowAdd,
