@@ -3593,6 +3593,33 @@ func TestDiffViewerLineBoundaryKeys(t *testing.T) {
 	}
 }
 
+func TestDiffViewerWrapModeScrollbarHandlesDrafts(t *testing.T) {
+	row := diff.Row{
+		Kind:   diff.RowAdd,
+		Gutter: "    1 + ",
+		Code:   "new",
+		Review: review.Anchor{Path: "main.go", Line: 1, Side: review.SideRight},
+	}
+	viewer := &diffViewer{
+		rows: []diff.Row{row},
+		reviewDrafts: []review.CommentDraft{{
+			Path: "main.go",
+			Line: 1,
+			Side: review.SideRight,
+			Body: strings.Repeat("draft ", 20),
+		}},
+		wrapLines: true,
+	}
+
+	vertical, horizontal := viewer.scrollbarVisibility(24, 5)
+	if horizontal {
+		t.Fatal("horizontal scrollbar visible in wrap mode")
+	}
+	if !vertical {
+		t.Fatal("vertical scrollbar hidden, want visible for wrapped draft rows")
+	}
+}
+
 func TestDiffViewerWrapModePlacesCursorOnContinuationRow(t *testing.T) {
 	row := diff.Row{
 		Kind:   diff.RowAdd,

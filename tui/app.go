@@ -2017,6 +2017,37 @@ func (d *diffViewer) reviewDraftBoxRowsForSize(docRow int, draft review.CommentD
 	return layout.height
 }
 
+func (d *diffViewer) reviewDraftBoxRowsForViewport(docRow int, draft review.CommentDraft, viewportWidth int) int {
+	layout, ok := d.reviewDraftBoxLayoutForViewport(viewportWidth, docRow, draft)
+	if !ok {
+		return 0
+	}
+	return layout.height
+}
+
+func (d *diffViewer) reviewDraftBoxLayoutForViewport(viewportWidth int, docRow int, draft review.CommentDraft) (reviewDraftBoxLayout, bool) {
+	x := 0
+	if docRow >= 0 && docRow < len(d.rows) {
+		x = d.codeOffset(d.rows[docRow])
+	}
+	x, boxWidth, ok := commentBoxGeometryForViewport(viewportWidth, x)
+	if !ok {
+		return reviewDraftBoxLayout{}, false
+	}
+	bodyWidth := boxWidth - 4
+	if bodyWidth < 1 {
+		return reviewDraftBoxLayout{}, false
+	}
+	lines := commentBodyDisplayLines(draft.Body, bodyWidth)
+	return reviewDraftBoxLayout{
+		x:         x,
+		width:     boxWidth,
+		height:    len(lines) + 2,
+		bodyWidth: bodyWidth,
+		lines:     lines,
+	}, true
+}
+
 func (d *diffViewer) reviewDraftBoxRowsAfterRowForSize(row int, width int, height int) int {
 	rows := 0
 	if d.editor != nil && d.commentEditorTargetRow() == row {
@@ -2027,6 +2058,20 @@ func (d *diffViewer) reviewDraftBoxRowsAfterRowForSize(row int, width int, heigh
 			continue
 		}
 		rows += d.reviewDraftBoxRowsForSize(row, draft, width, height)
+	}
+	return rows
+}
+
+func (d *diffViewer) reviewDraftBoxRowsAfterRowForViewport(row int, viewportWidth int) int {
+	rows := 0
+	if d.editor != nil && d.commentEditorTargetRow() == row {
+		rows += d.commentEditorHeightForViewport(viewportWidth, row)
+	}
+	for _, draft := range d.reviewDraftsEndingAtRow(row) {
+		if d.editor != nil && d.editor.draftIndex >= 0 && d.editor.draftIndex < len(d.reviewDrafts) && d.reviewDrafts[d.editor.draftIndex] == draft {
+			continue
+		}
+		rows += d.reviewDraftBoxRowsForViewport(row, draft, viewportWidth)
 	}
 	return rows
 }
@@ -6371,9 +6416,13 @@ func (d *diffViewer) totalDisplayRowsForSize(width int, height int) int {
 		}
 		return total
 	}
+	return d.totalDisplayRowsForViewport(width, height)
+}
+
+func (d *diffViewer) totalDisplayRowsForViewport(viewportWidth int, height int) int {
 	rows := 0
 	for row := range d.rows {
-		rows += d.rowDisplayHeightForSize(row, width, height)
+		rows += d.rowDisplayHeightForViewport(row, viewportWidth, height)
 	}
 	return rows
 }
@@ -6403,6 +6452,13 @@ func (d *diffViewer) rowDisplayHeightForSize(row int, width int, height int) int
 		return 0
 	}
 	return d.wrappedDocRowHeight(row, width) + d.reviewDraftBoxRowsAfterRowForSize(row, width, height)
+}
+
+func (d *diffViewer) rowDisplayHeightForViewport(row int, viewportWidth int, height int) int {
+	if row < 0 || row >= len(d.rows) {
+		return 0
+	}
+	return d.wrappedDocRowHeight(row, viewportWidth) + d.reviewDraftBoxRowsAfterRowForViewport(row, viewportWidth)
 }
 
 func (d *diffViewer) sideBySideRowDisplayHeightForSize(row sideBySideRow, width int, height int) int {
@@ -6517,6 +6573,25 @@ func (d *diffViewer) commentEditorHeightForSize(width int, height int) int {
 	if !ok {
 		return 0
 	}
+	return d.commentEditorHeightForBoxWidth(boxWidth)
+}
+
+func (d *diffViewer) commentEditorHeightForViewport(viewportWidth int, targetRow int) int {
+	if d.editor == nil || viewportWidth <= 0 || targetRow < 0 {
+		return 0
+	}
+	x := 0
+	if targetRow < len(d.rows) {
+		x = d.codeOffset(d.rows[targetRow])
+	}
+	_, boxWidth, ok := commentBoxGeometryForViewport(viewportWidth, x)
+	if !ok {
+		return 0
+	}
+	return d.commentEditorHeightForBoxWidth(boxWidth)
+}
+
+func (d *diffViewer) commentEditorHeightForBoxWidth(boxWidth int) int {
 	inputWidth := boxWidth - 4
 	if inputWidth < 1 {
 		return 0
