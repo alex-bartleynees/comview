@@ -2026,20 +2026,25 @@ func (d *diffViewer) paintCommentEditorWithLayout(win vaxis.Window, layout comme
 			break
 		}
 		screenRow := layout.y + 1 + row
-		for col := 0; col < layout.boxWidth-2; col++ {
-			win.SetCell(layout.x+1+col, screenRow, vaxis.Cell{
-				Character: vaxis.Character{Grapheme: " ", Width: 1},
-				Style:     inputStyle,
-			})
-		}
+		paintCommentEditorBodyBackground(win, layout.x, screenRow, layout.boxWidth, inputStyle)
 		if row < len(layout.wrapped) {
-			printSegmentsHardClipped(
-				win, layout.x+2, screenRow, layout.inputWidth,
-				d.commentEditorSegments(layout.wrapped[row], inputStyle)...,
-			)
+			paintCommentEditorBodyText(win, layout.x, screenRow, layout.inputWidth, d.commentEditorSegments(layout.wrapped[row], inputStyle)...)
 		}
 	}
 	d.paintCommentCursor(win, layout, boxHeight)
+}
+
+func paintCommentEditorBodyBackground(dst cellSetter, x int, row int, boxWidth int, style vaxis.Style) {
+	for col := 0; col < boxWidth-2; col++ {
+		dst.SetCell(x+1+col, row, vaxis.Cell{
+			Character: vaxis.Character{Grapheme: " ", Width: 1},
+			Style:     style,
+		})
+	}
+}
+
+func paintCommentEditorBodyText(dst cellSetter, x int, row int, inputWidth int, segments ...vaxis.Segment) {
+	paintSegmentsHardClipped(dst, x+2, row, inputWidth, segments...)
 }
 
 func (d *diffViewer) paintReviewDraftBox(win vaxis.Window, screenRow int, docRow int, draft review.CommentDraft, remainingRows int) int {
@@ -2081,18 +2086,21 @@ func (d *diffViewer) paintReviewDraftBoxInWindow(win vaxis.Window, screenRow int
 			padding = 0
 		}
 		if rowsPainted < remainingRows {
-			row := screenRow + rowsPainted
-			printSegmentsHardClipped(
-				win, layout.x, row, layout.width,
-				vaxis.Segment{Text: "│", Style: borderStyle},
-				vaxis.Segment{Text: " " + line + strings.Repeat(" ", padding) + " ", Style: bodyStyle},
-				vaxis.Segment{Text: "│", Style: borderStyle},
-			)
+			paintReviewDraftBodyLine(win, layout.x, screenRow+rowsPainted, layout.width, line, padding, bodyStyle, borderStyle)
 			rowsPainted++
 		}
 	}
 	paintLine(commentBoxBottomLine(layout.width), borderStyle)
 	return layout.height
+}
+
+func paintReviewDraftBodyLine(dst cellSetter, x int, row int, width int, line string, padding int, bodyStyle vaxis.Style, borderStyle vaxis.Style) {
+	paintSegmentsHardClipped(
+		dst, x, row, width,
+		vaxis.Segment{Text: "│", Style: borderStyle},
+		vaxis.Segment{Text: " " + line + strings.Repeat(" ", padding) + " ", Style: bodyStyle},
+		vaxis.Segment{Text: "│", Style: borderStyle},
+	)
 }
 
 type reviewDraftBoxLayout struct {

@@ -2249,6 +2249,81 @@ func TestDiffViewerCommentEditorWrapsLikeReadOnlyDraftBox(t *testing.T) {
 	}
 }
 
+func TestDiffViewerCommentBoxPaintsEditableAndReadOnlyWrappedRowsTheSame(t *testing.T) {
+	tests := []struct {
+		name  string
+		body  string
+		width int
+	}{
+		{
+			name:  "trailing spaces",
+			body:  "abc   ",
+			width: 4,
+		},
+		{
+			name:  "blank line",
+			body:  "top\n\nbottom",
+			width: 6,
+		},
+		{
+			name:  "wide character at boundary",
+			body:  "ab界cd",
+			width: 4,
+		},
+		{
+			name:  "narrow body",
+			body:  "abcdef",
+			width: 1,
+		},
+		{
+			name:  "spaces near wrap boundary",
+			body:  "abc  def",
+			width: 5,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			editable := paintEditableCommentBodyRowsForTest(tt.body, tt.width)
+			readOnly := paintReadOnlyCommentBodyRowsForTest(tt.body, tt.width)
+			if !reflect.DeepEqual(editable, readOnly) {
+				t.Fatalf("editable painted rows = %#v, want read-only rows %#v", editable, readOnly)
+			}
+		})
+	}
+}
+
+func paintEditableCommentBodyRowsForTest(body string, width int) []string {
+	boxWidth := width + 4
+	style := vaxis.Style{Foreground: vaxis.RGBColor(1, 2, 3), Background: vaxis.RGBColor(4, 5, 6)}
+	editor := &commentEditor{lines: strings.Split(body, "\n")}
+	viewer := &diffViewer{editor: editor}
+	viewer.ensureColorScheme()
+	wrapped := editor.wrappedLines(width)
+	grid := testGrid{}
+	for row, line := range wrapped {
+		paintCommentEditorBodyBackground(grid, 0, row, boxWidth, style)
+		paintCommentEditorBodyText(grid, 0, row, width, viewer.commentEditorSegments(line, style)...)
+	}
+	return grid.textRows(len(wrapped), 2, width)
+}
+
+func paintReadOnlyCommentBodyRowsForTest(body string, width int) []string {
+	boxWidth := width + 4
+	bodyStyle := vaxis.Style{Foreground: vaxis.RGBColor(1, 2, 3), Background: vaxis.RGBColor(4, 5, 6)}
+	borderStyle := vaxis.Style{Foreground: vaxis.RGBColor(7, 8, 9), Background: bodyStyle.Background}
+	lines := commentBodyDisplayLines(body, width)
+	grid := testGrid{}
+	for row, line := range lines {
+		padding := width - textCellWidth(line)
+		if padding < 0 {
+			padding = 0
+		}
+		paintReviewDraftBodyLine(grid, 0, row, boxWidth, line, padding, bodyStyle, borderStyle)
+	}
+	return grid.textRows(len(lines), 2, width)
+}
+
 func TestDiffViewerCommentEditorDoesNotWrapAtExactInputWidth(t *testing.T) {
 	editor := &commentEditor{lines: []string{"abcdef"}}
 	wrapped := editor.wrappedLines(6)
@@ -6199,6 +6274,32 @@ func (t testCells) text(width int) string {
 		b.WriteString(t[col].Grapheme)
 	}
 	return b.String()
+}
+
+type testGrid map[[2]int]vaxis.Cell
+
+func (t testGrid) SetCell(col int, row int, cell vaxis.Cell) {
+	t[[2]int{col, row}] = cell
+}
+
+func (t testGrid) textRows(rows int, start int, width int) []string {
+	text := make([]string, rows)
+	for row := 0; row < rows; row++ {
+		var b strings.Builder
+		for col := start; col < start+width; {
+			cell := t[[2]int{col, row}]
+			if cell.Grapheme != "" {
+				b.WriteString(cell.Grapheme)
+				if cell.Width > 1 {
+					col += cell.Width
+					continue
+				}
+			}
+			col++
+		}
+		text[row] = b.String()
+	}
+	return text
 }
 
 func TestApplyInlineSpans(t *testing.T) {
