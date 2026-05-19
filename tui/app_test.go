@@ -2293,6 +2293,110 @@ func TestDiffViewerCommentBoxPaintsEditableAndReadOnlyWrappedRowsTheSame(t *test
 	}
 }
 
+func TestDiffViewerCommentEditorCursorDisplayPositionAtWrapBoundaries(t *testing.T) {
+	tests := []struct {
+		name    string
+		line    string
+		col     int
+		width   int
+		wantRow int
+		wantCol int
+	}{
+		{
+			name:    "end of full first line stays on first display row",
+			line:    "abcdef",
+			col:     4,
+			width:   4,
+			wantRow: 0,
+			wantCol: 3,
+		},
+		{
+			name:    "start of second display row",
+			line:    "abcdef",
+			col:     5,
+			width:   4,
+			wantRow: 1,
+			wantCol: 1,
+		},
+		{
+			name:    "wide character at boundary",
+			line:    "ab界cd",
+			col:     3,
+			width:   4,
+			wantRow: 0,
+			wantCol: 3,
+		},
+		{
+			name:    "after wide character wraps to next row",
+			line:    "ab界cd",
+			col:     4,
+			width:   4,
+			wantRow: 1,
+			wantCol: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			editor := &commentEditor{lines: []string{tt.line}, col: tt.col}
+			row, col, ok := editor.cursorDisplayPosition(tt.width)
+			if !ok {
+				t.Fatal("cursor display position missing")
+			}
+			if row != tt.wantRow || col != tt.wantCol {
+				t.Fatalf("cursor display position = %d,%d, want %d,%d", row, col, tt.wantRow, tt.wantCol)
+			}
+		})
+	}
+}
+
+func TestDiffViewerCommentEditorMovesAcrossWrappedDisplayRows(t *testing.T) {
+	editor := &commentEditor{lines: []string{"abcdefgh"}, col: 1}
+
+	editor.moveDisplayRow(1, 4)
+	if got, want := editor.col, 5; got != want {
+		t.Fatalf("cursor col after moving down = %d, want %d", got, want)
+	}
+
+	editor.moveDisplayRow(-1, 4)
+	if got, want := editor.col, 1; got != want {
+		t.Fatalf("cursor col after moving back up = %d, want %d", got, want)
+	}
+}
+
+func TestDiffViewerCommentEditorMovesAcrossWrappedWideCharacters(t *testing.T) {
+	editor := &commentEditor{lines: []string{"ab界cdef"}, col: 1}
+
+	editor.moveDisplayRow(1, 4)
+	if got, want := editor.col, 4; got != want {
+		t.Fatalf("cursor col after moving down across wide char = %d, want %d", got, want)
+	}
+
+	editor.moveDisplayRow(-1, 4)
+	if got, want := editor.col, 1; got != want {
+		t.Fatalf("cursor col after moving back up across wide char = %d, want %d", got, want)
+	}
+}
+
+func TestDiffViewerCommentVisualSelectionCopiesAcrossWrappedBoundary(t *testing.T) {
+	viewer := &diffViewer{
+		width:  40,
+		height: 10,
+		editor: &commentEditor{
+			lines: []string{"abcdef"},
+			col:   3,
+		},
+		mode: modeNormal,
+	}
+	viewer.toggleCommentVisualMode(modeVisual)
+	viewer.editor.moveCol(2)
+	viewer.updateCommentVisualSelection()
+
+	if got, want := viewer.commentSelectionText(), "def"; got != want {
+		t.Fatalf("selection text across wrap boundary = %q, want %q", got, want)
+	}
+}
+
 func paintEditableCommentBodyRowsForTest(body string, width int) []string {
 	boxWidth := width + 4
 	style := vaxis.Style{Foreground: vaxis.RGBColor(1, 2, 3), Background: vaxis.RGBColor(4, 5, 6)}
