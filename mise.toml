@@ -1,0 +1,47 @@
+[tools]
+go = "1.26.1"
+gofumpt = "0.10.0"
+golangci-lint = "2.12.2"
+
+[env]
+GOFLAGS = "-ldflags=-linkmode=external"
+
+[tasks.build]
+description = "Build comview"
+run = "go build -o comview ./cmd/comview"
+
+[tasks.install]
+description = "Install comview"
+depends = ["build"]
+run = [
+  "install -d ${DESTDIR}${BINDIR:-${PREFIX:-/usr/local}/bin}",
+  "install -m 0755 comview ${DESTDIR}${BINDIR:-${PREFIX:-/usr/local}/bin}/comview",
+]
+
+[tasks.uninstall]
+description = "Uninstall comview"
+run = "rm -f ${DESTDIR}${BINDIR:-${PREFIX:-/usr/local}/bin}/comview"
+
+[tasks.clean]
+description = "Remove build artifacts"
+run = "rm -f comview"
+
+[tasks.test]
+description = "Run tests"
+run = "go test ./..."
+
+[tasks.check]
+description = "Run formatting checks and tests"
+run = [
+  "scripts/check-multiline-functions.sh",
+  "scripts/gofumpt.sh",
+  "golangci-lint run ./...",
+  "go test ./...",
+]
+
+[tasks.fix]
+description = "Apply automatic lint fixes and format Go files"
+run = [
+  "golangci-lint run --fix ./... || true",
+  "gofumpt -w $(find . -name '*.go' -not -path './.git/*')",
+]

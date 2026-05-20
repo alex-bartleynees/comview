@@ -9,13 +9,20 @@ The finest diff viewer ever compressed into a small terminal program. It reads a
 ```sh
 git clone https://github.com/rockorager/comview.git
 cd comview
-make install
+mise run install
 ```
 
 To install somewhere else:
 
 ```sh
-make PREFIX=$HOME/.local install
+PREFIX=$HOME/.local mise run install
+```
+
+To use comview as the default pager for `git diff` and `git show`:
+
+```sh
+git config --global pager.diff comview
+git config --global pager.show comview
 ```
 
 ## Usage
@@ -24,7 +31,14 @@ make PREFIX=$HOME/.local install
 git diff | comview
 git show | comview
 gh pr diff 123 | comview
+comview watch
+comview watch --staged
+comview watch -- git show HEAD
 ```
+
+`comview watch` reruns `git diff` and refreshes the view whenever the diff
+output changes. Arguments after `watch` are passed to `git diff`; use `--` to
+watch another diff-producing command.
 
 Comments are saved to `.comview/comments.json`.
 
@@ -40,6 +54,7 @@ Comments are saved to `.comview/comments.json`.
 | `]c` / `[c` | Next / previous change |
 | `]n` / `[n` | Next / previous note |
 | `s` | Toggle side-by-side view |
+| `t` | Choose theme |
 | `<space>e` | Find file in diff |
 | `/` | Search |
 | `n` / `N` | Next / previous search result |
