@@ -18,6 +18,13 @@ To install somewhere else:
 make PREFIX=$HOME/.local install
 ```
 
+To use comview as the default pager for `git diff` and `git show`:
+
+```sh
+git config --global pager.diff comview
+git config --global pager.show comview
+```
+
 ## Usage
 
 ```sh
