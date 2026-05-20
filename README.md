@@ -9,13 +9,13 @@ The finest diff viewer ever compressed into a small terminal program. It reads a
 ```sh
 git clone https://github.com/rockorager/comview.git
 cd comview
-make install
+mise run install
 ```
 
 To install somewhere else:
 
 ```sh
-make PREFIX=$HOME/.local install
+PREFIX=$HOME/.local mise run install
 ```
 
 To use comview as the default pager for `git diff` and `git show`:
