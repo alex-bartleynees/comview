@@ -24,16 +24,16 @@ func TestUIDiffViewRendersRowsAsSliverTable(t *testing.T) {
 	if got := p.Cell(0, 0).Grapheme; got != "1" {
 		t.Fatalf("old gutter = %q, want 1", got)
 	}
-	if got := p.Cell(1, 0).Grapheme; got != "1" {
+	if got := p.Cell(2, 0).Grapheme; got != "1" {
 		t.Fatalf("new gutter = %q, want 1", got)
 	}
-	if got := p.Cell(3, 0).Grapheme; got != "s" {
+	if got := p.Cell(6, 0).Grapheme; got != "s" {
 		t.Fatalf("code start = %q, want s", got)
 	}
-	if got := p.Cell(2, 1).Grapheme; got != "-" {
+	if got := p.Cell(4, 1).Grapheme; got != "-" {
 		t.Fatalf("delete marker = %q, want -", got)
 	}
-	if got := p.Cell(2, 2).Grapheme; got != "+" {
+	if got := p.Cell(4, 2).Grapheme; got != "+" {
 		t.Fatalf("add marker = %q, want +", got)
 	}
 }
@@ -76,11 +76,33 @@ func TestUIDiffViewUsesStableFixedGutterColumns(t *testing.T) {
 
 	p := vui.NewPainter(vui.Size{Width: 20, Height: 2})
 	app.Paint(p)
-	if got := p.Cell(7, 0).Grapheme; got != "o" {
-		t.Fatalf("first row code start = %q, want o at stable col 7", got)
+	if got := p.Cell(10, 0).Grapheme; got != "o" {
+		t.Fatalf("first row code start = %q, want o at stable col 10", got)
 	}
-	if got := p.Cell(7, 1).Grapheme; got != "h" {
-		t.Fatalf("second row code start = %q, want h at stable col 7", got)
+	if got := p.Cell(10, 1).Grapheme; got != "h" {
+		t.Fatalf("second row code start = %q, want h at stable col 10", got)
+	}
+}
+
+func TestUIDiffViewRendersMetadataOutsideDiffGrid(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowCommitHeader, Text: "commit abc123"},
+		{Kind: diff.RowContext, Gutter: "12 34   ", Code: "code"},
+	}
+	app := vui.NewApp(uiDiffView{Rows: rows, Scheme: DefaultColorScheme()})
+	app.Pump(vui.Size{Width: 20, Height: 2})
+	app.Pump(vui.Size{Width: 20, Height: 2})
+
+	p := vui.NewPainter(vui.Size{Width: 20, Height: 2})
+	app.Paint(p)
+	if got := p.Cell(0, 0).Grapheme; got != "c" {
+		t.Fatalf("metadata row starts at col 0 with %q, want c", got)
+	}
+	if got := p.Cell(0, 1).Grapheme; got != "1" {
+		t.Fatalf("diff row old gutter starts at col 0 with %q, want 1", got)
+	}
+	if got := p.Cell(8, 1).Grapheme; got != "c" {
+		t.Fatalf("diff row code starts after gutter with %q, want c", got)
 	}
 }
 
@@ -172,25 +194,25 @@ func TestUIDiffViewLineBoundaryKeys(t *testing.T) {
 		{
 			name:      "l moves cursor right",
 			keys:      []vaxis.Key{{Text: "l", Keycode: 'l'}},
-			wantCol:   4,
+			wantCol:   7,
 			wantGlyph: "b",
 		},
 		{
 			name:      "h moves cursor left",
 			keys:      []vaxis.Key{{Text: "l", Keycode: 'l'}, {Text: "l", Keycode: 'l'}, {Text: "h", Keycode: 'h'}},
-			wantCol:   4,
+			wantCol:   7,
 			wantGlyph: "b",
 		},
 		{
 			name:      "0 moves to code start",
 			keys:      []vaxis.Key{{Text: "l", Keycode: 'l'}, {Text: "l", Keycode: 'l'}, {Text: "0", Keycode: '0'}},
-			wantCol:   3,
+			wantCol:   6,
 			wantGlyph: "a",
 		},
 		{
 			name:      "$ moves to code end",
 			keys:      []vaxis.Key{{Text: "$", Keycode: '$'}},
-			wantCol:   8,
+			wantCol:   11,
 			wantGlyph: "f",
 		},
 	}
@@ -229,7 +251,7 @@ func TestUIDiffViewHorizontalMovementUsesTabStops(t *testing.T) {
 	app.Pump(vui.Size{Width: 20, Height: 3})
 	p := vui.NewPainter(vui.Size{Width: 20, Height: 3})
 	app.Paint(p)
-	for col := 4; col < 12; col++ {
+	for col := 7; col < 15; col++ {
 		if got := p.Cell(col, 0).Background; got != DefaultColorScheme().Yank {
 			t.Fatalf("tab cursor background at col %d = %v, want yank", col, got)
 		}
@@ -239,7 +261,7 @@ func TestUIDiffViewHorizontalMovementUsesTabStops(t *testing.T) {
 	app.Pump(vui.Size{Width: 20, Height: 3})
 	p = vui.NewPainter(vui.Size{Width: 20, Height: 3})
 	app.Paint(p)
-	if cell := p.Cell(12, 0); cell.Grapheme != "b" || cell.Background != DefaultColorScheme().Yank {
+	if cell := p.Cell(15, 0); cell.Grapheme != "b" || cell.Background != DefaultColorScheme().Yank {
 		t.Fatalf("cursor after tab = %q/%v, want b/yank", cell.Grapheme, cell.Background)
 	}
 
@@ -247,7 +269,7 @@ func TestUIDiffViewHorizontalMovementUsesTabStops(t *testing.T) {
 	app.Pump(vui.Size{Width: 20, Height: 3})
 	p = vui.NewPainter(vui.Size{Width: 20, Height: 3})
 	app.Paint(p)
-	for col := 4; col < 12; col++ {
+	for col := 7; col < 15; col++ {
 		if got := p.Cell(col, 0).Background; got != DefaultColorScheme().Yank {
 			t.Fatalf("tab cursor after h at col %d = %v, want yank", col, got)
 		}
@@ -267,11 +289,11 @@ func TestUIDiffViewHorizontalMovementStopsAtLineEnd(t *testing.T) {
 
 	p := vui.NewPainter(vui.Size{Width: 20, Height: 3})
 	app.Paint(p)
-	cell := p.Cell(5, 0)
+	cell := p.Cell(8, 0)
 	if cell.Grapheme != "c" || cell.Background != DefaultColorScheme().Yank {
 		t.Fatalf("cursor after repeated l = %q/%v, want c/yank", cell.Grapheme, cell.Background)
 	}
-	if got := p.Cell(6, 0).Background; got == DefaultColorScheme().Yank {
+	if got := p.Cell(9, 0).Background; got == DefaultColorScheme().Yank {
 		t.Fatal("cursor highlighted past end of line")
 	}
 }
@@ -307,18 +329,18 @@ func TestUIDiffViewWrapsCodeThroughMeasuredRows(t *testing.T) {
 		{Kind: diff.RowContext, Gutter: "2 2   ", Code: "next"},
 	}
 	app := vui.NewApp(uiDiffView{Rows: rows, Scheme: DefaultColorScheme(), Wrap: true})
-	app.Pump(vui.Size{Width: 8, Height: 4})
-	app.Pump(vui.Size{Width: 8, Height: 4})
+	app.Pump(vui.Size{Width: 11, Height: 4})
+	app.Pump(vui.Size{Width: 11, Height: 4})
 
-	p := vui.NewPainter(vui.Size{Width: 8, Height: 4})
+	p := vui.NewPainter(vui.Size{Width: 11, Height: 4})
 	app.Paint(p)
-	if got := p.Cell(3, 0).Grapheme; got != "a" {
+	if got := p.Cell(6, 0).Grapheme; got != "a" {
 		t.Fatalf("wrapped first line start = %q, want a", got)
 	}
-	if got := p.Cell(3, 1).Grapheme; got != "f" {
+	if got := p.Cell(6, 1).Grapheme; got != "f" {
 		t.Fatalf("wrapped second line start = %q, want f", got)
 	}
-	if got := p.Cell(3, 2).Grapheme; got != "n" {
+	if got := p.Cell(6, 2).Grapheme; got != "n" {
 		t.Fatalf("next row after wrapped row = %q, want n", got)
 	}
 }

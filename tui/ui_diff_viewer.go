@@ -20,7 +20,7 @@ func (w uiDiffView) CreateState() vui.State {
 
 type uiDiffViewState struct {
 	vui.StateBase
-	table     vui.SliverTableController
+	list      vui.SliverListController
 	cursor    selectionPoint
 	cursorCol int
 	pendingG  bool
@@ -35,14 +35,13 @@ func (s *uiDiffViewState) Build(ctx vui.BuildContext) vui.Widget {
 	}
 	return vui.CustomScrollView{
 		Slivers: []vui.Widget{
-			vui.SliverTableBuilder{
-				Controller:         &s.table,
-				Columns:            uiDiffColumns(w.Rows),
-				RowCount:           len(w.Rows),
-				EstimatedRowExtent: 1,
-				Overscan:           8,
-				Builder: func(ctx vui.BuildContext, row int) vui.TableRow {
-					return s.buildRow(w.Rows[row], row == s.cursor.Row, s.cursor.Col, scheme, w.Wrap)
+			vui.SliverListBuilder{
+				Controller:          &s.list,
+				Count:               len(w.Rows),
+				EstimatedItemExtent: 1,
+				Overscan:            8,
+				Builder: func(ctx vui.BuildContext, row int) vui.Widget {
+					return s.buildItem(w.Rows, row, scheme, w.Wrap)
 				},
 			},
 		},
@@ -121,16 +120,42 @@ func (s *uiDiffViewState) HandleEvent(ctx vui.EventContext, ev vui.Event) vui.Ev
 	}
 }
 
+func (s *uiDiffViewState) buildItem(rows []diff.Row, rowIndex int, scheme ColorScheme, wrap bool) vui.Widget {
+	row := rows[rowIndex]
+	active := rowIndex == s.cursor.Row
+	if !uiDiffRowUsesGrid(row) {
+		return uiDiffFullWidthRow(row, active, scheme, wrap)
+	}
+	return vui.Table{
+		Columns: uiDiffColumns(rows),
+		Rows: []vui.TableRow{
+			s.buildRow(row, active, s.cursor.Col, scheme, wrap),
+		},
+	}
+}
+
+func uiDiffFullWidthRow(row diff.Row, active bool, scheme ColorScheme, wrap bool) vui.Widget {
+	style := uiStyleForDiffRow(row.Kind, scheme)
+	if active {
+		style.Background = scheme.Selection
+	}
+	return vui.Text{Value: uiDiffRowCode(row), Style: style, SoftWrap: wrap}
+}
+
 func (s *uiDiffViewState) buildRow(row diff.Row, active bool, cursorCol int, scheme ColorScheme, wrap bool) vui.TableRow {
 	style := uiStyleForDiffRow(row.Kind, scheme)
 	if active {
 		style.Background = scheme.Selection
 	}
 	oldLine, newLine, marker := splitDiffGutter(row)
+	gutterStyle := uiGutterStyle(row.Kind, active, scheme)
 	return vui.TableRow{Children: []vui.Widget{
-		vui.Text{Value: oldLine, Style: uiGutterStyle(row.Kind, active, scheme), Align: vui.TextAlignRight},
-		vui.Text{Value: newLine, Style: uiGutterStyle(row.Kind, active, scheme), Align: vui.TextAlignRight},
-		vui.Text{Value: marker, Style: uiGutterStyle(row.Kind, active, scheme)},
+		vui.Text{Value: oldLine, Style: gutterStyle, Align: vui.TextAlignRight},
+		vui.Text{Value: " ", Style: gutterStyle},
+		vui.Text{Value: newLine, Style: gutterStyle, Align: vui.TextAlignRight},
+		vui.Text{Value: " ", Style: gutterStyle},
+		vui.Text{Value: marker, Style: gutterStyle},
+		vui.Text{Value: " ", Style: gutterStyle},
 		uiDiffCodeWidget(row, active, cursorCol, style, scheme, wrap),
 	}}
 }
@@ -163,16 +188,26 @@ func uiDiffColumns(rows []diff.Row) []vui.TableColumn {
 	oldWidth := 0
 	newWidth := 0
 	for _, row := range rows {
+		if !uiDiffRowUsesGrid(row) {
+			continue
+		}
 		oldLine, newLine, _ := splitDiffGutter(row)
 		oldWidth = maxInt(oldWidth, textCellWidth(oldLine))
 		newWidth = maxInt(newWidth, textCellWidth(newLine))
 	}
 	return []vui.TableColumn{
 		vui.FixedColumn(oldWidth),
+		vui.FixedColumn(1),
 		vui.FixedColumn(newWidth),
+		vui.FixedColumn(1),
+		vui.FixedColumn(1),
 		vui.FixedColumn(1),
 		vui.FlexColumn(1),
 	}
+}
+
+func uiDiffRowUsesGrid(row diff.Row) bool {
+	return row.Gutter != "" || row.Marker != ""
 }
 
 func (s *uiDiffViewState) setCursorRow(rows []diff.Row, row int) {
@@ -183,7 +218,7 @@ func (s *uiDiffViewState) setCursorRow(rows []diff.Row, row int) {
 	s.cursor.Row = clampUIDiffInt(row, 0, len(rows)-1)
 	s.cursor.Col = s.clampCursorCol(rows, s.cursor.Row, s.cursorCol)
 	s.cursorCol = s.cursor.Col
-	s.table.RevealRow(s.cursor.Row)
+	s.revealCursorRow()
 	s.SetState(func() {})
 }
 
@@ -195,11 +230,25 @@ func (s *uiDiffViewState) moveCursorRows(rows []diff.Row, delta int) {
 }
 
 func (s *uiDiffViewState) halfPageRows() int {
-	first, last, ok := s.table.VisibleRange()
+	first, last, ok := s.list.VisibleRange()
 	if !ok || last <= first+1 {
 		return 1
 	}
 	return maxInt(1, (last-first)/2)
+}
+
+func (s *uiDiffViewState) revealCursorRow() {
+	first, last, ok := s.list.VisibleRange()
+	if !ok {
+		return
+	}
+	if s.cursor.Row < first {
+		s.list.ScrollToIndex(s.cursor.Row, vui.ScrollAlignStart)
+		return
+	}
+	if s.cursor.Row >= last {
+		s.list.ScrollToIndex(s.cursor.Row, vui.ScrollAlignEnd)
+	}
 }
 
 func (s *uiDiffViewState) moveCursorCols(rows []diff.Row, delta int) {
@@ -208,7 +257,7 @@ func (s *uiDiffViewState) moveCursorCols(rows []diff.Row, delta int) {
 	}
 	s.cursor.Col = uiDiffMoveCursorCol(rows[s.cursor.Row], s.cursor.Col, delta)
 	s.cursorCol = s.cursor.Col
-	s.table.RevealRow(s.cursor.Row)
+	s.revealCursorRow()
 	s.SetState(func() {})
 }
 
@@ -358,17 +407,26 @@ func splitDiffGutter(row diff.Row) (string, string, string) {
 		return "", "", ""
 	}
 	fields := stringsFields(row.Gutter)
+	marker := row.Marker
+	if len(fields) > 0 && isDiffMarker(fields[len(fields)-1]) {
+		marker = fields[len(fields)-1]
+		fields = fields[:len(fields)-1]
+	}
 	switch len(fields) {
 	case 0:
-		return "", "", row.Marker
+		return "", "", marker
 	case 1:
 		if row.Kind == diff.RowDelete {
-			return fields[0], "", row.Marker
+			return fields[0], "", marker
 		}
-		return "", fields[0], row.Marker
+		return "", fields[0], marker
 	default:
-		return fields[0], fields[1], row.Marker
+		return fields[0], fields[1], marker
 	}
+}
+
+func isDiffMarker(s string) bool {
+	return s == "+" || s == "-"
 }
 
 func stringsFields(s string) []string {
