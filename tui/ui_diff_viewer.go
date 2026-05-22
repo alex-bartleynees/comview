@@ -8,15 +8,17 @@ import (
 	"github.com/rockorager/go-uucode"
 
 	"github.com/rockorager/comview/diff"
+	"github.com/rockorager/comview/review"
 )
 
 type uiDiffView struct {
-	Rows []diff.Row
-	Wrap bool
+	Rows         []diff.Row
+	Wrap         bool
+	ReviewDrafts []review.CommentDraft
 }
 
-func uiDiffRoot(rows []diff.Row, wrap bool) vui.Widget {
-	return uiDiffView{Rows: rows, Wrap: wrap}
+func uiDiffRoot(rows []diff.Row, wrap bool, drafts []review.CommentDraft) vui.Widget {
+	return uiDiffView{Rows: rows, Wrap: wrap, ReviewDrafts: drafts}
 }
 
 func uiThemeFromBaseColors(base BaseColors) vui.Theme {
@@ -142,7 +144,8 @@ func (s *uiDiffViewState) HandleEvent(ctx vui.EventContext, ev vui.Event) vui.Ev
 	if !ok || key.EventType == vaxis.EventRelease || pureModifierKey(key) {
 		return vui.EventIgnored
 	}
-	rows := s.Widget().(uiDiffView).Rows
+	w := s.Widget().(uiDiffView)
+	rows := w.Rows
 	if len(rows) == 0 {
 		return vui.EventIgnored
 	}
@@ -160,6 +163,14 @@ func (s *uiDiffViewState) HandleEvent(ctx vui.EventContext, ev vui.Event) vui.Ev
 	case key.Matches('c') && s.pendingBracket == '[':
 		s.clearPendingKeys()
 		s.jumpChange(rows, -1)
+		return vui.EventHandled
+	case key.Matches('n') && s.pendingBracket == ']':
+		s.clearPendingKeys()
+		s.jumpNote(w.Rows, w.ReviewDrafts, 1)
+		return vui.EventHandled
+	case key.Matches('n') && s.pendingBracket == '[':
+		s.clearPendingKeys()
+		s.jumpNote(w.Rows, w.ReviewDrafts, -1)
 		return vui.EventHandled
 	case key.Matches(']'):
 		s.pendingG = false
@@ -603,6 +614,15 @@ func (s *uiDiffViewState) setCursorRowAtStart(rows []diff.Row, row int) {
 
 func (s *uiDiffViewState) jumpChange(rows []diff.Row, direction int) {
 	targets := uiDiffChangeTargetRows(rows)
+	s.jumpTargetRow(rows, targets, direction)
+}
+
+func (s *uiDiffViewState) jumpNote(rows []diff.Row, drafts []review.CommentDraft, direction int) {
+	targets := noteTargetRows(rows, drafts)
+	s.jumpTargetRow(rows, targets, direction)
+}
+
+func (s *uiDiffViewState) jumpTargetRow(rows []diff.Row, targets []int, direction int) {
 	if len(targets) == 0 {
 		return
 	}

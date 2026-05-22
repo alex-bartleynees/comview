@@ -8,6 +8,7 @@ import (
 	vui "git.sr.ht/~rockorager/vaxis/ui"
 
 	"github.com/rockorager/comview/diff"
+	"github.com/rockorager/comview/review"
 )
 
 func uiDiffTestTheme() vui.Theme {
@@ -20,8 +21,12 @@ func newUIDiffTestApp(rows []diff.Row, wrap bool) *vui.App {
 }
 
 func newUIDiffTestAppWithBase(rows []diff.Row, base BaseColors, wrap bool) *vui.App {
+	return newUIDiffTestAppWithBaseAndDrafts(rows, base, wrap, nil)
+}
+
+func newUIDiffTestAppWithBaseAndDrafts(rows []diff.Row, base BaseColors, wrap bool, drafts []review.CommentDraft) *vui.App {
 	theme := uiThemeFromBaseColors(base)
-	return vui.NewApp(uiDiffRoot(rows, wrap), vui.WithTheme(theme))
+	return vui.NewApp(uiDiffRoot(rows, wrap, drafts), vui.WithTheme(theme))
 }
 
 func TestUIDiffViewRendersRowsAsSliverTable(t *testing.T) {
@@ -430,6 +435,49 @@ func TestUIDiffViewBracketCJumpsBetweenChanges(t *testing.T) {
 	app.Paint(p)
 	if got := uiDiffHighlightedScreenRow(p, uiDiffTestTheme().Selection); got != 1 {
 		t.Fatalf("[c highlight row = %d, want 1", got)
+	}
+}
+
+func TestUIDiffViewBracketNJumpsBetweenNotes(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowAdd, Gutter: "1 1   ", Code: "one", Review: review.Anchor{Path: "main.go", Line: 1, Side: review.SideRight}},
+		{Kind: diff.RowAdd, Gutter: "2 2   ", Code: "two", Review: review.Anchor{Path: "main.go", Line: 2, Side: review.SideRight}},
+		{Kind: diff.RowAdd, Gutter: "3 3   ", Code: "three", Review: review.Anchor{Path: "main.go", Line: 3, Side: review.SideRight}},
+	}
+	drafts := []review.CommentDraft{
+		{Path: "main.go", Line: 2, Side: review.SideRight, Body: "two"},
+		{Path: "main.go", Line: 3, Side: review.SideRight, Body: "three"},
+	}
+	app := newUIDiffTestAppWithBaseAndDrafts(rows, DefaultBaseColors(), false, drafts)
+	app.Pump(vui.Size{Width: 24, Height: 3})
+	app.Pump(vui.Size{Width: 24, Height: 3})
+
+	app.Send(vaxis.Key{Text: "]", Keycode: ']'})
+	app.Pump(vui.Size{Width: 24, Height: 3})
+	app.Send(vaxis.Key{Text: "n", Keycode: 'n'})
+	app.Pump(vui.Size{Width: 24, Height: 3})
+	p := vui.NewPainter(vui.Size{Width: 24, Height: 3})
+	app.Paint(p)
+	if got := uiDiffHighlightedScreenRow(p, uiDiffTestTheme().Selection); got != 1 {
+		t.Fatalf("]n highlight row = %d, want 1", got)
+	}
+
+	app.Send(vaxis.Key{Text: "]", Keycode: ']'})
+	app.Send(vaxis.Key{Text: "n", Keycode: 'n'})
+	app.Pump(vui.Size{Width: 24, Height: 3})
+	p = vui.NewPainter(vui.Size{Width: 24, Height: 3})
+	app.Paint(p)
+	if got := uiDiffHighlightedScreenRow(p, uiDiffTestTheme().Selection); got != 2 {
+		t.Fatalf("second ]n highlight row = %d, want 2", got)
+	}
+
+	app.Send(vaxis.Key{Text: "[", Keycode: '['})
+	app.Send(vaxis.Key{Text: "n", Keycode: 'n'})
+	app.Pump(vui.Size{Width: 24, Height: 3})
+	p = vui.NewPainter(vui.Size{Width: 24, Height: 3})
+	app.Paint(p)
+	if got := uiDiffHighlightedScreenRow(p, uiDiffTestTheme().Selection); got != 1 {
+		t.Fatalf("[n highlight row = %d, want 1", got)
 	}
 }
 
