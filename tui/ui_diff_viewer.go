@@ -36,13 +36,8 @@ func (s *uiDiffViewState) Build(ctx vui.BuildContext) vui.Widget {
 	return vui.CustomScrollView{
 		Slivers: []vui.Widget{
 			vui.SliverTableBuilder{
-				Controller: &s.table,
-				Columns: []vui.TableColumn{
-					vui.IntrinsicColumn(),
-					vui.IntrinsicColumn(),
-					vui.FixedColumn(1),
-					vui.FlexColumn(1),
-				},
+				Controller:         &s.table,
+				Columns:            uiDiffColumns(w.Rows),
 				RowCount:           len(w.Rows),
 				EstimatedRowExtent: 1,
 				Overscan:           8,
@@ -162,6 +157,22 @@ func uiTextSpans(segments []vaxis.Segment) []vui.TextSpan {
 		spans = append(spans, vui.TextSpan{Text: segment.Text, Style: segment.Style})
 	}
 	return spans
+}
+
+func uiDiffColumns(rows []diff.Row) []vui.TableColumn {
+	oldWidth := 0
+	newWidth := 0
+	for _, row := range rows {
+		oldLine, newLine, _ := splitDiffGutter(row)
+		oldWidth = maxInt(oldWidth, textCellWidth(oldLine))
+		newWidth = maxInt(newWidth, textCellWidth(newLine))
+	}
+	return []vui.TableColumn{
+		vui.FixedColumn(oldWidth),
+		vui.FixedColumn(newWidth),
+		vui.FixedColumn(1),
+		vui.FlexColumn(1),
+	}
 }
 
 func (s *uiDiffViewState) setCursorRow(rows []diff.Row, row int) {

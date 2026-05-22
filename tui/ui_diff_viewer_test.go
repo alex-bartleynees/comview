@@ -65,6 +65,25 @@ func TestUIDiffViewMovesCursorAndRevealsRows(t *testing.T) {
 	}
 }
 
+func TestUIDiffViewUsesStableFixedGutterColumns(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowContext, Gutter: "1 1   ", Code: "one"},
+		{Kind: diff.RowContext, Gutter: "100 100   ", Code: "hundred"},
+	}
+	app := vui.NewApp(uiDiffView{Rows: rows, Scheme: DefaultColorScheme()})
+	app.Pump(vui.Size{Width: 20, Height: 2})
+	app.Pump(vui.Size{Width: 20, Height: 2})
+
+	p := vui.NewPainter(vui.Size{Width: 20, Height: 2})
+	app.Paint(p)
+	if got := p.Cell(7, 0).Grapheme; got != "o" {
+		t.Fatalf("first row code start = %q, want o at stable col 7", got)
+	}
+	if got := p.Cell(7, 1).Grapheme; got != "h" {
+		t.Fatalf("second row code start = %q, want h at stable col 7", got)
+	}
+}
+
 func TestUIDiffViewVimNavigationKeys(t *testing.T) {
 	tests := []struct {
 		name          string
