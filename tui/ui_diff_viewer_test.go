@@ -572,6 +572,36 @@ func TestUIDiffViewSearchModeUsesStatusBar(t *testing.T) {
 	}
 }
 
+func TestUIDiffViewIncrementalSearchHighlightsMatches(t *testing.T) {
+	theme := uiDiffTestTheme()
+	rows := []diff.Row{
+		{Kind: diff.RowContext, Gutter: "1 1   ", Code: "needle"},
+		{Kind: diff.RowHunk, Prefix: "@@ -10 +10 @@", Code: " func"},
+	}
+	app := newUIDiffTestApp(rows, false)
+	app.Pump(vui.Size{Width: 24, Height: 2})
+	app.Pump(vui.Size{Width: 24, Height: 2})
+
+	app.Send(vaxis.Key{Text: "/", Keycode: '/'})
+	app.Send(vaxis.Key{Text: "needle"})
+	app.Pump(vui.Size{Width: 24, Height: 2})
+	p := vui.NewPainter(vui.Size{Width: 24, Height: 2})
+	app.Paint(p)
+	if got := p.Cell(7, 0).Background; got != uiDiffSearchHighlightStyle(theme).Background {
+		t.Fatalf("code search highlight background = %v, want warning", got)
+	}
+
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEsc})
+	app.Send(vaxis.Key{Text: "/", Keycode: '/'})
+	app.Send(vaxis.Key{Text: "-10"})
+	app.Pump(vui.Size{Width: 24, Height: 2})
+	p = vui.NewPainter(vui.Size{Width: 24, Height: 2})
+	app.Paint(p)
+	if got := p.Cell(3, 1).Background; got != uiDiffSearchHighlightStyle(theme).Background {
+		t.Fatalf("structured search highlight background = %v, want warning", got)
+	}
+}
+
 func TestUIDiffViewSearchesStructuredRows(t *testing.T) {
 	rows := []diff.Row{
 		{Kind: diff.RowContext, Gutter: "1 1   ", Code: "alpha"},
@@ -625,11 +655,11 @@ func TestUIDiffViewIncrementalSearchUsesNextMatchFromStart(t *testing.T) {
 	app.Pump(vui.Size{Width: 20, Height: 4})
 	p := vui.NewPainter(vui.Size{Width: 20, Height: 4})
 	app.Paint(p)
-	if got := uiDiffHighlightedScreenRow(p, uiDiffTestTheme().Selection); got != 3 {
-		t.Fatalf("search from row 5 highlight row = %d, want row 8 visible at screen row 3", got)
-	}
 	if got := uiDiffPainterText(p, 3); got != "alpha" {
 		t.Fatalf("search target text = %q, want alpha", got)
+	}
+	if got := p.Cell(1, 3).Background; got != uiDiffSearchHighlightStyle(uiDiffTestTheme()).Background {
+		t.Fatalf("search target background = %v, want search highlight", got)
 	}
 }
 
@@ -679,6 +709,30 @@ func TestUIDiffViewEscapeClearsSearch(t *testing.T) {
 	app.Paint(p)
 	if cell := p.Cell(0, 0); cell.Background != uiDiffTestTheme().Selection {
 		t.Fatalf("cursor moved after escaped search: first cell bg = %v, want selection", cell.Background)
+	}
+}
+
+func TestUIDiffViewEscapeClearsAcceptedSearch(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowContext, Text: "needle"}}
+	app := newUIDiffTestApp(rows, false)
+	app.Pump(vui.Size{Width: 20, Height: 1})
+	app.Pump(vui.Size{Width: 20, Height: 1})
+	app.Send(vaxis.Key{Text: "/", Keycode: '/'})
+	app.Send(vaxis.Key{Text: "needle"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEnter})
+	app.Pump(vui.Size{Width: 20, Height: 1})
+	p := vui.NewPainter(vui.Size{Width: 20, Height: 1})
+	app.Paint(p)
+	if got := p.Cell(1, 0).Background; got != uiDiffSearchHighlightStyle(uiDiffTestTheme()).Background {
+		t.Fatalf("search highlight background = %v, want search highlight", got)
+	}
+
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEsc})
+	app.Pump(vui.Size{Width: 20, Height: 1})
+	p = vui.NewPainter(vui.Size{Width: 20, Height: 1})
+	app.Paint(p)
+	if got := p.Cell(1, 0).Background; got == uiDiffSearchHighlightStyle(uiDiffTestTheme()).Background {
+		t.Fatal("search highlight still visible after escape")
 	}
 }
 

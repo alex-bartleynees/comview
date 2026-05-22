@@ -455,6 +455,14 @@ func (s *uiDiffViewState) HandleEvent(ctx vui.EventContext, ev vui.Event) vui.Ev
 		s.clearPendingKeys()
 		s.moveSearchMatch(rows, -1)
 		return vui.EventHandled
+	case key.Matches(vaxis.KeyEsc):
+		s.clearPendingKeys()
+		if s.searchQuery != "" || len(s.searchMatches) > 0 || s.searchIndex != -1 {
+			s.clearSearch()
+			s.SetState(func() {})
+			return vui.EventHandled
+		}
+		return vui.EventIgnored
 	case key.Matches(']'):
 		s.pendingG = false
 		s.pendingBracket = ']'
@@ -561,6 +569,7 @@ func (s *uiDiffViewState) handleSearchKey(rows []diff.Row, key vaxis.Key) vui.Ev
 		if s.searchQuery != "" {
 			runes := []rune(s.searchQuery)
 			s.searchQuery = string(runes[:len(runes)-1])
+			s.updateSearchMatches(rows)
 			s.SetState(func() {})
 		}
 		return vui.EventHandled
@@ -570,6 +579,7 @@ func (s *uiDiffViewState) handleSearchKey(rows []diff.Row, key vaxis.Key) vui.Ev
 				s.searchQuery += string(r)
 			}
 		}
+		s.updateSearchMatches(rows)
 		s.SetState(func() {})
 		return vui.EventHandled
 	default:
@@ -587,23 +597,26 @@ func (s *uiDiffViewState) buildItem(rows []diff.Row, rowIndex int, theme vui.The
 	row := rows[rowIndex]
 	active := rowIndex == s.cursor.Row
 	if !uiDiffRowUsesGrid(row) {
-		return uiDiffFullWidthRow(row, active, theme, wrap)
+		return uiDiffFullWidthRow(row, rowIndex, active, theme, s.searchMatches, wrap)
 	}
-	return s.buildRow(rows, row, rowIndex, active, s.cursor.Col, theme, highlightedRows, wrap)
+	return s.buildRow(rows, row, rowIndex, active, s.cursor.Col, theme, highlightedRows, s.searchMatches, wrap)
 }
 
-func uiDiffFullWidthRow(row diff.Row, active bool, theme vui.Theme, wrap bool) vui.Widget {
+func uiDiffFullWidthRow(row diff.Row, rowIndex int, active bool, theme vui.Theme, searchMatches []searchMatch, wrap bool) vui.Widget {
 	if segments, ok := uiDiffStructuredSegments(row, theme); ok {
 		if active {
 			segments = uiDiffApplyBackground(segments, theme.Selection)
 		}
+		segments = uiDiffSearchSegments(rowIndex, row, segments, searchMatches, theme)
 		return vui.RichText{Spans: uiTextSpans(segments), SoftWrap: wrap}
 	}
 	style := uiStyleForDiffRow(row.Kind, theme)
 	if active {
 		style.Background = theme.Selection
 	}
-	return vui.Text{Value: uiDiffRowCode(row), Style: style, SoftWrap: wrap}
+	segments := []vaxis.Segment{{Text: uiDiffRowCode(row), Style: style}}
+	segments = uiDiffSearchSegments(rowIndex, row, segments, searchMatches, theme)
+	return vui.RichText{Spans: uiTextSpans(segments), SoftWrap: wrap}
 }
 
 func uiDiffStructuredSegments(row diff.Row, theme vui.Theme) ([]vaxis.Segment, bool) {
@@ -656,6 +669,30 @@ func uiDiffApplyBackground(segments []vaxis.Segment, background vaxis.Color) []v
 		styled[i] = segment
 	}
 	return styled
+}
+
+func uiDiffSearchSegments(rowIndex int, row diff.Row, segments []vaxis.Segment, matches []searchMatch, theme vui.Theme) []vaxis.Segment {
+	if len(matches) == 0 || rowIndex < 0 {
+		return segments
+	}
+	style := uiDiffSearchHighlightStyle(theme)
+	for _, match := range matches {
+		if match.Row != rowIndex {
+			continue
+		}
+		start := match.Start
+		end := match.End
+		if row.Code != "" && uiDiffRowUsesGrid(row) {
+			segments = styleSegmentsRangeFullWithTabWidth(segments, start, end, style, tabWidthForFile(row.FileName))
+		} else {
+			segments = styleSegmentsRangeFull(segments, start, end, style)
+		}
+	}
+	return segments
+}
+
+func uiDiffSearchHighlightStyle(theme vui.Theme) vaxis.Style {
+	return vaxis.Style{Foreground: theme.Background, Background: theme.Warning}
 }
 
 func uiDiffLineBackground(theme vui.Theme, scale vui.ColorScale) vaxis.Color {
@@ -748,7 +785,7 @@ func uiCommitTrailerValueStyle(theme vui.Theme) vaxis.Style {
 	return vaxis.Style{Foreground: theme.DisabledForeground, Background: theme.Background}
 }
 
-func (s *uiDiffViewState) buildRow(rows []diff.Row, row diff.Row, rowIndex int, active bool, cursorCol int, theme vui.Theme, highlightedRows map[int][]vaxis.Segment, wrap bool) vui.Widget {
+func (s *uiDiffViewState) buildRow(rows []diff.Row, row diff.Row, rowIndex int, active bool, cursorCol int, theme vui.Theme, highlightedRows map[int][]vaxis.Segment, searchMatches []searchMatch, wrap bool) vui.Widget {
 	style := uiStyleForDiffRow(row.Kind, theme)
 	if active {
 		style.Background = theme.Selection
@@ -762,6 +799,7 @@ func (s *uiDiffViewState) buildRow(rows []diff.Row, row diff.Row, rowIndex int, 
 	if active {
 		codeSegments = uiDiffApplyBackground(codeSegments, theme.Selection)
 	}
+	codeSegments = uiDiffSearchSegments(rowIndex, row, codeSegments, searchMatches, theme)
 	oldLine, newLine, marker := splitDiffGutter(row)
 	oldWidth, newWidth := uiDiffGutterWidths(rows)
 	gutterStyle := uiGutterStyle(row.Kind, active, theme)
