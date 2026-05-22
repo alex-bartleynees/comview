@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 
 	"git.sr.ht/~rockorager/vaxis"
@@ -549,6 +550,52 @@ func TestUIDiffViewHorizontalMovementStopsAtLineEnd(t *testing.T) {
 	}
 }
 
+func TestUIDiffViewJumpCommitScrollsTargetToTop(t *testing.T) {
+	rows := make([]diff.Row, 30)
+	for i := range rows {
+		rows[i] = diff.Row{Kind: diff.RowContext, Gutter: "1 1   ", Code: "line"}
+	}
+	rows[0] = diff.Row{Kind: diff.RowCommitHeader, Text: "commit one"}
+	rows[12] = diff.Row{Kind: diff.RowCommitHeader, Text: "commit two"}
+	rows[28] = diff.Row{Kind: diff.RowCommitHeader, Text: "commit three"}
+	app := newUIDiffTestApp(rows, false)
+	app.Pump(vui.Size{Width: 20, Height: 4})
+	app.Pump(vui.Size{Width: 20, Height: 4})
+
+	app.Send(vaxis.Key{Text: "J", Keycode: 'J'})
+	app.Pump(vui.Size{Width: 20, Height: 4})
+	app.Pump(vui.Size{Width: 20, Height: 4})
+	p := vui.NewPainter(vui.Size{Width: 20, Height: 4})
+	app.Paint(p)
+	if got := uiDiffPainterText(p, 0); got != "commit two" {
+		t.Fatalf("top row after J = %q, want commit two", got)
+	}
+	if got := uiDiffHighlightedScreenRow(p, uiDiffTestTheme().Selection); got != 0 {
+		t.Fatalf("highlight row after J = %d, want 0", got)
+	}
+
+	app.Send(vaxis.Key{Text: "J", Keycode: 'J'})
+	app.Pump(vui.Size{Width: 20, Height: 4})
+	app.Pump(vui.Size{Width: 20, Height: 4})
+	p = vui.NewPainter(vui.Size{Width: 20, Height: 4})
+	app.Paint(p)
+	if got := uiDiffPainterText(p, 2); got != "commit three" {
+		t.Fatalf("visible row after final J = %q, want commit three", got)
+	}
+	if got := uiDiffHighlightedScreenRow(p, uiDiffTestTheme().Selection); got != 2 {
+		t.Fatalf("highlight row after final J = %d, want 2", got)
+	}
+
+	app.Send(vaxis.Key{Text: "K", Keycode: 'K'})
+	app.Pump(vui.Size{Width: 20, Height: 4})
+	app.Pump(vui.Size{Width: 20, Height: 4})
+	p = vui.NewPainter(vui.Size{Width: 20, Height: 4})
+	app.Paint(p)
+	if got := uiDiffPainterText(p, 0); got != "commit two" {
+		t.Fatalf("top row after K = %q, want commit two", got)
+	}
+}
+
 func uiDiffHighlightedScreenRow(p *vui.Painter, bg vaxis.Color) int {
 	size := p.Size()
 	for row := 0; row < size.Height; row++ {
@@ -559,6 +606,15 @@ func uiDiffHighlightedScreenRow(p *vui.Painter, bg vaxis.Color) int {
 		}
 	}
 	return -1
+}
+
+func uiDiffPainterText(p *vui.Painter, row int) string {
+	size := p.Size()
+	text := ""
+	for col := 0; col < size.Width; col++ {
+		text += p.Cell(col, row).Grapheme
+	}
+	return strings.TrimRight(text, " ")
 }
 
 func TestUIDiffViewAltPTogglesProfileOverlay(t *testing.T) {

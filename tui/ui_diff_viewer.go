@@ -193,6 +193,14 @@ func (s *uiDiffViewState) HandleEvent(ctx vui.EventContext, ev vui.Event) vui.Ev
 		s.clearPendingKeys()
 		s.moveCursorRows(rows, -s.halfPageRows())
 		return vui.EventHandled
+	case key.Matches('J'):
+		s.clearPendingKeys()
+		s.jumpCommit(rows, 1)
+		return vui.EventHandled
+	case key.Matches('K'):
+		s.clearPendingKeys()
+		s.jumpCommit(rows, -1)
+		return vui.EventHandled
 	case key.Matches('j'), key.Matches(vaxis.KeyDown), key.MatchString("Down"):
 		s.clearPendingKeys()
 		s.moveCursorRows(rows, 1)
@@ -565,6 +573,32 @@ func (s *uiDiffViewState) moveCursorRows(rows []diff.Row, delta int) {
 		return
 	}
 	s.setCursorRow(rows, s.cursor.Row+delta)
+}
+
+func (s *uiDiffViewState) jumpCommit(rows []diff.Row, direction int) {
+	if len(rows) == 0 {
+		return
+	}
+	if direction < 0 {
+		for row := s.cursor.Row - 1; row >= 0; row-- {
+			if rows[row].Kind == diff.RowCommitHeader {
+				s.setCursorRowAtStart(rows, row)
+				return
+			}
+		}
+		return
+	}
+	for row := s.cursor.Row + 1; row < len(rows); row++ {
+		if rows[row].Kind == diff.RowCommitHeader {
+			s.setCursorRowAtStart(rows, row)
+			return
+		}
+	}
+}
+
+func (s *uiDiffViewState) setCursorRowAtStart(rows []diff.Row, row int) {
+	s.setCursorRow(rows, row)
+	s.list.ScrollToIndex(s.cursor.Row, vui.ScrollAlignStart)
 }
 
 func (s *uiDiffViewState) jumpChange(rows []diff.Row, direction int) {
