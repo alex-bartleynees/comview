@@ -3,6 +3,7 @@ package tui
 import (
 	"git.sr.ht/~rockorager/vaxis"
 	vui "git.sr.ht/~rockorager/vaxis/ui"
+	"github.com/rockorager/go-uucode"
 
 	"github.com/rockorager/comview/diff"
 )
@@ -46,7 +47,7 @@ func (s *uiDiffViewState) Build(ctx vui.BuildContext) vui.Widget {
 				EstimatedRowExtent: 1,
 				Overscan:           8,
 				Builder: func(ctx vui.BuildContext, row int) vui.TableRow {
-					return s.buildRow(w.Rows[row], row == s.cursor.Row, scheme, w.Wrap)
+					return s.buildRow(w.Rows[row], row == s.cursor.Row, s.cursor.Col, scheme, w.Wrap)
 				},
 			},
 		},
@@ -79,9 +80,21 @@ func (s *uiDiffViewState) HandleEvent(ctx vui.EventContext, ev vui.Event) vui.Ev
 	case key.Matches('g'):
 		s.pendingG = true
 		return vui.EventHandled
+	case key.Matches(vaxis.KeyHome):
+		s.pendingG = false
+		s.setCursorRow(rows, 0)
+		return vui.EventHandled
 	case key.Matches('G'), key.Matches(vaxis.KeyEnd):
 		s.pendingG = false
 		s.setCursorRow(rows, len(rows)-1)
+		return vui.EventHandled
+	case key.MatchString("Ctrl+d"), key.Matches(vaxis.KeyPgDown):
+		s.pendingG = false
+		s.moveCursorRows(rows, s.halfPageRows())
+		return vui.EventHandled
+	case key.MatchString("Ctrl+u"), key.Matches(vaxis.KeyPgUp):
+		s.pendingG = false
+		s.moveCursorRows(rows, -s.halfPageRows())
 		return vui.EventHandled
 	case key.Matches('j'), key.Matches(vaxis.KeyDown), key.MatchString("Down"):
 		s.pendingG = false
@@ -99,7 +112,7 @@ func (s *uiDiffViewState) HandleEvent(ctx vui.EventContext, ev vui.Event) vui.Ev
 		s.pendingG = false
 		s.moveCursorCols(rows, 1)
 		return vui.EventHandled
-	case key.Matches('0'), key.Matches(vaxis.KeyHome):
+	case key.Matches('0'):
 		s.pendingG = false
 		s.moveCursorLineStart(rows)
 		return vui.EventHandled
@@ -113,7 +126,7 @@ func (s *uiDiffViewState) HandleEvent(ctx vui.EventContext, ev vui.Event) vui.Ev
 	}
 }
 
-func (s *uiDiffViewState) buildRow(row diff.Row, active bool, scheme ColorScheme, wrap bool) vui.TableRow {
+func (s *uiDiffViewState) buildRow(row diff.Row, active bool, cursorCol int, scheme ColorScheme, wrap bool) vui.TableRow {
 	style := uiStyleForDiffRow(row.Kind, scheme)
 	if active {
 		style.Background = scheme.Selection
@@ -123,8 +136,32 @@ func (s *uiDiffViewState) buildRow(row diff.Row, active bool, scheme ColorScheme
 		vui.Text{Value: oldLine, Style: uiGutterStyle(row.Kind, active, scheme), Align: vui.TextAlignRight},
 		vui.Text{Value: newLine, Style: uiGutterStyle(row.Kind, active, scheme), Align: vui.TextAlignRight},
 		vui.Text{Value: marker, Style: uiGutterStyle(row.Kind, active, scheme)},
-		vui.Text{Value: uiDiffRowCode(row), Style: style, SoftWrap: wrap},
+		uiDiffCodeWidget(row, active, cursorCol, style, scheme, wrap),
 	}}
+}
+
+func uiDiffCodeWidget(row diff.Row, active bool, cursorCol int, style vaxis.Style, scheme ColorScheme, wrap bool) vui.Widget {
+	code := uiDiffRowCode(row)
+	if !active || code == "" {
+		return vui.Text{Value: code, Style: style, SoftWrap: wrap}
+	}
+	cursorStyle := vaxis.Style{Background: scheme.Yank}
+	segments := styleSegmentsRangeFullWithTabWidth(
+		[]vaxis.Segment{{Text: code, Style: style}},
+		cursorCol,
+		cursorCol+1,
+		cursorStyle,
+		tabWidthForFile(row.FileName),
+	)
+	return vui.RichText{Spans: uiTextSpans(segments), SoftWrap: wrap}
+}
+
+func uiTextSpans(segments []vaxis.Segment) []vui.TextSpan {
+	spans := make([]vui.TextSpan, 0, len(segments))
+	for _, segment := range segments {
+		spans = append(spans, vui.TextSpan{Text: segment.Text, Style: segment.Style})
+	}
+	return spans
 }
 
 func (s *uiDiffViewState) setCursorRow(rows []diff.Row, row int) {
@@ -146,14 +183,96 @@ func (s *uiDiffViewState) moveCursorRows(rows []diff.Row, delta int) {
 	s.setCursorRow(rows, s.cursor.Row+delta)
 }
 
+func (s *uiDiffViewState) halfPageRows() int {
+	first, last, ok := s.table.VisibleRange()
+	if !ok || last <= first+1 {
+		return 1
+	}
+	return maxInt(1, (last-first)/2)
+}
+
 func (s *uiDiffViewState) moveCursorCols(rows []diff.Row, delta int) {
 	if s.cursor.Row < 0 || s.cursor.Row >= len(rows) {
 		return
 	}
-	s.cursor.Col = s.clampCursorCol(rows, s.cursor.Row, s.cursor.Col+delta)
+	s.cursor.Col = uiDiffMoveCursorCol(rows[s.cursor.Row], s.cursor.Col, delta)
 	s.cursorCol = s.cursor.Col
 	s.table.RevealRow(s.cursor.Row)
 	s.SetState(func() {})
+}
+
+func uiDiffMoveCursorCol(row diff.Row, col int, delta int) int {
+	start, end, ok := uiDiffCodeRangeForRow(row)
+	if !ok || delta == 0 {
+		return col
+	}
+	col = uiDiffClampCursorCol(row, col, start, end)
+	if delta > 0 {
+		for ; delta > 0; delta-- {
+			col = uiDiffNextCursorCol(row, col, end)
+		}
+		return col
+	}
+	for ; delta < 0; delta++ {
+		col = uiDiffPrevCursorCol(row, col, start)
+	}
+	return col
+}
+
+func uiDiffNextCursorCol(row diff.Row, col int, end int) int {
+	last := minInt(col, end)
+	for _, pos := range uiDiffCursorPositions(row) {
+		if pos > col {
+			return minInt(pos, end)
+		}
+		last = minInt(pos, end)
+	}
+	return last
+}
+
+func uiDiffPrevCursorCol(row diff.Row, col int, start int) int {
+	prev := start
+	for _, pos := range uiDiffCursorPositions(row) {
+		if pos >= col {
+			return prev
+		}
+		prev = pos
+	}
+	return prev
+}
+
+func uiDiffClampCursorCol(row diff.Row, col int, start int, end int) int {
+	positions := uiDiffCursorPositions(row)
+	if len(positions) == 0 {
+		return start
+	}
+	if col <= start {
+		return start
+	}
+	last := start
+	for _, pos := range positions {
+		if pos > col || pos > end {
+			return last
+		}
+		last = pos
+	}
+	return last
+}
+
+func uiDiffCursorPositions(row diff.Row) []int {
+	code := uiDiffRowCode(row)
+	if code == "" {
+		return []int{0}
+	}
+	positions := make([]int, 0)
+	col := 0
+	tabWidth := tabWidthForFile(row.FileName)
+	it := uucode.NewGraphemeIterator(code)
+	for g, ok := it.Next(); ok; g, ok = it.Next() {
+		positions = append(positions, col)
+		col += graphemeCellWidthWithTabWidth(code[g.Start:g.End], tabWidth)
+	}
+	return positions
 }
 
 func (s *uiDiffViewState) moveCursorLineStart(rows []diff.Row) {
@@ -188,7 +307,7 @@ func (s *uiDiffViewState) clampCursorCol(rows []diff.Row, row int, col int) int 
 	if !ok {
 		return 0
 	}
-	return clampUIDiffInt(col, start, maxInt(start, end))
+	return uiDiffClampCursorCol(rows[row], col, start, end)
 }
 
 func clampUIDiffInt(v int, lo int, hi int) int {
@@ -206,6 +325,10 @@ func uiDiffCodeRange(rows []diff.Row, rowIndex int) (int, int, bool) {
 		return 0, 0, false
 	}
 	row := rows[rowIndex]
+	return uiDiffCodeRangeForRow(row)
+}
+
+func uiDiffCodeRangeForRow(row diff.Row) (int, int, bool) {
 	if !selectableDiffRow(row.Kind) {
 		return 0, textCellWidth(uiDiffRowCode(row)), true
 	}
