@@ -25,8 +25,12 @@ func newUIDiffTestAppWithBase(rows []diff.Row, base BaseColors, wrap bool) *vui.
 }
 
 func newUIDiffTestAppWithBaseAndDrafts(rows []diff.Row, base BaseColors, wrap bool, drafts []review.CommentDraft) *vui.App {
+	return newUIDiffTestAppWithBaseDraftsAndStatus(rows, base, wrap, drafts, false)
+}
+
+func newUIDiffTestAppWithBaseDraftsAndStatus(rows []diff.Row, base BaseColors, wrap bool, drafts []review.CommentDraft, showStatus bool) *vui.App {
 	theme := uiThemeFromBaseColors(base)
-	return vui.NewApp(uiDiffRoot(rows, wrap, drafts), vui.WithTheme(theme))
+	return vui.NewApp(uiDiffRootWithStatus(rows, wrap, drafts, showStatus), vui.WithTheme(theme))
 }
 
 func TestUIDiffViewRendersRowsAsSliverTable(t *testing.T) {
@@ -55,6 +59,38 @@ func TestUIDiffViewRendersRowsAsSliverTable(t *testing.T) {
 	}
 	if got := p.Cell(4, 2).Grapheme; got != "+" {
 		t.Fatalf("add marker = %q, want +", got)
+	}
+}
+
+func TestUIDiffViewStatusBar(t *testing.T) {
+	app := newUIDiffTestAppWithBaseDraftsAndStatus([]diff.Row{{Kind: diff.RowContext, Text: "line"}}, DefaultBaseColors(), false, nil, true)
+	app.Pump(vui.Size{Width: 20, Height: 2})
+	app.Pump(vui.Size{Width: 20, Height: 2})
+
+	p := vui.NewPainter(vui.Size{Width: 20, Height: 2})
+	app.Paint(p)
+	if got := uiDiffPainterText(p, 1); got != " NORMAL " {
+		t.Fatalf("status bar = %q, want NORMAL segment", got)
+	}
+}
+
+func TestUIDiffViewStatusBarShowsFileAndStats(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowFile, Text: "src/main.go"},
+		{Kind: diff.RowAdd, Gutter: "1 1   ", Code: "new"},
+		{Kind: diff.RowDelete, Gutter: "2 2   ", Code: "old"},
+	}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	app.Pump(vui.Size{Width: 40, Height: 3})
+	app.Pump(vui.Size{Width: 40, Height: 3})
+
+	p := vui.NewPainter(vui.Size{Width: 40, Height: 3})
+	app.Paint(p)
+	if got := uiDiffPainterText(p, 2); got != " NORMAL  src/main.go  +1 -1" {
+		t.Fatalf("status bar = %q, want file context", got)
+	}
+	if got := p.Cell(8, 2).Background; got != uiDiffStatusBackground(uiDiffTestTheme()) {
+		t.Fatalf("mode separator background = %v, want following status background", got)
 	}
 }
 
@@ -497,27 +533,73 @@ func TestUIDiffViewSlashSearchMovesToMatch(t *testing.T) {
 		{Kind: diff.RowContext, Gutter: "2 2   ", Code: "needle"},
 	}
 	app := newUIDiffTestApp(rows, false)
+	app.Pump(vui.Size{Width: 20, Height: 3})
+	app.Pump(vui.Size{Width: 20, Height: 3})
+
+	app.Send(vaxis.Key{Text: "/", Keycode: '/'})
+	app.Send(vaxis.Key{Text: "needle"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEnter})
+	app.Pump(vui.Size{Width: 20, Height: 3})
+	p := vui.NewPainter(vui.Size{Width: 20, Height: 3})
+	app.Paint(p)
+	if cell := p.Cell(6, 1); cell.Grapheme != "n" || cell.Background != uiDiffCursorBackground(uiDiffTestTheme()) {
+		t.Fatalf("search cursor = %q/%v, want n/cursor", cell.Grapheme, cell.Background)
+	}
+	if got := uiDiffHighlightedScreenRow(p, uiDiffTestTheme().Selection); got != 1 {
+		t.Fatalf("search highlight row = %d, want 1", got)
+	}
+}
+
+func TestUIDiffViewSearchModeUsesStatusBar(t *testing.T) {
+	app := newUIDiffTestAppWithBaseDraftsAndStatus([]diff.Row{{Kind: diff.RowContext, Text: "needle"}}, DefaultBaseColors(), false, nil, true)
 	app.Pump(vui.Size{Width: 20, Height: 2})
 	app.Pump(vui.Size{Width: 20, Height: 2})
 
 	app.Send(vaxis.Key{Text: "/", Keycode: '/'})
-	app.Send(vaxis.Key{Text: "needle"})
 	app.Pump(vui.Size{Width: 20, Height: 2})
 	p := vui.NewPainter(vui.Size{Width: 20, Height: 2})
 	app.Paint(p)
-	if got := uiDiffHighlightedScreenRow(p, uiDiffTestTheme().Selection); got != 1 {
-		t.Fatalf("incremental search highlight row = %d, want 1", got)
-	}
-	if cell := p.Cell(6, 1); cell.Grapheme != "n" || cell.Background != uiDiffCursorBackground(uiDiffTestTheme()) {
-		t.Fatalf("search cursor = %q/%v, want n/cursor", cell.Grapheme, cell.Background)
+	if got := uiDiffPainterText(p, 1); got != "/" {
+		t.Fatalf("empty search status = %q, want /", got)
 	}
 
-	app.Send(vaxis.Key{Keycode: vaxis.KeyEnter})
+	app.Send(vaxis.Key{Text: "needle"})
 	app.Pump(vui.Size{Width: 20, Height: 2})
 	p = vui.NewPainter(vui.Size{Width: 20, Height: 2})
 	app.Paint(p)
+	if got := uiDiffPainterText(p, 1); got != "/needle" {
+		t.Fatalf("search status = %q, want /needle", got)
+	}
+}
+
+func TestUIDiffViewSearchesStructuredRows(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowContext, Gutter: "1 1   ", Code: "alpha"},
+		{Kind: diff.RowHunk, Prefix: "@@ -10 +10 @@", Code: " func"},
+		{Kind: diff.RowCommitHeader, Prefix: "commit ", Code: "abc123"},
+	}
+	app := newUIDiffTestApp(rows, false)
+	app.Pump(vui.Size{Width: 24, Height: 3})
+	app.Pump(vui.Size{Width: 24, Height: 3})
+
+	app.Send(vaxis.Key{Text: "/", Keycode: '/'})
+	app.Send(vaxis.Key{Text: "-10"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEnter})
+	app.Pump(vui.Size{Width: 24, Height: 3})
+	p := vui.NewPainter(vui.Size{Width: 24, Height: 3})
+	app.Paint(p)
 	if got := uiDiffHighlightedScreenRow(p, uiDiffTestTheme().Selection); got != 1 {
-		t.Fatalf("search enter highlight row = %d, want 1", got)
+		t.Fatalf("structured hunk search highlight row = %d, want 1", got)
+	}
+
+	app.Send(vaxis.Key{Text: "/", Keycode: '/'})
+	app.Send(vaxis.Key{Text: "commit"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEnter})
+	app.Pump(vui.Size{Width: 24, Height: 3})
+	p = vui.NewPainter(vui.Size{Width: 24, Height: 3})
+	app.Paint(p)
+	if got := uiDiffHighlightedScreenRow(p, uiDiffTestTheme().Selection); got != 2 {
+		t.Fatalf("structured commit search highlight row = %d, want 2", got)
 	}
 }
 
@@ -538,6 +620,7 @@ func TestUIDiffViewIncrementalSearchUsesNextMatchFromStart(t *testing.T) {
 
 	app.Send(vaxis.Key{Text: "/", Keycode: '/'})
 	app.Send(vaxis.Key{Text: "alpha"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEnter})
 	app.Pump(vui.Size{Width: 20, Height: 4})
 	app.Pump(vui.Size{Width: 20, Height: 4})
 	p := vui.NewPainter(vui.Size{Width: 20, Height: 4})

@@ -16,10 +16,15 @@ type uiDiffView struct {
 	Rows         []diff.Row
 	Wrap         bool
 	ReviewDrafts []review.CommentDraft
+	ShowStatus   bool
 }
 
 func uiDiffRoot(rows []diff.Row, wrap bool, drafts []review.CommentDraft) vui.Widget {
-	return uiDiffView{Rows: rows, Wrap: wrap, ReviewDrafts: drafts}
+	return uiDiffRootWithStatus(rows, wrap, drafts, true)
+}
+
+func uiDiffRootWithStatus(rows []diff.Row, wrap bool, drafts []review.CommentDraft, showStatus bool) vui.Widget {
+	return uiDiffView{Rows: rows, Wrap: wrap, ReviewDrafts: drafts, ShowStatus: showStatus}
 }
 
 func uiThemeFromBaseColors(base BaseColors) vui.Theme {
@@ -62,7 +67,7 @@ func (s *uiDiffViewState) Build(ctx vui.BuildContext) vui.Widget {
 	s.clampCursor(w.Rows)
 	theme := vui.MustDepend[vui.Theme](ctx)
 	highlightedRows := s.highlightedCodeRows(w.Rows, theme)
-	return vui.CustomScrollView{
+	scrollView := vui.CustomScrollView{
 		Slivers: []vui.Widget{
 			vui.SliverListBuilder{
 				Controller:          &s.list,
@@ -76,6 +81,259 @@ func (s *uiDiffViewState) Build(ctx vui.BuildContext) vui.Widget {
 			},
 		},
 	}
+	if !w.ShowStatus {
+		return scrollView
+	}
+	return vui.Flex{
+		Axis:               vui.Vertical,
+		CrossAxisAlignment: vui.CrossAxisStretch,
+		Children: []vui.Widget{
+			vui.Expanded(scrollView),
+			s.buildStatusBar(w.Rows, theme),
+		},
+	}
+}
+
+func (s *uiDiffViewState) buildStatusBar(rows []diff.Row, theme vui.Theme) vui.Widget {
+	style := uiDiffStatusStyle(theme)
+	if s.searchMode {
+		return uiDiffStatusText("/"+s.searchQuery, style)
+	}
+	return uiDiffStatusSegments(s.statusSegments(rows, theme), style)
+}
+
+func (s *uiDiffViewState) statusSegments(rows []diff.Row, theme vui.Theme) []vaxis.Segment {
+	leftSegments := s.statusLeftSegments(rows, theme)
+	separatorBackground := uiDiffStatusBackground(theme)
+	if len(leftSegments) > 0 {
+		separatorBackground = leftSegments[0].Style.Background
+	}
+	segments := []vaxis.Segment{
+		{Text: " NORMAL ", Style: uiDiffStatusModeStyle(theme)},
+		{Text: "", Style: vaxis.Style{Foreground: theme.Primary, Background: separatorBackground}},
+	}
+	segments = append(segments, leftSegments...)
+	return segments
+}
+
+func (s *uiDiffViewState) statusLeftSegments(rows []diff.Row, theme vui.Theme) []vaxis.Segment {
+	context := s.statusContext(rows)
+	sections := make([]uiDiffStatusSection, 0, 2)
+	if context.Commits > 0 && context.CommitIndex > 0 && context.Commit != "" {
+		commit := context.Commit
+		if len(commit) > 12 {
+			commit = commit[:12]
+		}
+		if context.Commits > 1 {
+			commit = fmt.Sprintf("%d/%d %s", context.CommitIndex, context.Commits, commit)
+		}
+		sections = append(sections, uiDiffStatusSection{Text: commit, Foreground: theme.Palette.Blue.Tone500, Background: uiDiffStatusCommitBackground(theme)})
+	}
+	if context.Files > 0 && context.File != "" {
+		file := context.File
+		if context.Files > 1 {
+			file = fmt.Sprintf("%d/%d %s", context.FileIndex, context.Files, file)
+		}
+		sections = append(sections, uiDiffStatusSection{Text: file, Foreground: theme.Foreground, Background: uiDiffStatusBackground(theme), Separator: "", PathBase: true})
+	}
+	segments := uiDiffStatusSectionSegments(sections, theme)
+	if context.Files > 0 && context.File != "" {
+		segments = append(segments, uiDiffStatusStatsSegments(context.FileStats, theme)...)
+	}
+	return segments
+}
+
+type uiDiffStatusSection struct {
+	Text       string
+	Foreground vaxis.Color
+	Background vaxis.Color
+	Separator  string
+	PathBase   bool
+}
+
+func uiDiffStatusText(text string, style vaxis.Style) vui.Widget {
+	return vui.DecoratedBox(
+		vui.Decoration{Style: style},
+		vui.SizedBox{Height: 1, Child: vui.Text{Value: text, Style: style}},
+	)
+}
+
+func uiDiffStatusSegments(segments []vaxis.Segment, fillStyle vaxis.Style) vui.Widget {
+	return vui.DecoratedBox(
+		vui.Decoration{Style: fillStyle},
+		vui.SizedBox{Height: 1, Child: vui.RichText{Spans: uiTextSpans(segments)}},
+	)
+}
+
+func uiDiffStatusStyle(theme vui.Theme) vaxis.Style {
+	return vaxis.Style{Foreground: theme.Foreground, Background: uiDiffStatusBackground(theme)}
+}
+
+func uiDiffStatusModeStyle(theme vui.Theme) vaxis.Style {
+	return vaxis.Style{Foreground: uiDiffStatusBackground(theme), Background: theme.Primary, Attribute: vaxis.AttrBold}
+}
+
+func uiDiffStatusAddStyle(theme vui.Theme) vaxis.Style {
+	return vaxis.Style{Foreground: theme.Success, Background: uiDiffStatusBackground(theme), Attribute: vaxis.AttrBold}
+}
+
+func uiDiffStatusDeleteStyle(theme vui.Theme) vaxis.Style {
+	return vaxis.Style{Foreground: theme.Danger, Background: uiDiffStatusBackground(theme), Attribute: vaxis.AttrBold}
+}
+
+func uiDiffStatusBackground(theme vui.Theme) vaxis.Color {
+	return theme.Surface
+}
+
+func uiDiffStatusCommitBackground(theme vui.Theme) vaxis.Color {
+	if theme.Mode == vui.LightTheme {
+		return theme.Palette.Blue.Tone100
+	}
+	return theme.Palette.Blue.Tone950
+}
+
+func uiDiffStatusSectionSegments(sections []uiDiffStatusSection, theme vui.Theme) []vaxis.Segment {
+	segments := make([]vaxis.Segment, 0, len(sections)*2)
+	for index, section := range sections {
+		if section.Text == "" {
+			continue
+		}
+		nextBackground := uiDiffStatusBackground(theme)
+		if index+1 < len(sections) {
+			nextBackground = sections[index+1].Background
+		}
+		separator := section.Separator
+		if separator == "" {
+			separator = ""
+		}
+		separatorStyle := vaxis.Style{Foreground: section.Background, Background: nextBackground}
+		if separator == "" {
+			separatorStyle = vaxis.Style{Foreground: section.Foreground, Background: section.Background}
+		}
+		segments = append(segments, uiDiffStatusSectionTextSegments(section)...)
+		segments = append(segments, vaxis.Segment{Text: separator, Style: separatorStyle})
+	}
+	return segments
+}
+
+func uiDiffStatusSectionTextSegments(section uiDiffStatusSection) []vaxis.Segment {
+	style := vaxis.Style{Foreground: section.Foreground, Background: section.Background, Attribute: vaxis.AttrBold}
+	if !section.PathBase {
+		return []vaxis.Segment{{Text: " " + section.Text + " ", Style: style}}
+	}
+	regularStyle := style
+	regularStyle.Attribute = 0
+	prefix, base := splitStatusPathBase(section.Text)
+	segments := make([]vaxis.Segment, 0, 3)
+	segments = append(segments, vaxis.Segment{Text: " " + prefix, Style: regularStyle})
+	segments = append(segments, vaxis.Segment{Text: base, Style: style})
+	segments = append(segments, vaxis.Segment{Text: " ", Style: regularStyle})
+	return segments
+}
+
+func uiDiffStatusStatsSegments(stats statusStats, theme vui.Theme) []vaxis.Segment {
+	return []vaxis.Segment{
+		{Text: " ", Style: uiDiffStatusStyle(theme)},
+		{Text: fmt.Sprintf("+%d", stats.Adds), Style: uiDiffStatusAddStyle(theme)},
+		{Text: " ", Style: uiDiffStatusStyle(theme)},
+		{Text: fmt.Sprintf("-%d", stats.Deletes), Style: uiDiffStatusDeleteStyle(theme)},
+	}
+}
+
+func (s *uiDiffViewState) statusContext(rows []diff.Row) statusContext {
+	var context statusContext
+	context.Commits = uiDiffCountRows(rows, diff.RowCommitHeader)
+	context.Files = uiDiffCountFiles(rows)
+	context.TotalStats = rowsStats(rows)
+	context.CommitIndex, context.Commit = uiDiffCurrentCommitContext(rows, s.cursor.Row)
+	context.FileIndex, context.File, context.FileStats = uiDiffCurrentFileContext(rows, s.cursor.Row)
+	return context
+}
+
+func uiDiffCountRows(rows []diff.Row, kind diff.RowKind) int {
+	count := 0
+	for _, row := range rows {
+		if row.Kind == kind {
+			count++
+		}
+	}
+	return count
+}
+
+func uiDiffCountFiles(rows []diff.Row) int {
+	count := 0
+	for _, row := range rows {
+		switch row.Kind {
+		case diff.RowFile, diff.RowDiffStat:
+			count++
+		}
+	}
+	return count
+}
+
+func uiDiffCurrentCommitContext(rows []diff.Row, cursorRow int) (int, string) {
+	index := 0
+	currentIndex := 0
+	currentCommit := ""
+	for rowIndex, row := range rows {
+		if row.Kind != diff.RowCommitHeader {
+			continue
+		}
+		index++
+		if rowIndex <= cursorRow {
+			currentIndex = index
+			currentCommit = row.Code
+			if currentCommit == "" {
+				currentCommit = strings.TrimPrefix(row.Text, "commit ")
+			}
+		}
+	}
+	return currentIndex, currentCommit
+}
+
+func uiDiffCurrentFileContext(rows []diff.Row, cursorRow int) (int, string, statusStats) {
+	fileStart := -1
+	fileIndex := 0
+	currentIndex := 0
+	fileName := ""
+	for rowIndex, row := range rows {
+		switch row.Kind {
+		case diff.RowCommitHeader:
+			if rowIndex <= cursorRow {
+				fileStart = -1
+				currentIndex = 0
+				fileName = ""
+			}
+		case diff.RowFile:
+			fileIndex++
+			if rowIndex <= cursorRow {
+				fileStart = rowIndex
+				currentIndex = fileIndex
+				fileName = row.Text
+			}
+		case diff.RowDiffStat:
+			fileIndex++
+			if rowIndex <= cursorRow {
+				fileStart = rowIndex
+				currentIndex = fileIndex
+				fileName = row.FileName
+			}
+		}
+	}
+	if fileStart < 0 {
+		return 0, "", statusStats{}
+	}
+	fileEnd := len(rows)
+	for rowIndex := fileStart + 1; rowIndex < len(rows); rowIndex++ {
+		switch rows[rowIndex].Kind {
+		case diff.RowFile, diff.RowDiffStat, diff.RowCommitHeader:
+			fileEnd = rowIndex
+		}
+		if fileEnd == rowIndex {
+			break
+		}
+	}
+	return currentIndex, fileName, rowsStats(rows[fileStart:fileEnd])
 }
 
 func uiDiffItemExtent(wrap bool) int {
@@ -155,6 +413,10 @@ func (s *uiDiffViewState) HandleEvent(ctx vui.EventContext, ev vui.Event) vui.Ev
 	if len(rows) == 0 {
 		return vui.EventIgnored
 	}
+	if key.MatchString("Ctrl+c") {
+		ctx.Quit()
+		return vui.EventHandled
+	}
 	if s.searchMode {
 		return s.handleSearchKey(rows, key)
 	}
@@ -162,7 +424,7 @@ func (s *uiDiffViewState) HandleEvent(ctx vui.EventContext, ev vui.Event) vui.Ev
 	case key.MatchString("Alt+p"):
 		ctx.ToggleProfileOverlay()
 		return vui.EventHandled
-	case key.Matches('q'), key.MatchString("Ctrl+c"):
+	case key.Matches('q'):
 		ctx.Quit()
 		return vui.EventHandled
 	case key.Matches('c') && s.pendingBracket == ']':
@@ -286,21 +548,19 @@ func (s *uiDiffViewState) handleSearchKey(rows []diff.Row, key vaxis.Key) vui.Ev
 		return vui.EventHandled
 	case key.Matches(vaxis.KeyEnter):
 		s.searchMode = false
+		s.updateSearchMatches(rows)
 		if len(s.searchMatches) == 0 {
 			s.SetState(func() {})
 			return vui.EventHandled
 		}
-		if s.searchIndex < 0 || s.searchIndex >= len(s.searchMatches) {
-			s.searchIndex = s.nextSearchIndexFromPoint(s.searchStart, 1)
-			s.applySearchMatch(rows)
-		}
+		s.searchIndex = s.nextSearchIndexFromPoint(s.searchStart, 1)
+		s.applySearchMatch(rows)
 		s.SetState(func() {})
 		return vui.EventHandled
 	case key.Matches(vaxis.KeyBackspace), key.Matches('h', vaxis.ModCtrl):
 		if s.searchQuery != "" {
 			runes := []rune(s.searchQuery)
 			s.searchQuery = string(runes[:len(runes)-1])
-			s.updateIncrementalSearch(rows)
 			s.SetState(func() {})
 		}
 		return vui.EventHandled
@@ -310,7 +570,6 @@ func (s *uiDiffViewState) handleSearchKey(rows []diff.Row, key vaxis.Key) vui.Ev
 				s.searchQuery += string(r)
 			}
 		}
-		s.updateIncrementalSearch(rows)
 		s.SetState(func() {})
 		return vui.EventHandled
 	default:
@@ -740,23 +999,6 @@ func (s *uiDiffViewState) jumpTargetRow(rows []diff.Row, targets []int, directio
 	}
 }
 
-func (s *uiDiffViewState) updateIncrementalSearch(rows []diff.Row) {
-	if s.searchQuery == "" {
-		s.searchMatches = nil
-		s.searchIndex = -1
-		s.setCursorPoint(rows, s.searchStart)
-		return
-	}
-	s.updateSearchMatches(rows)
-	if len(s.searchMatches) == 0 {
-		s.searchIndex = -1
-		s.setCursorPoint(rows, s.searchStart)
-		return
-	}
-	s.searchIndex = s.nextSearchIndexFromPoint(s.searchStart, 1)
-	s.applySearchMatch(rows)
-}
-
 func (s *uiDiffViewState) updateSearchMatches(rows []diff.Row) {
 	if s.searchQuery == "" {
 		s.searchMatches = nil
@@ -792,6 +1034,9 @@ func (s *uiDiffViewState) updateSearchMatches(rows []diff.Row) {
 func uiDiffSearchableText(row diff.Row) (string, int) {
 	if uiDiffRowUsesGrid(row) && row.Code != "" {
 		return row.Code, 0
+	}
+	if row.Prefix != "" || row.Code != "" {
+		return row.Prefix + row.Code, 0
 	}
 	return uiDiffRowCode(row), 0
 }
@@ -836,6 +1081,10 @@ func (s *uiDiffViewState) applySearchMatch(rows []diff.Row) {
 		return
 	}
 	match := s.searchMatches[s.searchIndex]
+	if s.searchMode {
+		s.setCursorPointWithoutReveal(rows, selectionPoint{Row: match.Row, Col: match.Start})
+		return
+	}
 	s.setCursorPoint(rows, selectionPoint{Row: match.Row, Col: match.Start})
 }
 
@@ -843,10 +1092,17 @@ func (s *uiDiffViewState) setCursorPoint(rows []diff.Row, point selectionPoint) 
 	if len(rows) == 0 {
 		return
 	}
+	s.setCursorPointWithoutReveal(rows, point)
+	s.revealCursorRow()
+}
+
+func (s *uiDiffViewState) setCursorPointWithoutReveal(rows []diff.Row, point selectionPoint) {
+	if len(rows) == 0 {
+		return
+	}
 	s.cursor.Row = clampUIDiffInt(point.Row, 0, len(rows)-1)
 	s.cursor.Col = s.clampCursorCol(rows, s.cursor.Row, point.Col)
 	s.cursorCol = s.cursor.Col
-	s.revealCursorRow()
 }
 
 func uiDiffChangeTargetRows(rows []diff.Row) []int {
