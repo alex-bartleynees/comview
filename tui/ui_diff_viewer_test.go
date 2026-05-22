@@ -491,6 +491,114 @@ func TestUIDiffViewBracketNJumpsBetweenNotes(t *testing.T) {
 	}
 }
 
+func TestUIDiffViewSlashSearchMovesToMatch(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowContext, Gutter: "1 1   ", Code: "alpha"},
+		{Kind: diff.RowContext, Gutter: "2 2   ", Code: "needle"},
+	}
+	app := newUIDiffTestApp(rows, false)
+	app.Pump(vui.Size{Width: 20, Height: 2})
+	app.Pump(vui.Size{Width: 20, Height: 2})
+
+	app.Send(vaxis.Key{Text: "/", Keycode: '/'})
+	app.Send(vaxis.Key{Text: "needle"})
+	app.Pump(vui.Size{Width: 20, Height: 2})
+	p := vui.NewPainter(vui.Size{Width: 20, Height: 2})
+	app.Paint(p)
+	if got := uiDiffHighlightedScreenRow(p, uiDiffTestTheme().Selection); got != 1 {
+		t.Fatalf("incremental search highlight row = %d, want 1", got)
+	}
+	if cell := p.Cell(6, 1); cell.Grapheme != "n" || cell.Background != uiDiffCursorBackground(uiDiffTestTheme()) {
+		t.Fatalf("search cursor = %q/%v, want n/cursor", cell.Grapheme, cell.Background)
+	}
+
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEnter})
+	app.Pump(vui.Size{Width: 20, Height: 2})
+	p = vui.NewPainter(vui.Size{Width: 20, Height: 2})
+	app.Paint(p)
+	if got := uiDiffHighlightedScreenRow(p, uiDiffTestTheme().Selection); got != 1 {
+		t.Fatalf("search enter highlight row = %d, want 1", got)
+	}
+}
+
+func TestUIDiffViewIncrementalSearchUsesNextMatchFromStart(t *testing.T) {
+	rows := make([]diff.Row, 10)
+	for i := range rows {
+		rows[i] = diff.Row{Kind: diff.RowContext, Text: "line"}
+	}
+	rows[2].Text = "alpha"
+	rows[8].Text = "alpha"
+	app := newUIDiffTestApp(rows, false)
+	app.Pump(vui.Size{Width: 20, Height: 4})
+	app.Pump(vui.Size{Width: 20, Height: 4})
+	for i := 0; i < 5; i++ {
+		app.Send(vaxis.Key{Text: "j", Keycode: 'j'})
+		app.Pump(vui.Size{Width: 20, Height: 4})
+	}
+
+	app.Send(vaxis.Key{Text: "/", Keycode: '/'})
+	app.Send(vaxis.Key{Text: "alpha"})
+	app.Pump(vui.Size{Width: 20, Height: 4})
+	app.Pump(vui.Size{Width: 20, Height: 4})
+	p := vui.NewPainter(vui.Size{Width: 20, Height: 4})
+	app.Paint(p)
+	if got := uiDiffHighlightedScreenRow(p, uiDiffTestTheme().Selection); got != 3 {
+		t.Fatalf("search from row 5 highlight row = %d, want row 8 visible at screen row 3", got)
+	}
+	if got := uiDiffPainterText(p, 3); got != "alpha" {
+		t.Fatalf("search target text = %q, want alpha", got)
+	}
+}
+
+func TestUIDiffViewSearchNextPrevious(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowContext, Text: "one needle"},
+		{Kind: diff.RowContext, Text: "two needle"},
+	}
+	app := newUIDiffTestApp(rows, false)
+	app.Pump(vui.Size{Width: 20, Height: 2})
+	app.Pump(vui.Size{Width: 20, Height: 2})
+	app.Send(vaxis.Key{Text: "/", Keycode: '/'})
+	app.Send(vaxis.Key{Text: "needle"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEnter})
+	app.Pump(vui.Size{Width: 20, Height: 2})
+
+	app.Send(vaxis.Key{Text: "n", Keycode: 'n'})
+	app.Pump(vui.Size{Width: 20, Height: 2})
+	p := vui.NewPainter(vui.Size{Width: 20, Height: 2})
+	app.Paint(p)
+	if got := uiDiffHighlightedScreenRow(p, uiDiffTestTheme().Selection); got != 1 {
+		t.Fatalf("n highlight row = %d, want 1", got)
+	}
+
+	app.Send(vaxis.Key{Text: "N", Keycode: 'N'})
+	app.Pump(vui.Size{Width: 20, Height: 2})
+	p = vui.NewPainter(vui.Size{Width: 20, Height: 2})
+	app.Paint(p)
+	if got := uiDiffHighlightedScreenRow(p, uiDiffTestTheme().Selection); got != 0 {
+		t.Fatalf("N highlight row = %d, want 0", got)
+	}
+}
+
+func TestUIDiffViewEscapeClearsSearch(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowContext, Text: "needle"}}
+	app := newUIDiffTestApp(rows, false)
+	app.Pump(vui.Size{Width: 20, Height: 1})
+	app.Pump(vui.Size{Width: 20, Height: 1})
+	app.Send(vaxis.Key{Text: "/", Keycode: '/'})
+	app.Send(vaxis.Key{Text: "needle"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEsc})
+	app.Pump(vui.Size{Width: 20, Height: 1})
+
+	app.Send(vaxis.Key{Text: "n", Keycode: 'n'})
+	app.Pump(vui.Size{Width: 20, Height: 1})
+	p := vui.NewPainter(vui.Size{Width: 20, Height: 1})
+	app.Paint(p)
+	if cell := p.Cell(0, 0); cell.Background != uiDiffTestTheme().Selection {
+		t.Fatalf("cursor moved after escaped search: first cell bg = %v, want selection", cell.Background)
+	}
+}
+
 func TestUIDiffViewLineBoundaryKeys(t *testing.T) {
 	tests := []struct {
 		name      string

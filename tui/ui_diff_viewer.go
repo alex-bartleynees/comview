@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 
 	"git.sr.ht/~rockorager/vaxis"
 	vui "git.sr.ht/~rockorager/vaxis/ui"
@@ -45,6 +46,11 @@ type uiDiffViewState struct {
 	cursorCol        int
 	pendingG         bool
 	pendingBracket   rune
+	searchMode       bool
+	searchQuery      string
+	searchMatches    []searchMatch
+	searchIndex      int
+	searchStart      selectionPoint
 	syntaxTheme      vui.Theme
 	highlighter      *SyntaxHighlighter
 	highlightedTheme vui.Theme
@@ -149,6 +155,9 @@ func (s *uiDiffViewState) HandleEvent(ctx vui.EventContext, ev vui.Event) vui.Ev
 	if len(rows) == 0 {
 		return vui.EventIgnored
 	}
+	if s.searchMode {
+		return s.handleSearchKey(rows, key)
+	}
 	switch {
 	case key.MatchString("Alt+p"):
 		ctx.ToggleProfileOverlay()
@@ -171,6 +180,18 @@ func (s *uiDiffViewState) HandleEvent(ctx vui.EventContext, ev vui.Event) vui.Ev
 	case key.Matches('n') && s.pendingBracket == '[':
 		s.clearPendingKeys()
 		s.jumpNote(w.Rows, w.ReviewDrafts, -1)
+		return vui.EventHandled
+	case key.Matches('/'):
+		s.clearPendingKeys()
+		s.enterSearchMode()
+		return vui.EventHandled
+	case key.Matches('n'):
+		s.clearPendingKeys()
+		s.moveSearchMatch(rows, 1)
+		return vui.EventHandled
+	case key.Matches('N'):
+		s.clearPendingKeys()
+		s.moveSearchMatch(rows, -1)
 		return vui.EventHandled
 	case key.Matches(']'):
 		s.pendingG = false
@@ -245,6 +266,62 @@ func (s *uiDiffViewState) HandleEvent(ctx vui.EventContext, ev vui.Event) vui.Ev
 func (s *uiDiffViewState) clearPendingKeys() {
 	s.pendingG = false
 	s.pendingBracket = 0
+}
+
+func (s *uiDiffViewState) enterSearchMode() {
+	s.searchMode = true
+	s.searchQuery = ""
+	s.searchMatches = nil
+	s.searchIndex = -1
+	s.searchStart = s.cursor
+	s.SetState(func() {})
+}
+
+func (s *uiDiffViewState) handleSearchKey(rows []diff.Row, key vaxis.Key) vui.EventResult {
+	switch {
+	case key.Matches(vaxis.KeyEsc):
+		s.searchMode = false
+		s.clearSearch()
+		s.SetState(func() {})
+		return vui.EventHandled
+	case key.Matches(vaxis.KeyEnter):
+		s.searchMode = false
+		if len(s.searchMatches) == 0 {
+			s.SetState(func() {})
+			return vui.EventHandled
+		}
+		if s.searchIndex < 0 || s.searchIndex >= len(s.searchMatches) {
+			s.searchIndex = s.nextSearchIndexFromPoint(s.searchStart, 1)
+			s.applySearchMatch(rows)
+		}
+		s.SetState(func() {})
+		return vui.EventHandled
+	case key.Matches(vaxis.KeyBackspace), key.Matches('h', vaxis.ModCtrl):
+		if s.searchQuery != "" {
+			runes := []rune(s.searchQuery)
+			s.searchQuery = string(runes[:len(runes)-1])
+			s.updateIncrementalSearch(rows)
+			s.SetState(func() {})
+		}
+		return vui.EventHandled
+	case key.Text != "" && key.Modifiers&(vaxis.ModCtrl|vaxis.ModAlt|vaxis.ModSuper) == 0:
+		for _, r := range key.Text {
+			if r >= ' ' {
+				s.searchQuery += string(r)
+			}
+		}
+		s.updateIncrementalSearch(rows)
+		s.SetState(func() {})
+		return vui.EventHandled
+	default:
+		return vui.EventIgnored
+	}
+}
+
+func (s *uiDiffViewState) clearSearch() {
+	s.searchQuery = ""
+	s.searchMatches = nil
+	s.searchIndex = -1
 }
 
 func (s *uiDiffViewState) buildItem(rows []diff.Row, rowIndex int, theme vui.Theme, highlightedRows map[int][]vaxis.Segment, wrap bool) vui.Widget {
@@ -642,6 +719,115 @@ func (s *uiDiffViewState) jumpTargetRow(rows []diff.Row, targets []int, directio
 			return
 		}
 	}
+}
+
+func (s *uiDiffViewState) updateIncrementalSearch(rows []diff.Row) {
+	if s.searchQuery == "" {
+		s.searchMatches = nil
+		s.searchIndex = -1
+		s.setCursorPoint(rows, s.searchStart)
+		return
+	}
+	s.updateSearchMatches(rows)
+	if len(s.searchMatches) == 0 {
+		s.searchIndex = -1
+		s.setCursorPoint(rows, s.searchStart)
+		return
+	}
+	s.searchIndex = s.nextSearchIndexFromPoint(s.searchStart, 1)
+	s.applySearchMatch(rows)
+}
+
+func (s *uiDiffViewState) updateSearchMatches(rows []diff.Row) {
+	if s.searchQuery == "" {
+		s.searchMatches = nil
+		s.searchIndex = -1
+		return
+	}
+	query := strings.ToLower(s.searchQuery)
+	matches := make([]searchMatch, 0)
+	for rowIndex, row := range rows {
+		searchText, offset := uiDiffSearchableText(row)
+		text := strings.ToLower(searchText)
+		for start := 0; ; {
+			index := strings.Index(text[start:], query)
+			if index < 0 {
+				break
+			}
+			matchStart := start + index
+			matchEnd := matchStart + len(query)
+			matchStartCol := textCellWidth(searchText[:matchStart])
+			matchEndCol := textCellWidth(searchText[:matchEnd])
+			if uiDiffRowUsesGrid(row) && row.Code != "" {
+				matchStartCol = textCellWidthWithTabWidth(searchText[:matchStart], tabWidthForFile(row.FileName))
+				matchEndCol = textCellWidthWithTabWidth(searchText[:matchEnd], tabWidthForFile(row.FileName))
+			}
+			matches = append(matches, searchMatch{Row: rowIndex, Start: offset + matchStartCol, End: offset + matchEndCol})
+			start = matchEnd
+		}
+	}
+	s.searchMatches = matches
+	s.searchIndex = -1
+}
+
+func uiDiffSearchableText(row diff.Row) (string, int) {
+	if uiDiffRowUsesGrid(row) && row.Code != "" {
+		return row.Code, 0
+	}
+	return uiDiffRowCode(row), 0
+}
+
+func (s *uiDiffViewState) moveSearchMatch(rows []diff.Row, delta int) {
+	if len(s.searchMatches) == 0 {
+		return
+	}
+	if s.searchIndex < 0 || s.searchIndex >= len(s.searchMatches) {
+		s.searchIndex = s.nextSearchIndexFromPoint(s.cursor, delta)
+	} else {
+		s.searchIndex = (s.searchIndex + delta + len(s.searchMatches)) % len(s.searchMatches)
+	}
+	s.applySearchMatch(rows)
+	s.SetState(func() {})
+}
+
+func (s *uiDiffViewState) nextSearchIndexFromPoint(origin selectionPoint, direction int) int {
+	if len(s.searchMatches) == 0 {
+		return -1
+	}
+	if direction < 0 {
+		for index := len(s.searchMatches) - 1; index >= 0; index-- {
+			point := selectionPoint{Row: s.searchMatches[index].Row, Col: s.searchMatches[index].Start}
+			if selectionPointLess(point, origin) {
+				return index
+			}
+		}
+		return len(s.searchMatches) - 1
+	}
+	for index, match := range s.searchMatches {
+		point := selectionPoint{Row: match.Row, Col: match.Start}
+		if selectionPointLess(origin, point) || origin == point {
+			return index
+		}
+	}
+	return 0
+}
+
+func (s *uiDiffViewState) applySearchMatch(rows []diff.Row) {
+	if s.searchIndex < 0 || s.searchIndex >= len(s.searchMatches) {
+		return
+	}
+	match := s.searchMatches[s.searchIndex]
+	s.setCursorPoint(rows, selectionPoint{Row: match.Row, Col: match.Start})
+}
+
+func (s *uiDiffViewState) setCursorPoint(rows []diff.Row, point selectionPoint) {
+	if len(rows) == 0 {
+		return
+	}
+	s.cursor.Row = clampUIDiffInt(point.Row, 0, len(rows)-1)
+	s.cursor.Col = s.clampCursorCol(rows, s.cursor.Row, point.Col)
+	s.cursorCol = s.cursor.Col
+	s.revealCursorRow()
 }
 
 func uiDiffChangeTargetRows(rows []diff.Row) []int {
