@@ -79,6 +79,65 @@ func TestUIDiffViewMovesCursorAndRevealsRows(t *testing.T) {
 	}
 }
 
+func TestUIDiffViewKeepsCursorVisibleWhenMovingDown(t *testing.T) {
+	rows := make([]diff.Row, 12)
+	for i := range rows {
+		rows[i] = diff.Row{Kind: diff.RowContext, Gutter: "1 1   ", Code: "line"}
+	}
+	app := newUIDiffTestApp(rows, false)
+	app.Pump(vui.Size{Width: 20, Height: 3})
+	app.Pump(vui.Size{Width: 20, Height: 3})
+
+	for i := 0; i < 8; i++ {
+		app.Send(vaxis.Key{Text: "j", Keycode: 'j'})
+		app.Pump(vui.Size{Width: 20, Height: 3})
+		app.Pump(vui.Size{Width: 20, Height: 3})
+		p := vui.NewPainter(vui.Size{Width: 20, Height: 3})
+		app.Paint(p)
+		if got := uiDiffHighlightedScreenRow(p, uiDiffTestTheme().Selection); got == -1 {
+			t.Fatalf("cursor not visible after %d j presses", i+1)
+		}
+	}
+}
+
+func TestUIDiffViewActiveCodeRowHighlightsToRightEdge(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowContext, Gutter: "1 1   ", Code: "short"}}
+	app := newUIDiffTestApp(rows, false)
+	app.Pump(vui.Size{Width: 20, Height: 1})
+	app.Pump(vui.Size{Width: 20, Height: 1})
+
+	p := vui.NewPainter(vui.Size{Width: 20, Height: 1})
+	app.Paint(p)
+	for col := 0; col < 20; col++ {
+		if col == 6 {
+			continue
+		}
+		if got := p.Cell(col, 0).Background; got != uiDiffTestTheme().Selection {
+			t.Fatalf("active row background at col %d = %v, want selection", col, got)
+		}
+	}
+}
+
+func TestUIDiffViewChangedRowsHighlightToRightEdge(t *testing.T) {
+	theme := uiDiffTestTheme()
+	rows := []diff.Row{
+		{Kind: diff.RowDelete, Gutter: "1     - ", Code: "old"},
+		{Kind: diff.RowAdd, Gutter: "    1 + ", Code: "new"},
+	}
+	app := newUIDiffTestApp(rows, false)
+	app.Pump(vui.Size{Width: 20, Height: 2})
+	app.Pump(vui.Size{Width: 20, Height: 2})
+
+	p := vui.NewPainter(vui.Size{Width: 20, Height: 2})
+	app.Paint(p)
+	if got := p.Cell(19, 0).Background; got != theme.Selection {
+		t.Fatalf("active delete row right edge background = %v, want selection", got)
+	}
+	if got := p.Cell(19, 1).Background; got != theme.Surface {
+		t.Fatalf("add row right edge background = %v, want surface", got)
+	}
+}
+
 func TestUIDiffViewUsesStableFixedGutterColumns(t *testing.T) {
 	rows := []diff.Row{
 		{Kind: diff.RowContext, Gutter: "1 1   ", Code: "one"},
@@ -171,14 +230,69 @@ func TestUIDiffViewDerivesDiffColorsFromUITheme(t *testing.T) {
 	if style := uiStyleForDiffRow(diff.RowAdd, theme); style.Foreground != theme.Success {
 		t.Fatalf("add foreground = %v, want %v", style.Foreground, theme.Success)
 	}
-	if style := uiStyleForDiffRow(diff.RowAdd, theme); style.Background != theme.Palette.Green.Tone950 {
-		t.Fatalf("add background = %v, want dark green tone", style.Background)
+	if style := uiStyleForDiffRow(diff.RowAdd, theme); style.Background != theme.Surface {
+		t.Fatalf("add background = %v, want surface %v", style.Background, theme.Surface)
 	}
 	if style := uiStyleForDiffRow(diff.RowDelete, theme); style.Foreground != theme.Danger {
 		t.Fatalf("delete foreground = %v, want %v", style.Foreground, theme.Danger)
 	}
 	if style := uiStyleForDiffRow(diff.RowDelete, theme); style.Background != theme.Palette.Red.Tone950 {
 		t.Fatalf("delete background = %v, want dark red tone", style.Background)
+	}
+}
+
+func TestUIDiffViewHighlightsCodeWithChroma(t *testing.T) {
+	theme := uiDiffTestTheme()
+	rows := []diff.Row{{Kind: diff.RowContext, Gutter: "1 1   ", Code: "package main", FileName: "main.go"}}
+	app := newUIDiffTestApp(rows, false)
+	app.Pump(vui.Size{Width: 24, Height: 1})
+	app.Pump(vui.Size{Width: 24, Height: 1})
+
+	p := vui.NewPainter(vui.Size{Width: 24, Height: 1})
+	app.Paint(p)
+	cell := p.Cell(7, 0)
+	if cell.Grapheme != "a" {
+		t.Fatalf("code glyph = %q, want a", cell.Grapheme)
+	}
+	if cell.Foreground != theme.Palette.Magenta.Tone300 {
+		t.Fatalf("keyword foreground = %v, want bright magenta %v", cell.Foreground, theme.Palette.Magenta.Tone300)
+	}
+	if cell.Background != theme.Selection {
+		t.Fatalf("keyword background = %v, want selection %v", cell.Background, theme.Selection)
+	}
+}
+
+func TestUIDiffViewSyntaxColorsUseBrighterPaletteTones(t *testing.T) {
+	theme := uiDiffTestTheme()
+	colors := (uiSyntaxTheme{Theme: theme}).uiThemeColors()
+	if colors.Magenta != theme.Palette.Magenta.Tone300 {
+		t.Fatalf("syntax magenta = %v, want tone300 %v", colors.Magenta, theme.Palette.Magenta.Tone300)
+	}
+	if colors.Blue != theme.Palette.Blue.Tone300 {
+		t.Fatalf("syntax blue = %v, want tone300 %v", colors.Blue, theme.Palette.Blue.Tone300)
+	}
+	if colors.Green != theme.Palette.Green.Tone300 {
+		t.Fatalf("syntax green = %v, want tone300 %v", colors.Green, theme.Palette.Green.Tone300)
+	}
+}
+
+func TestUIDiffViewCursorUsesThemeForeground(t *testing.T) {
+	theme := uiDiffTestTheme()
+	if got := uiDiffCursorBackground(theme); got != theme.Foreground {
+		t.Fatalf("cursor background = %v, want foreground %v", got, theme.Foreground)
+	}
+	if got := uiDiffCursorForeground(theme); got != theme.Palette.Neutral.Tone950 {
+		t.Fatalf("cursor foreground = %v, want dark neutral %v", got, theme.Palette.Neutral.Tone950)
+	}
+}
+
+func TestUIDiffViewChangedGutterUsesBrighterTone(t *testing.T) {
+	theme := uiDiffTestTheme()
+	if got := uiGutterStyle(diff.RowAdd, false, theme).Foreground; got != theme.Palette.Green.Tone400 {
+		t.Fatalf("add gutter foreground = %v, want green tone400 %v", got, theme.Palette.Green.Tone400)
+	}
+	if got := uiGutterStyle(diff.RowDelete, false, theme).Foreground; got != theme.Palette.Red.Tone400 {
+		t.Fatalf("delete gutter foreground = %v, want red tone400 %v", got, theme.Palette.Red.Tone400)
 	}
 }
 
@@ -312,6 +426,9 @@ func TestUIDiffViewLineBoundaryKeys(t *testing.T) {
 			}
 			if cell.Background != uiDiffCursorBackground(uiDiffTestTheme()) {
 				t.Fatalf("cursor background = %v, want yank", cell.Background)
+			}
+			if cell.Foreground != uiDiffCursorForeground(uiDiffTestTheme()) {
+				t.Fatalf("cursor foreground = %v, want contrast foreground", cell.Foreground)
 			}
 		})
 	}

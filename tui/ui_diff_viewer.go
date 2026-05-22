@@ -38,28 +38,98 @@ func (w uiDiffView) CreateState() vui.State {
 
 type uiDiffViewState struct {
 	vui.StateBase
-	list      vui.SliverListController
-	cursor    selectionPoint
-	cursorCol int
-	pendingG  bool
+	list             vui.SliverListController
+	cursor           selectionPoint
+	cursorCol        int
+	pendingG         bool
+	syntaxTheme      vui.Theme
+	highlighter      *SyntaxHighlighter
+	highlightedTheme vui.Theme
+	highlightedRows  map[int][]vaxis.Segment
 }
 
 func (s *uiDiffViewState) Build(ctx vui.BuildContext) vui.Widget {
 	w := s.Widget().(uiDiffView)
 	s.clampCursor(w.Rows)
 	theme := vui.MustDepend[vui.Theme](ctx)
+	highlightedRows := s.highlightedCodeRows(w.Rows, theme)
 	return vui.CustomScrollView{
 		Slivers: []vui.Widget{
 			vui.SliverListBuilder{
 				Controller:          &s.list,
 				Count:               len(w.Rows),
+				ItemExtent:          uiDiffItemExtent(w.Wrap),
 				EstimatedItemExtent: 1,
 				Overscan:            8,
 				Builder: func(ctx vui.BuildContext, row int) vui.Widget {
-					return s.buildItem(w.Rows, row, theme, w.Wrap)
+					return s.buildItem(w.Rows, row, theme, highlightedRows, w.Wrap)
 				},
 			},
 		},
+	}
+}
+
+func uiDiffItemExtent(wrap bool) int {
+	if wrap {
+		return 0
+	}
+	return 1
+}
+
+func (s *uiDiffViewState) DidUpdateWidget(old vui.Widget) {
+	s.highlightedRows = nil
+}
+
+func (s *uiDiffViewState) syntaxHighlighter(theme vui.Theme) *SyntaxHighlighter {
+	if s.highlighter == nil || s.syntaxTheme != theme {
+		s.syntaxTheme = theme
+		s.highlighter = NewSyntaxHighlighterWithUITheme(uiSyntaxTheme{Theme: theme})
+	}
+	return s.highlighter
+}
+
+func (s *uiDiffViewState) highlightedCodeRows(rows []diff.Row, theme vui.Theme) map[int][]vaxis.Segment {
+	if s.highlightedRows != nil && s.highlightedTheme == theme {
+		return s.highlightedRows
+	}
+	highlighter := s.syntaxHighlighter(theme)
+	s.highlightedTheme = theme
+	s.highlightedRows = highlighter.HighlightRows(rows, func(kind diff.RowKind) vaxis.Style {
+		return uiStyleForDiffRow(kind, theme)
+	})
+	return s.highlightedRows
+}
+
+type uiSyntaxTheme struct {
+	Theme vui.Theme
+}
+
+func (t uiSyntaxTheme) uiThemeColors() uiThemeColors {
+	if t.Theme.Mode == vui.LightTheme {
+		return uiThemeColors{
+			Foreground: t.Theme.Foreground,
+			Muted:      t.Theme.MutedForeground,
+			Blue:       t.Theme.Palette.Blue.Tone700,
+			Cyan:       t.Theme.Palette.Cyan.Tone700,
+			Green:      t.Theme.Palette.Green.Tone700,
+			Magenta:    t.Theme.Palette.Magenta.Tone700,
+			Yellow:     t.Theme.Palette.Yellow.Tone800,
+			Red:        t.Theme.Palette.Red.Tone700,
+			Header:     t.Theme.Primary,
+			Hunk:       t.Theme.Accent,
+		}
+	}
+	return uiThemeColors{
+		Foreground: t.Theme.Foreground,
+		Muted:      t.Theme.MutedForeground,
+		Blue:       t.Theme.Palette.Blue.Tone300,
+		Cyan:       t.Theme.Palette.Cyan.Tone300,
+		Green:      t.Theme.Palette.Green.Tone300,
+		Magenta:    t.Theme.Palette.Magenta.Tone300,
+		Yellow:     t.Theme.Palette.Yellow.Tone300,
+		Red:        t.Theme.Palette.Red.Tone300,
+		Header:     t.Theme.Primary,
+		Hunk:       t.Theme.Accent,
 	}
 }
 
@@ -135,7 +205,7 @@ func (s *uiDiffViewState) HandleEvent(ctx vui.EventContext, ev vui.Event) vui.Ev
 	}
 }
 
-func (s *uiDiffViewState) buildItem(rows []diff.Row, rowIndex int, theme vui.Theme, wrap bool) vui.Widget {
+func (s *uiDiffViewState) buildItem(rows []diff.Row, rowIndex int, theme vui.Theme, highlightedRows map[int][]vaxis.Segment, wrap bool) vui.Widget {
 	row := rows[rowIndex]
 	active := rowIndex == s.cursor.Row
 	if !uiDiffRowUsesGrid(row) {
@@ -144,7 +214,7 @@ func (s *uiDiffViewState) buildItem(rows []diff.Row, rowIndex int, theme vui.The
 	return vui.Table{
 		Columns: uiDiffColumns(rows),
 		Rows: []vui.TableRow{
-			s.buildRow(row, active, s.cursor.Col, theme, wrap),
+			s.buildRow(row, rowIndex, active, s.cursor.Col, theme, highlightedRows, wrap),
 		},
 	}
 }
@@ -223,10 +293,21 @@ func uiDiffLineBackground(theme vui.Theme, scale vui.ColorScale) vaxis.Color {
 }
 
 func uiDiffCursorBackground(theme vui.Theme) vaxis.Color {
+	return theme.Foreground
+}
+
+func uiDiffCursorForeground(theme vui.Theme) vaxis.Color {
 	if theme.Mode == vui.LightTheme {
-		return theme.Palette.Yellow.Tone200
+		return theme.Palette.Neutral.Tone50
 	}
-	return theme.Palette.Yellow.Tone800
+	return theme.Palette.Neutral.Tone950
+}
+
+func uiDiffChangedGutterForeground(theme vui.Theme, scale vui.ColorScale) vaxis.Color {
+	if theme.Mode == vui.LightTheme {
+		return scale.Tone700
+	}
+	return scale.Tone400
 }
 
 func uiDiffStatSegments(row diff.Row, theme vui.Theme) []vaxis.Segment {
@@ -294,10 +375,18 @@ func uiCommitTrailerValueStyle(theme vui.Theme) vaxis.Style {
 	return vaxis.Style{Foreground: theme.DisabledForeground, Background: theme.Background}
 }
 
-func (s *uiDiffViewState) buildRow(row diff.Row, active bool, cursorCol int, theme vui.Theme, wrap bool) vui.TableRow {
+func (s *uiDiffViewState) buildRow(row diff.Row, rowIndex int, active bool, cursorCol int, theme vui.Theme, highlightedRows map[int][]vaxis.Segment, wrap bool) vui.TableRow {
 	style := uiStyleForDiffRow(row.Kind, theme)
 	if active {
 		style.Background = theme.Selection
+	}
+	code := uiDiffRowCode(row)
+	codeSegments := highlightedRows[rowIndex]
+	if len(codeSegments) == 0 {
+		codeSegments = []vaxis.Segment{{Text: code, Style: style}}
+	}
+	if active {
+		codeSegments = uiDiffApplyBackground(codeSegments, theme.Selection)
 	}
 	oldLine, newLine, marker := splitDiffGutter(row)
 	gutterStyle := uiGutterStyle(row.Kind, active, theme)
@@ -308,24 +397,29 @@ func (s *uiDiffViewState) buildRow(row diff.Row, active bool, cursorCol int, the
 		vui.Text{Value: " ", Style: gutterStyle},
 		vui.Text{Value: marker, Style: gutterStyle},
 		vui.Text{Value: " ", Style: gutterStyle},
-		uiDiffCodeWidget(row, active, cursorCol, style, theme, wrap),
+		uiDiffCodeWidget(row, code, codeSegments, active, cursorCol, theme, style.Background, wrap),
 	}}
 }
 
-func uiDiffCodeWidget(row diff.Row, active bool, cursorCol int, style vaxis.Style, theme vui.Theme, wrap bool) vui.Widget {
-	code := uiDiffRowCode(row)
+func uiDiffCodeWidget(row diff.Row, code string, segments []vaxis.Segment, active bool, cursorCol int, theme vui.Theme, background vaxis.Color, wrap bool) vui.Widget {
 	if !active || code == "" {
-		return vui.Text{Value: code, Style: style, SoftWrap: wrap}
+		return vui.DecoratedBox(
+			vui.Decoration{Style: vaxis.Style{Background: background}},
+			vui.RichText{Spans: uiTextSpans(segments), SoftWrap: wrap},
+		)
 	}
-	cursorStyle := vaxis.Style{Background: uiDiffCursorBackground(theme)}
-	segments := styleSegmentsRangeFullWithTabWidth(
-		[]vaxis.Segment{{Text: code, Style: style}},
+	cursorStyle := vaxis.Style{Foreground: uiDiffCursorForeground(theme), Background: uiDiffCursorBackground(theme)}
+	segments = styleSegmentsRangeFullWithTabWidth(
+		segments,
 		cursorCol,
 		cursorCol+1,
 		cursorStyle,
 		tabWidthForFile(row.FileName),
 	)
-	return vui.RichText{Spans: uiTextSpans(segments), SoftWrap: wrap}
+	return vui.DecoratedBox(
+		vui.Decoration{Style: vaxis.Style{Background: background}},
+		vui.RichText{Spans: uiTextSpans(segments), SoftWrap: wrap},
+	)
 }
 
 func uiTextSpans(segments []vaxis.Segment) []vui.TextSpan {
@@ -609,9 +703,9 @@ func uiGutterStyle(kind diff.RowKind, active bool, theme vui.Theme) vaxis.Style 
 	}
 	switch kind {
 	case diff.RowAdd:
-		style.Foreground = theme.Success
+		style.Foreground = uiDiffChangedGutterForeground(theme, theme.Palette.Green)
 	case diff.RowDelete:
-		style.Foreground = theme.Danger
+		style.Foreground = uiDiffChangedGutterForeground(theme, theme.Palette.Red)
 	}
 	return style
 }
@@ -623,7 +717,7 @@ func uiStyleForDiffRow(kind diff.RowKind, theme vui.Theme) vaxis.Style {
 	case diff.RowHunk:
 		return vaxis.Style{Foreground: theme.Accent, Background: theme.Background}
 	case diff.RowAdd:
-		return vaxis.Style{Foreground: theme.Success, Background: uiDiffLineBackground(theme, theme.Palette.Green)}
+		return vaxis.Style{Foreground: theme.Success, Background: theme.Surface}
 	case diff.RowDelete:
 		return vaxis.Style{Foreground: theme.Danger, Background: uiDiffLineBackground(theme, theme.Palette.Red)}
 	case diff.RowMeta, diff.RowPreamble, diff.RowNoNewline:

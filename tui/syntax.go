@@ -27,6 +27,13 @@ func NewSyntaxHighlighterWithScheme(scheme ColorScheme) *SyntaxHighlighter {
 	}
 }
 
+func NewSyntaxHighlighterWithUITheme(theme vaxisUITheme) *SyntaxHighlighter {
+	return &SyntaxHighlighter{
+		style:  syntaxStyleFromUITheme(theme),
+		lexers: make(map[string]chroma.Lexer),
+	}
+}
+
 func (h *SyntaxHighlighter) SetColorScheme(scheme ColorScheme) {
 	h.style = syntaxStyle(scheme)
 }
@@ -256,6 +263,73 @@ func syntaxStyle(scheme ColorScheme) *chroma.Style {
 		chroma.TextSymbol:        chromaColor(scheme.Yellow),
 	}
 	return chroma.MustNewStyle("comview", entries)
+}
+
+type vaxisUITheme interface {
+	uiThemeColors() uiThemeColors
+}
+
+type uiThemeColors struct {
+	Foreground vaxis.Color
+	Muted      vaxis.Color
+	Blue       vaxis.Color
+	Cyan       vaxis.Color
+	Green      vaxis.Color
+	Magenta    vaxis.Color
+	Yellow     vaxis.Color
+	Red        vaxis.Color
+	Header     vaxis.Color
+	Hunk       vaxis.Color
+}
+
+func syntaxStyleFromUITheme(theme vaxisUITheme) *chroma.Style {
+	c := theme.uiThemeColors()
+	entries := chroma.StyleEntries{
+		chroma.Text:              chromaColor(c.Foreground),
+		chroma.Keyword:           chromaColor(c.Magenta),
+		chroma.KeywordType:       chromaColor(c.Cyan),
+		chroma.KeywordConstant:   chromaColor(c.Yellow),
+		chroma.NameConstant:      chromaColor(c.Yellow),
+		chroma.NameDecorator:     chromaColor(c.Magenta),
+		chroma.NameEntity:        chromaColor(c.Cyan),
+		chroma.NameException:     chromaColor(c.Yellow),
+		chroma.NameKeyword:       chromaColor(c.Magenta),
+		chroma.NameLabel:         chromaColor(c.Cyan),
+		chroma.NameNamespace:     chromaColor(c.Blue),
+		chroma.NameOperator:      chromaColor(c.Magenta),
+		chroma.NamePseudo:        chromaColor(c.Cyan),
+		chroma.NameProperty:      chromaColor(c.Cyan),
+		chroma.NameTag:           chromaColor(c.Blue),
+		chroma.NameBuiltin:       chromaColor(c.Cyan),
+		chroma.NameClass:         chromaColor(c.Yellow),
+		chroma.NameFunction:      chromaColor(c.Blue),
+		chroma.NameAttribute:     chromaColor(c.Cyan),
+		chroma.NameVariable:      chromaColor(c.Foreground),
+		chroma.NameVariableClass: chromaColor(c.Cyan),
+		chroma.NameVariableMagic: chromaColor(c.Magenta),
+		chroma.LiteralDate:       chromaColor(c.Yellow),
+		chroma.LiteralOther:      chromaColor(c.Cyan),
+		chroma.LiteralString:     chromaColor(c.Green),
+		chroma.LiteralNumber:     chromaColor(c.Yellow),
+		chroma.Operator:          chromaColor(c.Magenta),
+		chroma.Punctuation:       chromaColor(c.Muted),
+		chroma.Comment:           chromaColor(c.Muted) + " italic",
+		chroma.CommentPreproc:    chromaColor(c.Cyan) + " italic",
+		chroma.GenericDeleted:    chromaColor(c.Red),
+		chroma.GenericInserted:   chromaColor(c.Green),
+		chroma.GenericEmph:       chromaColor(c.Foreground) + " italic",
+		chroma.GenericError:      chromaColor(c.Red) + " bold",
+		chroma.GenericHeading:    chromaColor(c.Header) + " bold",
+		chroma.GenericOutput:     chromaColor(c.Muted),
+		chroma.GenericPrompt:     chromaColor(c.Cyan),
+		chroma.GenericStrong:     chromaColor(c.Foreground) + " bold",
+		chroma.GenericSubheading: chromaColor(c.Hunk),
+		chroma.GenericTraceback:  chromaColor(c.Red),
+		chroma.GenericUnderline:  chromaColor(c.Foreground) + " underline",
+		chroma.TextPunctuation:   chromaColor(c.Muted),
+		chroma.TextSymbol:        chromaColor(c.Yellow),
+	}
+	return chroma.MustNewStyle("comview-ui", entries)
 }
 
 func chromaColor(color vaxis.Color) string {
