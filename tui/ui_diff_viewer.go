@@ -966,7 +966,7 @@ func (s *uiDiffViewState) setCursorRow(rows []diff.Row, row int) {
 		s.cursor = selectionPoint{}
 		return
 	}
-	s.cursor.Row = clampUIDiffInt(row, 0, len(rows)-1)
+	s.cursor.Row = uiDiffCursorTargetRow(rows, row, signUIDiffInt(row-s.cursor.Row))
 	s.cursor.Col = s.clampCursorCol(rows, s.cursor.Row, s.cursorCol)
 	s.cursorCol = s.cursor.Col
 	s.revealCursorRow()
@@ -978,6 +978,44 @@ func (s *uiDiffViewState) moveCursorRows(rows []diff.Row, delta int) {
 		return
 	}
 	s.setCursorRow(rows, s.cursor.Row+delta)
+}
+
+func uiDiffCursorTargetRow(rows []diff.Row, row int, direction int) int {
+	if len(rows) == 0 {
+		return 0
+	}
+	row = clampUIDiffInt(row, 0, len(rows)-1)
+	if uiDiffCursorableRow(rows[row]) {
+		return row
+	}
+	if direction == 0 {
+		direction = 1
+	}
+	for next := row + direction; next >= 0 && next < len(rows); next += direction {
+		if uiDiffCursorableRow(rows[next]) {
+			return next
+		}
+	}
+	for next := row - direction; next >= 0 && next < len(rows); next -= direction {
+		if uiDiffCursorableRow(rows[next]) {
+			return next
+		}
+	}
+	return row
+}
+
+func uiDiffCursorableRow(row diff.Row) bool {
+	return row.Kind != diff.RowBlank
+}
+
+func signUIDiffInt(v int) int {
+	if v < 0 {
+		return -1
+	}
+	if v > 0 {
+		return 1
+	}
+	return 0
 }
 
 func (s *uiDiffViewState) jumpCommit(rows []diff.Row, direction int) {
@@ -1287,7 +1325,7 @@ func (s *uiDiffViewState) clampCursor(rows []diff.Row) {
 		s.cursorCol = 0
 		return
 	}
-	s.cursor.Row = clampUIDiffInt(s.cursor.Row, 0, len(rows)-1)
+	s.cursor.Row = uiDiffCursorTargetRow(rows, s.cursor.Row, 1)
 	s.cursor.Col = s.clampCursorCol(rows, s.cursor.Row, s.cursor.Col)
 	s.cursorCol = s.cursor.Col
 }

@@ -121,6 +121,33 @@ func TestUIDiffViewMovesCursorAndRevealsRows(t *testing.T) {
 	}
 }
 
+func TestUIDiffViewSkipsBlankRowsWhenMovingCursor(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowContext, Gutter: "1 1   ", Code: "first"},
+		{Kind: diff.RowBlank},
+		{Kind: diff.RowContext, Gutter: "2 2   ", Code: "second"},
+	}
+	app := newUIDiffTestApp(rows, false)
+	app.Pump(vui.Size{Width: 20, Height: 3})
+	app.Pump(vui.Size{Width: 20, Height: 3})
+
+	app.Send(vaxis.Key{Text: "j", Keycode: 'j'})
+	app.Pump(vui.Size{Width: 20, Height: 3})
+	p := vui.NewPainter(vui.Size{Width: 20, Height: 3})
+	app.Paint(p)
+	if got := uiDiffHighlightedScreenRow(p, uiDiffTestTheme().Selection); got != 2 {
+		t.Fatalf("highlight row after j = %d, want 2", got)
+	}
+
+	app.Send(vaxis.Key{Text: "k", Keycode: 'k'})
+	app.Pump(vui.Size{Width: 20, Height: 3})
+	p = vui.NewPainter(vui.Size{Width: 20, Height: 3})
+	app.Paint(p)
+	if got := uiDiffHighlightedScreenRow(p, uiDiffTestTheme().Selection); got != 0 {
+		t.Fatalf("highlight row after k = %d, want 0", got)
+	}
+}
+
 func TestUIDiffViewKeepsCursorVisibleWhenMovingDown(t *testing.T) {
 	rows := make([]diff.Row, 12)
 	for i := range rows {
