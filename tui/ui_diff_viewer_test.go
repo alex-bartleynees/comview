@@ -391,6 +391,47 @@ func TestUIDiffViewVimNavigationKeys(t *testing.T) {
 	}
 }
 
+func TestUIDiffViewBracketCJumpsBetweenChanges(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowContext, Gutter: "1 1   ", Code: "same"},
+		{Kind: diff.RowDelete, Gutter: "2     - ", Code: "old"},
+		{Kind: diff.RowAdd, Gutter: "    2 + ", Code: "new"},
+		{Kind: diff.RowContext, Gutter: "3 3   ", Code: "same"},
+		{Kind: diff.RowAdd, Gutter: "    4 + ", Code: "other"},
+	}
+	app := newUIDiffTestApp(rows, false)
+	app.Pump(vui.Size{Width: 24, Height: 5})
+	app.Pump(vui.Size{Width: 24, Height: 5})
+
+	app.Send(vaxis.Key{Text: "]", Keycode: ']'})
+	app.Pump(vui.Size{Width: 24, Height: 5})
+	app.Send(vaxis.Key{Text: "c", Keycode: 'c'})
+	app.Pump(vui.Size{Width: 24, Height: 5})
+	p := vui.NewPainter(vui.Size{Width: 24, Height: 5})
+	app.Paint(p)
+	if got := uiDiffHighlightedScreenRow(p, uiDiffTestTheme().Selection); got != 1 {
+		t.Fatalf("]c highlight row = %d, want 1", got)
+	}
+
+	app.Send(vaxis.Key{Text: "]", Keycode: ']'})
+	app.Send(vaxis.Key{Text: "c", Keycode: 'c'})
+	app.Pump(vui.Size{Width: 24, Height: 5})
+	p = vui.NewPainter(vui.Size{Width: 24, Height: 5})
+	app.Paint(p)
+	if got := uiDiffHighlightedScreenRow(p, uiDiffTestTheme().Selection); got != 4 {
+		t.Fatalf("second ]c highlight row = %d, want 4", got)
+	}
+
+	app.Send(vaxis.Key{Text: "[", Keycode: '['})
+	app.Send(vaxis.Key{Text: "c", Keycode: 'c'})
+	app.Pump(vui.Size{Width: 24, Height: 5})
+	p = vui.NewPainter(vui.Size{Width: 24, Height: 5})
+	app.Paint(p)
+	if got := uiDiffHighlightedScreenRow(p, uiDiffTestTheme().Selection); got != 1 {
+		t.Fatalf("[c highlight row = %d, want 1", got)
+	}
+}
+
 func TestUIDiffViewLineBoundaryKeys(t *testing.T) {
 	tests := []struct {
 		name      string

@@ -42,6 +42,7 @@ type uiDiffViewState struct {
 	cursor           selectionPoint
 	cursorCol        int
 	pendingG         bool
+	pendingBracket   rune
 	syntaxTheme      vui.Theme
 	highlighter      *SyntaxHighlighter
 	highlightedTheme vui.Theme
@@ -152,57 +153,79 @@ func (s *uiDiffViewState) HandleEvent(ctx vui.EventContext, ev vui.Event) vui.Ev
 	case key.Matches('q'), key.MatchString("Ctrl+c"):
 		ctx.Quit()
 		return vui.EventHandled
-	case key.Matches('g') && s.pendingG:
+	case key.Matches('c') && s.pendingBracket == ']':
+		s.clearPendingKeys()
+		s.jumpChange(rows, 1)
+		return vui.EventHandled
+	case key.Matches('c') && s.pendingBracket == '[':
+		s.clearPendingKeys()
+		s.jumpChange(rows, -1)
+		return vui.EventHandled
+	case key.Matches(']'):
 		s.pendingG = false
+		s.pendingBracket = ']'
+		return vui.EventHandled
+	case key.Matches('['):
+		s.pendingG = false
+		s.pendingBracket = '['
+		return vui.EventHandled
+	case key.Matches('g') && s.pendingG:
+		s.clearPendingKeys()
 		s.setCursorRow(rows, 0)
 		return vui.EventHandled
 	case key.Matches('g'):
+		s.pendingBracket = 0
 		s.pendingG = true
 		return vui.EventHandled
 	case key.Matches(vaxis.KeyHome):
-		s.pendingG = false
+		s.clearPendingKeys()
 		s.setCursorRow(rows, 0)
 		return vui.EventHandled
 	case key.Matches('G'), key.Matches(vaxis.KeyEnd):
-		s.pendingG = false
+		s.clearPendingKeys()
 		s.setCursorRow(rows, len(rows)-1)
 		return vui.EventHandled
 	case key.MatchString("Ctrl+d"), key.Matches(vaxis.KeyPgDown):
-		s.pendingG = false
+		s.clearPendingKeys()
 		s.moveCursorRows(rows, s.halfPageRows())
 		return vui.EventHandled
 	case key.MatchString("Ctrl+u"), key.Matches(vaxis.KeyPgUp):
-		s.pendingG = false
+		s.clearPendingKeys()
 		s.moveCursorRows(rows, -s.halfPageRows())
 		return vui.EventHandled
 	case key.Matches('j'), key.Matches(vaxis.KeyDown), key.MatchString("Down"):
-		s.pendingG = false
+		s.clearPendingKeys()
 		s.moveCursorRows(rows, 1)
 		return vui.EventHandled
 	case key.Matches('k'), key.Matches(vaxis.KeyUp), key.MatchString("Up"):
-		s.pendingG = false
+		s.clearPendingKeys()
 		s.moveCursorRows(rows, -1)
 		return vui.EventHandled
 	case key.Matches('h'), key.Matches(vaxis.KeyLeft), key.MatchString("Left"):
-		s.pendingG = false
+		s.clearPendingKeys()
 		s.moveCursorCols(rows, -1)
 		return vui.EventHandled
 	case key.Matches('l'), key.Matches(vaxis.KeyRight), key.MatchString("Right"):
-		s.pendingG = false
+		s.clearPendingKeys()
 		s.moveCursorCols(rows, 1)
 		return vui.EventHandled
 	case key.Matches('0'):
-		s.pendingG = false
+		s.clearPendingKeys()
 		s.moveCursorLineStart(rows)
 		return vui.EventHandled
 	case key.Matches('$'):
-		s.pendingG = false
+		s.clearPendingKeys()
 		s.moveCursorLineEnd(rows)
 		return vui.EventHandled
 	default:
-		s.pendingG = false
+		s.clearPendingKeys()
 		return vui.EventIgnored
 	}
+}
+
+func (s *uiDiffViewState) clearPendingKeys() {
+	s.pendingG = false
+	s.pendingBracket = 0
 }
 
 func (s *uiDiffViewState) buildItem(rows []diff.Row, rowIndex int, theme vui.Theme, highlightedRows map[int][]vaxis.Segment, wrap bool) vui.Widget {
@@ -542,6 +565,44 @@ func (s *uiDiffViewState) moveCursorRows(rows []diff.Row, delta int) {
 		return
 	}
 	s.setCursorRow(rows, s.cursor.Row+delta)
+}
+
+func (s *uiDiffViewState) jumpChange(rows []diff.Row, direction int) {
+	targets := uiDiffChangeTargetRows(rows)
+	if len(targets) == 0 {
+		return
+	}
+	if direction < 0 {
+		for index := len(targets) - 1; index >= 0; index-- {
+			if targets[index] < s.cursor.Row {
+				s.setCursorRow(rows, targets[index])
+				return
+			}
+		}
+		return
+	}
+	for _, target := range targets {
+		if target > s.cursor.Row {
+			s.setCursorRow(rows, target)
+			return
+		}
+	}
+}
+
+func uiDiffChangeTargetRows(rows []diff.Row) []int {
+	targets := make([]int, 0)
+	inChange := false
+	for index, row := range rows {
+		if row.Kind == diff.RowAdd || row.Kind == diff.RowDelete {
+			if !inChange {
+				targets = append(targets, index)
+			}
+			inChange = true
+			continue
+		}
+		inChange = false
+	}
+	return targets
 }
 
 func (s *uiDiffViewState) halfPageRows() int {
