@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"fmt"
+
 	"git.sr.ht/~rockorager/vaxis"
 	vui "git.sr.ht/~rockorager/vaxis/ui"
 	"github.com/rockorager/go-uucode"
@@ -135,11 +137,134 @@ func (s *uiDiffViewState) buildItem(rows []diff.Row, rowIndex int, scheme ColorS
 }
 
 func uiDiffFullWidthRow(row diff.Row, active bool, scheme ColorScheme, wrap bool) vui.Widget {
+	if segments, ok := uiDiffStructuredSegments(row, scheme); ok {
+		if active {
+			segments = uiDiffApplyBackground(segments, scheme.Selection)
+		}
+		return vui.RichText{Spans: uiTextSpans(segments), SoftWrap: wrap}
+	}
 	style := uiStyleForDiffRow(row.Kind, scheme)
 	if active {
 		style.Background = scheme.Selection
 	}
 	return vui.Text{Value: uiDiffRowCode(row), Style: style, SoftWrap: wrap}
+}
+
+func uiDiffStructuredSegments(row diff.Row, scheme ColorScheme) ([]vaxis.Segment, bool) {
+	switch row.Kind {
+	case diff.RowHunk:
+		if row.Prefix == "" && row.Code == "" {
+			return nil, false
+		}
+		return []vaxis.Segment{
+			{Text: row.Prefix, Style: uiStyleForDiffRow(diff.RowHunk, scheme)},
+			{Text: row.Code, Style: uiDimStyle(scheme)},
+		}, true
+	case diff.RowCommitHeader:
+		if row.Prefix == "" && row.Code == "" {
+			return nil, false
+		}
+		return []vaxis.Segment{
+			{Text: row.Prefix, Style: uiDimStyle(scheme)},
+			{Text: row.Code, Style: uiCommitHashStyle(scheme)},
+		}, true
+	case diff.RowCommitMeta:
+		if row.Prefix == "" && row.Code == "" {
+			return nil, false
+		}
+		return []vaxis.Segment{
+			{Text: row.Prefix, Style: uiCommitLabelStyle(scheme)},
+			{Text: row.Code, Style: uiCommitMetaStyle(scheme)},
+		}, true
+	case diff.RowCommitTrailer:
+		if row.Prefix == "" && row.Code == "" {
+			return nil, false
+		}
+		return []vaxis.Segment{
+			{Text: row.Prefix, Style: uiCommitTrailerLabelStyle(scheme)},
+			{Text: row.Code, Style: uiCommitTrailerValueStyle(scheme)},
+		}, true
+	case diff.RowDiffStat:
+		return uiDiffStatSegments(row, scheme), true
+	case diff.RowDiffStatSummary:
+		return uiDiffStatSummarySegments(row, scheme), true
+	default:
+		return nil, false
+	}
+}
+
+func uiDiffApplyBackground(segments []vaxis.Segment, background vaxis.Color) []vaxis.Segment {
+	styled := make([]vaxis.Segment, len(segments))
+	for i, segment := range segments {
+		segment.Style.Background = background
+		styled[i] = segment
+	}
+	return styled
+}
+
+func uiDiffStatSegments(row diff.Row, scheme ColorScheme) []vaxis.Segment {
+	baseStyle := vaxis.Style{Foreground: scheme.Foreground, Background: scheme.Background}
+	barStyle := uiDimStyle(scheme)
+	addStyle := baseStyle
+	addStyle.Foreground = scheme.Add
+	deleteStyle := baseStyle
+	deleteStyle.Foreground = scheme.Delete
+
+	segments := []vaxis.Segment{
+		{Text: " " + row.Stat.Path, Style: baseStyle},
+		{Text: " | ", Style: uiDimStyle(scheme)},
+	}
+	if row.Stat.Changed > 0 {
+		segments = append(segments, vaxis.Segment{Text: fmt.Sprintf("%d ", row.Stat.Changed), Style: barStyle})
+	}
+	for _, r := range row.Stat.Bar {
+		style := barStyle
+		switch r {
+		case '+':
+			style = addStyle
+		case '-':
+			style = deleteStyle
+		}
+		segments = append(segments, vaxis.Segment{Text: string(r), Style: style})
+	}
+	return segments
+}
+
+func uiDiffStatSummarySegments(row diff.Row, scheme ColorScheme) []vaxis.Segment {
+	baseStyle := uiDimStyle(scheme)
+	addStyle := baseStyle
+	addStyle.Foreground = scheme.Add
+	deleteStyle := baseStyle
+	deleteStyle.Foreground = scheme.Delete
+	return []vaxis.Segment{
+		{Text: fmt.Sprintf(" %d %s changed", row.Stat.Files, pluralize(row.Stat.Files, "file")), Style: baseStyle},
+		{Text: fmt.Sprintf(", +%d", row.Stat.Adds), Style: addStyle},
+		{Text: fmt.Sprintf(" -%d", row.Stat.Deletes), Style: deleteStyle},
+	}
+}
+
+func uiDimStyle(scheme ColorScheme) vaxis.Style {
+	return vaxis.Style{Foreground: scheme.Dim, Background: scheme.Background}
+}
+
+func uiCommitHashStyle(scheme ColorScheme) vaxis.Style {
+	return vaxis.Style{Foreground: scheme.Yellow, Background: scheme.Background, Attribute: vaxis.AttrBold}
+}
+
+func uiCommitLabelStyle(scheme ColorScheme) vaxis.Style {
+	return vaxis.Style{Foreground: scheme.Muted, Background: scheme.Background}
+}
+
+func uiCommitMetaStyle(scheme ColorScheme) vaxis.Style {
+	return vaxis.Style{Foreground: scheme.Base.Cyan, Background: scheme.Background}
+}
+
+func uiCommitTrailerLabelStyle(scheme ColorScheme) vaxis.Style {
+	return vaxis.Style{Foreground: scheme.Blue, Background: scheme.Background, Attribute: vaxis.AttrBold}
+}
+
+func uiCommitTrailerValueStyle(scheme ColorScheme) vaxis.Style {
+	return vaxis.Style{Foreground: scheme.Dim, Background: scheme.Background}
 }
 
 func (s *uiDiffViewState) buildRow(row diff.Row, active bool, cursorCol int, scheme ColorScheme, wrap bool) vui.TableRow {

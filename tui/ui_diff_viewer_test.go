@@ -106,6 +106,39 @@ func TestUIDiffViewRendersMetadataOutsideDiffGrid(t *testing.T) {
 	}
 }
 
+func TestUIDiffViewRendersStructuredFullWidthRows(t *testing.T) {
+	scheme := DefaultColorScheme()
+	rows := []diff.Row{
+		{Kind: diff.RowCommitHeader, Prefix: "commit ", Code: "abc123"},
+		{Kind: diff.RowCommitMeta, Prefix: "Author: ", Code: "Example"},
+		{Kind: diff.RowHunk, Prefix: "@@ -1 +1 @@", Code: " func"},
+	}
+	app := vui.NewApp(uiDiffView{Rows: rows, Scheme: scheme})
+	app.Pump(vui.Size{Width: 24, Height: 3})
+	app.Pump(vui.Size{Width: 24, Height: 3})
+
+	p := vui.NewPainter(vui.Size{Width: 24, Height: 3})
+	app.Paint(p)
+	if cell := p.Cell(0, 0); cell.Grapheme != "c" || cell.Foreground != scheme.Dim {
+		t.Fatalf("commit prefix cell = %q/%v, want c/dim", cell.Grapheme, cell.Foreground)
+	}
+	if cell := p.Cell(7, 0); cell.Grapheme != "a" || cell.Foreground != scheme.Yellow {
+		t.Fatalf("commit hash cell = %q/%v, want a/yellow", cell.Grapheme, cell.Foreground)
+	}
+	if cell := p.Cell(0, 1); cell.Grapheme != "A" || cell.Foreground != scheme.Muted {
+		t.Fatalf("commit meta label = %q/%v, want A/muted", cell.Grapheme, cell.Foreground)
+	}
+	if cell := p.Cell(8, 1); cell.Grapheme != "E" || cell.Foreground != scheme.Base.Cyan {
+		t.Fatalf("commit meta value = %q/%v, want E/cyan", cell.Grapheme, cell.Foreground)
+	}
+	if cell := p.Cell(0, 2); cell.Grapheme != "@" || cell.Foreground != scheme.Hunk {
+		t.Fatalf("hunk prefix = %q/%v, want @/hunk", cell.Grapheme, cell.Foreground)
+	}
+	if cell := p.Cell(11, 2); cell.Grapheme != " " || cell.Foreground != scheme.Dim {
+		t.Fatalf("hunk suffix = %q/%v, want space/dim", cell.Grapheme, cell.Foreground)
+	}
+}
+
 func TestUIDiffViewVimNavigationKeys(t *testing.T) {
 	tests := []struct {
 		name          string
