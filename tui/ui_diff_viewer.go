@@ -11,9 +11,25 @@ import (
 )
 
 type uiDiffView struct {
-	Rows   []diff.Row
-	Scheme ColorScheme
-	Wrap   bool
+	Rows []diff.Row
+	Wrap bool
+}
+
+func uiDiffRoot(rows []diff.Row, wrap bool) vui.Widget {
+	return uiDiffView{Rows: rows, Wrap: wrap}
+}
+
+func uiThemeFromBaseColors(base BaseColors) vui.Theme {
+	return vui.ThemeFromPalette(vui.PaletteFromBaseColors(vui.BaseColors{
+		Black:   base.Background,
+		Red:     base.Red,
+		Green:   base.Green,
+		Yellow:  base.Yellow,
+		Blue:    base.Blue,
+		Magenta: base.Magenta,
+		Cyan:    base.Cyan,
+		White:   base.Foreground,
+	}), vui.DarkTheme)
 }
 
 func (w uiDiffView) CreateState() vui.State {
@@ -31,10 +47,7 @@ type uiDiffViewState struct {
 func (s *uiDiffViewState) Build(ctx vui.BuildContext) vui.Widget {
 	w := s.Widget().(uiDiffView)
 	s.clampCursor(w.Rows)
-	scheme := w.Scheme
-	if scheme.Foreground == vaxis.ColorDefault {
-		scheme = DefaultColorScheme()
-	}
+	theme := vui.MustDepend[vui.Theme](ctx)
 	return vui.CustomScrollView{
 		Slivers: []vui.Widget{
 			vui.SliverListBuilder{
@@ -43,7 +56,7 @@ func (s *uiDiffViewState) Build(ctx vui.BuildContext) vui.Widget {
 				EstimatedItemExtent: 1,
 				Overscan:            8,
 				Builder: func(ctx vui.BuildContext, row int) vui.Widget {
-					return s.buildItem(w.Rows, row, scheme, w.Wrap)
+					return s.buildItem(w.Rows, row, theme, w.Wrap)
 				},
 			},
 		},
@@ -122,72 +135,72 @@ func (s *uiDiffViewState) HandleEvent(ctx vui.EventContext, ev vui.Event) vui.Ev
 	}
 }
 
-func (s *uiDiffViewState) buildItem(rows []diff.Row, rowIndex int, scheme ColorScheme, wrap bool) vui.Widget {
+func (s *uiDiffViewState) buildItem(rows []diff.Row, rowIndex int, theme vui.Theme, wrap bool) vui.Widget {
 	row := rows[rowIndex]
 	active := rowIndex == s.cursor.Row
 	if !uiDiffRowUsesGrid(row) {
-		return uiDiffFullWidthRow(row, active, scheme, wrap)
+		return uiDiffFullWidthRow(row, active, theme, wrap)
 	}
 	return vui.Table{
 		Columns: uiDiffColumns(rows),
 		Rows: []vui.TableRow{
-			s.buildRow(row, active, s.cursor.Col, scheme, wrap),
+			s.buildRow(row, active, s.cursor.Col, theme, wrap),
 		},
 	}
 }
 
-func uiDiffFullWidthRow(row diff.Row, active bool, scheme ColorScheme, wrap bool) vui.Widget {
-	if segments, ok := uiDiffStructuredSegments(row, scheme); ok {
+func uiDiffFullWidthRow(row diff.Row, active bool, theme vui.Theme, wrap bool) vui.Widget {
+	if segments, ok := uiDiffStructuredSegments(row, theme); ok {
 		if active {
-			segments = uiDiffApplyBackground(segments, scheme.Selection)
+			segments = uiDiffApplyBackground(segments, theme.Selection)
 		}
 		return vui.RichText{Spans: uiTextSpans(segments), SoftWrap: wrap}
 	}
-	style := uiStyleForDiffRow(row.Kind, scheme)
+	style := uiStyleForDiffRow(row.Kind, theme)
 	if active {
-		style.Background = scheme.Selection
+		style.Background = theme.Selection
 	}
 	return vui.Text{Value: uiDiffRowCode(row), Style: style, SoftWrap: wrap}
 }
 
-func uiDiffStructuredSegments(row diff.Row, scheme ColorScheme) ([]vaxis.Segment, bool) {
+func uiDiffStructuredSegments(row diff.Row, theme vui.Theme) ([]vaxis.Segment, bool) {
 	switch row.Kind {
 	case diff.RowHunk:
 		if row.Prefix == "" && row.Code == "" {
 			return nil, false
 		}
 		return []vaxis.Segment{
-			{Text: row.Prefix, Style: uiStyleForDiffRow(diff.RowHunk, scheme)},
-			{Text: row.Code, Style: uiDimStyle(scheme)},
+			{Text: row.Prefix, Style: uiStyleForDiffRow(diff.RowHunk, theme)},
+			{Text: row.Code, Style: uiDimStyle(theme)},
 		}, true
 	case diff.RowCommitHeader:
 		if row.Prefix == "" && row.Code == "" {
 			return nil, false
 		}
 		return []vaxis.Segment{
-			{Text: row.Prefix, Style: uiDimStyle(scheme)},
-			{Text: row.Code, Style: uiCommitHashStyle(scheme)},
+			{Text: row.Prefix, Style: uiDimStyle(theme)},
+			{Text: row.Code, Style: uiCommitHashStyle(theme)},
 		}, true
 	case diff.RowCommitMeta:
 		if row.Prefix == "" && row.Code == "" {
 			return nil, false
 		}
 		return []vaxis.Segment{
-			{Text: row.Prefix, Style: uiCommitLabelStyle(scheme)},
-			{Text: row.Code, Style: uiCommitMetaStyle(scheme)},
+			{Text: row.Prefix, Style: uiCommitLabelStyle(theme)},
+			{Text: row.Code, Style: uiCommitMetaStyle(theme)},
 		}, true
 	case diff.RowCommitTrailer:
 		if row.Prefix == "" && row.Code == "" {
 			return nil, false
 		}
 		return []vaxis.Segment{
-			{Text: row.Prefix, Style: uiCommitTrailerLabelStyle(scheme)},
-			{Text: row.Code, Style: uiCommitTrailerValueStyle(scheme)},
+			{Text: row.Prefix, Style: uiCommitTrailerLabelStyle(theme)},
+			{Text: row.Code, Style: uiCommitTrailerValueStyle(theme)},
 		}, true
 	case diff.RowDiffStat:
-		return uiDiffStatSegments(row, scheme), true
+		return uiDiffStatSegments(row, theme), true
 	case diff.RowDiffStatSummary:
-		return uiDiffStatSummarySegments(row, scheme), true
+		return uiDiffStatSummarySegments(row, theme), true
 	default:
 		return nil, false
 	}
@@ -202,17 +215,31 @@ func uiDiffApplyBackground(segments []vaxis.Segment, background vaxis.Color) []v
 	return styled
 }
 
-func uiDiffStatSegments(row diff.Row, scheme ColorScheme) []vaxis.Segment {
-	baseStyle := vaxis.Style{Foreground: scheme.Foreground, Background: scheme.Background}
-	barStyle := uiDimStyle(scheme)
+func uiDiffLineBackground(theme vui.Theme, scale vui.ColorScale) vaxis.Color {
+	if theme.Mode == vui.LightTheme {
+		return scale.Tone50
+	}
+	return scale.Tone950
+}
+
+func uiDiffCursorBackground(theme vui.Theme) vaxis.Color {
+	if theme.Mode == vui.LightTheme {
+		return theme.Palette.Yellow.Tone200
+	}
+	return theme.Palette.Yellow.Tone800
+}
+
+func uiDiffStatSegments(row diff.Row, theme vui.Theme) []vaxis.Segment {
+	baseStyle := vaxis.Style{Foreground: theme.Foreground, Background: theme.Background}
+	barStyle := uiDimStyle(theme)
 	addStyle := baseStyle
-	addStyle.Foreground = scheme.Add
+	addStyle.Foreground = theme.Success
 	deleteStyle := baseStyle
-	deleteStyle.Foreground = scheme.Delete
+	deleteStyle.Foreground = theme.Danger
 
 	segments := []vaxis.Segment{
 		{Text: " " + row.Stat.Path, Style: baseStyle},
-		{Text: " | ", Style: uiDimStyle(scheme)},
+		{Text: " | ", Style: uiDimStyle(theme)},
 	}
 	if row.Stat.Changed > 0 {
 		segments = append(segments, vaxis.Segment{Text: fmt.Sprintf("%d ", row.Stat.Changed), Style: barStyle})
@@ -230,12 +257,12 @@ func uiDiffStatSegments(row diff.Row, scheme ColorScheme) []vaxis.Segment {
 	return segments
 }
 
-func uiDiffStatSummarySegments(row diff.Row, scheme ColorScheme) []vaxis.Segment {
-	baseStyle := uiDimStyle(scheme)
+func uiDiffStatSummarySegments(row diff.Row, theme vui.Theme) []vaxis.Segment {
+	baseStyle := uiDimStyle(theme)
 	addStyle := baseStyle
-	addStyle.Foreground = scheme.Add
+	addStyle.Foreground = theme.Success
 	deleteStyle := baseStyle
-	deleteStyle.Foreground = scheme.Delete
+	deleteStyle.Foreground = theme.Danger
 	return []vaxis.Segment{
 		{Text: fmt.Sprintf(" %d %s changed", row.Stat.Files, pluralize(row.Stat.Files, "file")), Style: baseStyle},
 		{Text: fmt.Sprintf(", +%d", row.Stat.Adds), Style: addStyle},
@@ -243,37 +270,37 @@ func uiDiffStatSummarySegments(row diff.Row, scheme ColorScheme) []vaxis.Segment
 	}
 }
 
-func uiDimStyle(scheme ColorScheme) vaxis.Style {
-	return vaxis.Style{Foreground: scheme.Dim, Background: scheme.Background}
+func uiDimStyle(theme vui.Theme) vaxis.Style {
+	return vaxis.Style{Foreground: theme.DisabledForeground, Background: theme.Background}
 }
 
-func uiCommitHashStyle(scheme ColorScheme) vaxis.Style {
-	return vaxis.Style{Foreground: scheme.Yellow, Background: scheme.Background, Attribute: vaxis.AttrBold}
+func uiCommitHashStyle(theme vui.Theme) vaxis.Style {
+	return vaxis.Style{Foreground: theme.Warning, Background: theme.Background, Attribute: vaxis.AttrBold}
 }
 
-func uiCommitLabelStyle(scheme ColorScheme) vaxis.Style {
-	return vaxis.Style{Foreground: scheme.Muted, Background: scheme.Background}
+func uiCommitLabelStyle(theme vui.Theme) vaxis.Style {
+	return vaxis.Style{Foreground: theme.MutedForeground, Background: theme.Background}
 }
 
-func uiCommitMetaStyle(scheme ColorScheme) vaxis.Style {
-	return vaxis.Style{Foreground: scheme.Base.Cyan, Background: scheme.Background}
+func uiCommitMetaStyle(theme vui.Theme) vaxis.Style {
+	return vaxis.Style{Foreground: theme.Palette.Cyan.Tone500, Background: theme.Background}
 }
 
-func uiCommitTrailerLabelStyle(scheme ColorScheme) vaxis.Style {
-	return vaxis.Style{Foreground: scheme.Blue, Background: scheme.Background, Attribute: vaxis.AttrBold}
+func uiCommitTrailerLabelStyle(theme vui.Theme) vaxis.Style {
+	return vaxis.Style{Foreground: theme.Primary, Background: theme.Background, Attribute: vaxis.AttrBold}
 }
 
-func uiCommitTrailerValueStyle(scheme ColorScheme) vaxis.Style {
-	return vaxis.Style{Foreground: scheme.Dim, Background: scheme.Background}
+func uiCommitTrailerValueStyle(theme vui.Theme) vaxis.Style {
+	return vaxis.Style{Foreground: theme.DisabledForeground, Background: theme.Background}
 }
 
-func (s *uiDiffViewState) buildRow(row diff.Row, active bool, cursorCol int, scheme ColorScheme, wrap bool) vui.TableRow {
-	style := uiStyleForDiffRow(row.Kind, scheme)
+func (s *uiDiffViewState) buildRow(row diff.Row, active bool, cursorCol int, theme vui.Theme, wrap bool) vui.TableRow {
+	style := uiStyleForDiffRow(row.Kind, theme)
 	if active {
-		style.Background = scheme.Selection
+		style.Background = theme.Selection
 	}
 	oldLine, newLine, marker := splitDiffGutter(row)
-	gutterStyle := uiGutterStyle(row.Kind, active, scheme)
+	gutterStyle := uiGutterStyle(row.Kind, active, theme)
 	return vui.TableRow{Children: []vui.Widget{
 		vui.Text{Value: oldLine, Style: gutterStyle, Align: vui.TextAlignRight},
 		vui.Text{Value: " ", Style: gutterStyle},
@@ -281,16 +308,16 @@ func (s *uiDiffViewState) buildRow(row diff.Row, active bool, cursorCol int, sch
 		vui.Text{Value: " ", Style: gutterStyle},
 		vui.Text{Value: marker, Style: gutterStyle},
 		vui.Text{Value: " ", Style: gutterStyle},
-		uiDiffCodeWidget(row, active, cursorCol, style, scheme, wrap),
+		uiDiffCodeWidget(row, active, cursorCol, style, theme, wrap),
 	}}
 }
 
-func uiDiffCodeWidget(row diff.Row, active bool, cursorCol int, style vaxis.Style, scheme ColorScheme, wrap bool) vui.Widget {
+func uiDiffCodeWidget(row diff.Row, active bool, cursorCol int, style vaxis.Style, theme vui.Theme, wrap bool) vui.Widget {
 	code := uiDiffRowCode(row)
 	if !active || code == "" {
 		return vui.Text{Value: code, Style: style, SoftWrap: wrap}
 	}
-	cursorStyle := vaxis.Style{Background: scheme.Yank}
+	cursorStyle := vaxis.Style{Background: uiDiffCursorBackground(theme)}
 	segments := styleSegmentsRangeFullWithTabWidth(
 		[]vaxis.Segment{{Text: code, Style: style}},
 		cursorCol,
@@ -575,37 +602,37 @@ func stringsFields(s string) []string {
 	return fields
 }
 
-func uiGutterStyle(kind diff.RowKind, active bool, scheme ColorScheme) vaxis.Style {
-	style := vaxis.Style{Foreground: scheme.Muted, Background: scheme.Gutter}
+func uiGutterStyle(kind diff.RowKind, active bool, theme vui.Theme) vaxis.Style {
+	style := vaxis.Style{Foreground: theme.MutedForeground, Background: theme.Background}
 	if active {
-		style.Background = scheme.Selection
+		style.Background = theme.Selection
 	}
 	switch kind {
 	case diff.RowAdd:
-		style.Foreground = scheme.Add
+		style.Foreground = theme.Success
 	case diff.RowDelete:
-		style.Foreground = scheme.Delete
+		style.Foreground = theme.Danger
 	}
 	return style
 }
 
-func uiStyleForDiffRow(kind diff.RowKind, scheme ColorScheme) vaxis.Style {
+func uiStyleForDiffRow(kind diff.RowKind, theme vui.Theme) vaxis.Style {
 	switch kind {
 	case diff.RowFile:
-		return vaxis.Style{Foreground: scheme.Header, Background: scheme.Background, Attribute: vaxis.AttrBold}
+		return vaxis.Style{Foreground: theme.Primary, Background: theme.Background, Attribute: vaxis.AttrBold}
 	case diff.RowHunk:
-		return vaxis.Style{Foreground: scheme.Hunk, Background: scheme.Background}
+		return vaxis.Style{Foreground: theme.Accent, Background: theme.Background}
 	case diff.RowAdd:
-		return vaxis.Style{Foreground: scheme.Add, Background: scheme.AddLine}
+		return vaxis.Style{Foreground: theme.Success, Background: uiDiffLineBackground(theme, theme.Palette.Green)}
 	case diff.RowDelete:
-		return vaxis.Style{Foreground: scheme.Delete, Background: scheme.DeleteLine}
+		return vaxis.Style{Foreground: theme.Danger, Background: uiDiffLineBackground(theme, theme.Palette.Red)}
 	case diff.RowMeta, diff.RowPreamble, diff.RowNoNewline:
-		return vaxis.Style{Foreground: scheme.Muted, Background: scheme.Background}
+		return vaxis.Style{Foreground: theme.MutedForeground, Background: theme.Background}
 	case diff.RowCommitHeader:
-		return vaxis.Style{Foreground: scheme.Yellow, Background: scheme.Background, Attribute: vaxis.AttrBold}
+		return vaxis.Style{Foreground: theme.Warning, Background: theme.Background, Attribute: vaxis.AttrBold}
 	case diff.RowCommitMeta:
-		return vaxis.Style{Foreground: scheme.Base.Cyan, Background: scheme.Background}
+		return vaxis.Style{Foreground: theme.Palette.Cyan.Tone500, Background: theme.Background}
 	default:
-		return vaxis.Style{Foreground: scheme.Foreground, Background: scheme.Background}
+		return vaxis.Style{Foreground: theme.Foreground, Background: theme.Background}
 	}
 }

@@ -8,11 +8,12 @@ import (
 
 func runUIDiff(rows []diff.Row) error {
 	cfg := loadConfig()
-	scheme := DefaultColorScheme()
+	base := DefaultBaseColors()
 	if cfg.Theme != "" {
 		if t, ok := ThemeByName(cfg.Theme); ok {
-			scheme = NewColorScheme(t.Colors)
+			base = t.Colors
 		}
 	}
-	return vui.Run(uiDiffView{Rows: rows, Scheme: scheme, Wrap: cfg.Wrap})
+	theme := uiThemeFromBaseColors(base)
+	return vui.Run(uiDiffRoot(rows, cfg.Wrap), vui.WithTheme(theme))
 }
