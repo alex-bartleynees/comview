@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -47,6 +48,9 @@ func Run(input string) error {
 	}
 	if len(rows) == 0 {
 		return nil
+	}
+	if os.Getenv("COMVIEW_UI_DIFF") != "" {
+		return runUIDiff(rows)
 	}
 	app, _, err := newDiffApp(rows)
 	if err != nil {

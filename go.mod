@@ -8,6 +8,8 @@ require (
 	github.com/rockorager/go-uucode v1.1.0
 )
 
+replace git.sr.ht/~rockorager/vaxis => ../vaxis
+
 require (
 	github.com/containerd/console v1.0.3 // indirect
 	github.com/creack/pty v1.1.18 // indirect
@@ -16,4 +18,5 @@ require (
 	github.com/soniakeys/quant v1.0.0 // indirect
 	golang.org/x/image v0.9.0 // indirect
 	golang.org/x/sys v0.10.0 // indirect
+	golang.org/x/term v0.10.0 // indirect
 )
