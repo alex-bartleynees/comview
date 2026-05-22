@@ -669,9 +669,12 @@ func TestUIDiffViewHorizontalMovementUsesTabStops(t *testing.T) {
 	app.Pump(vui.Size{Width: 20, Height: 3})
 	p := vui.NewPainter(vui.Size{Width: 20, Height: 3})
 	app.Paint(p)
-	for col := 7; col < 15; col++ {
-		if got := p.Cell(col, 0).Background; got != uiDiffCursorBackground(uiDiffTestTheme()) {
-			t.Fatalf("tab cursor background at col %d = %v, want yank", col, got)
+	if got := p.Cell(7, 0).Background; got != uiDiffCursorBackground(uiDiffTestTheme()) {
+		t.Fatalf("tab cursor first cell background = %v, want cursor", got)
+	}
+	for col := 8; col < 15; col++ {
+		if got := p.Cell(col, 0).Background; got != uiDiffTestTheme().Selection {
+			t.Fatalf("tab cursor remainder background at col %d = %v, want row selection", col, got)
 		}
 	}
 
@@ -687,9 +690,12 @@ func TestUIDiffViewHorizontalMovementUsesTabStops(t *testing.T) {
 	app.Pump(vui.Size{Width: 20, Height: 3})
 	p = vui.NewPainter(vui.Size{Width: 20, Height: 3})
 	app.Paint(p)
-	for col := 7; col < 15; col++ {
-		if got := p.Cell(col, 0).Background; got != uiDiffCursorBackground(uiDiffTestTheme()) {
-			t.Fatalf("tab cursor after h at col %d = %v, want yank", col, got)
+	if got := p.Cell(7, 0).Background; got != uiDiffCursorBackground(uiDiffTestTheme()) {
+		t.Fatalf("tab cursor after h first cell background = %v, want cursor", got)
+	}
+	for col := 8; col < 15; col++ {
+		if got := p.Cell(col, 0).Background; got != uiDiffTestTheme().Selection {
+			t.Fatalf("tab cursor after h remainder background at col %d = %v, want row selection", col, got)
 		}
 	}
 }

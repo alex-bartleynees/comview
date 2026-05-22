@@ -533,17 +533,36 @@ func uiDiffCodeWidget(row diff.Row, code string, segments []vaxis.Segment, activ
 		)
 	}
 	cursorStyle := vaxis.Style{Foreground: uiDiffCursorForeground(theme), Background: uiDiffCursorBackground(theme)}
-	segments = styleSegmentsRangeFullWithTabWidth(
-		segments,
-		cursorCol,
-		cursorCol+1,
-		cursorStyle,
-		tabWidthForFile(row.FileName),
-	)
+	segments = uiDiffCursorSegments(segments, cursorCol, cursorStyle, tabWidthForFile(row.FileName))
 	return vui.DecoratedBox(
 		vui.Decoration{Style: vaxis.Style{Background: background}},
 		vui.RichText{Spans: uiTextSpans(segments), SoftWrap: wrap},
 	)
+}
+
+func uiDiffCursorSegments(segments []vaxis.Segment, cursorCol int, cursorStyle vaxis.Style, tabWidth int) []vaxis.Segment {
+	var styled []vaxis.Segment
+	col := 0
+	for _, segment := range segments {
+		it := uucode.NewGraphemeIterator(segment.Text)
+		for g, ok := it.Next(); ok; g, ok = it.Next() {
+			grapheme := segment.Text[g.Start:g.End]
+			char := characterForGraphemeWithTabWidth(grapheme, tabWidth)
+			next := col + char.Width
+			if cursorCol >= col && cursorCol < next {
+				if grapheme == "\t" && char.Width > 1 {
+					styled = appendSegment(styled, vaxis.Segment{Text: " ", Style: cursorStyle})
+					styled = appendSegment(styled, vaxis.Segment{Text: strings.Repeat(" ", char.Width-1), Style: segment.Style})
+				} else {
+					styled = appendSegment(styled, vaxis.Segment{Text: grapheme, Style: cursorStyle})
+				}
+			} else {
+				styled = appendSegment(styled, vaxis.Segment{Text: grapheme, Style: segment.Style})
+			}
+			col = next
+		}
+	}
+	return styled
 }
 
 func uiTextSpans(segments []vaxis.Segment) []vui.TextSpan {
