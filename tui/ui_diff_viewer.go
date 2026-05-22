@@ -429,10 +429,11 @@ func (s *uiDiffViewState) buildRow(rows []diff.Row, row diff.Row, rowIndex int, 
 	oldLine, newLine, marker := splitDiffGutter(row)
 	oldWidth, newWidth := uiDiffGutterWidths(rows)
 	gutterStyle := uiGutterStyle(row.Kind, active, theme)
+	lineNumberStyle := uiLineNumberGutterStyle(row.Kind, active, theme)
 	return vui.Row(
-		uiDiffFixedCell(oldWidth, gutterStyle, vui.Text{Value: oldLine, Style: gutterStyle, Align: vui.TextAlignRight}),
+		uiDiffFixedCell(oldWidth, lineNumberStyle, vui.Text{Value: oldLine, Style: lineNumberStyle, Align: vui.TextAlignRight}),
 		uiDiffFixedCell(1, gutterStyle, vui.Text{Value: " ", Style: gutterStyle}),
-		uiDiffFixedCell(newWidth, gutterStyle, vui.Text{Value: newLine, Style: gutterStyle, Align: vui.TextAlignRight}),
+		uiDiffFixedCell(newWidth, lineNumberStyle, vui.Text{Value: newLine, Style: lineNumberStyle, Align: vui.TextAlignRight}),
 		uiDiffFixedCell(1, gutterStyle, vui.Text{Value: " ", Style: gutterStyle}),
 		uiDiffFixedCell(1, gutterStyle, vui.Text{Value: marker, Style: gutterStyle}),
 		uiDiffFixedCell(1, gutterStyle, vui.Text{Value: " ", Style: gutterStyle}),
@@ -892,6 +893,21 @@ func uiGutterStyle(kind diff.RowKind, active bool, theme vui.Theme) vaxis.Style 
 		style.Foreground = uiDiffChangedGutterForeground(theme, theme.Palette.Red)
 	}
 	return style
+}
+
+func uiLineNumberGutterStyle(kind diff.RowKind, active bool, theme vui.Theme) vaxis.Style {
+	style := uiGutterStyle(kind, active, theme)
+	if kind == diff.RowAdd {
+		style.Foreground = uiDiffAddedLineNumberForeground(theme)
+	}
+	return style
+}
+
+func uiDiffAddedLineNumberForeground(theme vui.Theme) vaxis.Color {
+	if theme.Mode == vui.LightTheme {
+		return theme.Palette.Green.Tone600
+	}
+	return theme.Palette.Green.Tone300
 }
 
 func uiStyleForDiffRow(kind diff.RowKind, theme vui.Theme) vaxis.Style {

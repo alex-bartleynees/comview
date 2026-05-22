@@ -312,10 +312,20 @@ func TestUIDiffViewCursorUsesThemeForeground(t *testing.T) {
 func TestUIDiffViewChangedGutterUsesBrighterTone(t *testing.T) {
 	theme := uiDiffTestTheme()
 	if got := uiGutterStyle(diff.RowAdd, false, theme).Foreground; got != theme.Palette.Green.Tone400 {
-		t.Fatalf("add gutter foreground = %v, want green tone400 %v", got, theme.Palette.Green.Tone400)
+		t.Fatalf("add marker foreground = %v, want green tone400 %v", got, theme.Palette.Green.Tone400)
 	}
 	if got := uiGutterStyle(diff.RowDelete, false, theme).Foreground; got != theme.Palette.Red.Tone400 {
-		t.Fatalf("delete gutter foreground = %v, want red tone400 %v", got, theme.Palette.Red.Tone400)
+		t.Fatalf("delete marker foreground = %v, want red tone400 %v", got, theme.Palette.Red.Tone400)
+	}
+}
+
+func TestUIDiffViewAddLineNumberGutterUsesSoftGreenForeground(t *testing.T) {
+	theme := uiDiffTestTheme()
+	if got := uiLineNumberGutterStyle(diff.RowAdd, false, theme).Foreground; got != theme.Palette.Green.Tone300 {
+		t.Fatalf("add line number foreground = %v, want soft green %v", got, theme.Palette.Green.Tone300)
+	}
+	if got := uiGutterStyle(diff.RowAdd, false, theme).Foreground; got != theme.Palette.Green.Tone400 {
+		t.Fatalf("add marker foreground = %v, want green tone400 %v", got, theme.Palette.Green.Tone400)
 	}
 }
 
