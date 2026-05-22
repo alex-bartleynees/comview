@@ -218,8 +218,8 @@ func TestUIDiffViewDerivesDiffColorsFromUITheme(t *testing.T) {
 	if style := uiStyleForDiffRow(diff.RowContext, theme); style.Background != theme.Background {
 		t.Fatalf("context background = %v, want %v", style.Background, theme.Background)
 	}
-	if style := uiStyleForDiffRow(diff.RowContext, theme); style.Foreground != theme.Foreground {
-		t.Fatalf("context foreground = %v, want %v", style.Foreground, theme.Foreground)
+	if style := uiStyleForDiffRow(diff.RowContext, theme); style.Foreground != theme.MutedForeground {
+		t.Fatalf("context foreground = %v, want muted %v", style.Foreground, theme.MutedForeground)
 	}
 	if style := uiGutterStyle(diff.RowContext, true, theme); style.Background != theme.Selection {
 		t.Fatalf("active gutter background = %v, want %v", style.Background, theme.Selection)
@@ -233,8 +233,8 @@ func TestUIDiffViewDerivesDiffColorsFromUITheme(t *testing.T) {
 	if style := uiStyleForDiffRow(diff.RowAdd, theme); style.Background != theme.Surface {
 		t.Fatalf("add background = %v, want surface %v", style.Background, theme.Surface)
 	}
-	if style := uiStyleForDiffRow(diff.RowDelete, theme); style.Foreground != theme.Danger {
-		t.Fatalf("delete foreground = %v, want %v", style.Foreground, theme.Danger)
+	if style := uiStyleForDiffRow(diff.RowDelete, theme); style.Foreground != theme.Palette.Red.Tone500 {
+		t.Fatalf("delete foreground = %v, want dim red %v", style.Foreground, theme.Palette.Red.Tone500)
 	}
 	if style := uiStyleForDiffRow(diff.RowDelete, theme); style.Background != theme.Palette.Red.Tone950 {
 		t.Fatalf("delete background = %v, want dark red tone", style.Background)
@@ -243,36 +243,53 @@ func TestUIDiffViewDerivesDiffColorsFromUITheme(t *testing.T) {
 
 func TestUIDiffViewHighlightsCodeWithChroma(t *testing.T) {
 	theme := uiDiffTestTheme()
-	rows := []diff.Row{{Kind: diff.RowContext, Gutter: "1 1   ", Code: "package main", FileName: "main.go"}}
+	rows := []diff.Row{{Kind: diff.RowAdd, Gutter: "    1 + ", Code: "package main", FileName: "main.go"}}
 	app := newUIDiffTestApp(rows, false)
 	app.Pump(vui.Size{Width: 24, Height: 1})
 	app.Pump(vui.Size{Width: 24, Height: 1})
 
 	p := vui.NewPainter(vui.Size{Width: 24, Height: 1})
 	app.Paint(p)
-	cell := p.Cell(7, 0)
+	cell := p.Cell(6, 0)
 	if cell.Grapheme != "a" {
 		t.Fatalf("code glyph = %q, want a", cell.Grapheme)
 	}
-	if cell.Foreground != theme.Palette.Magenta.Tone300 {
-		t.Fatalf("keyword foreground = %v, want bright magenta %v", cell.Foreground, theme.Palette.Magenta.Tone300)
+	if cell.Foreground != theme.Palette.Magenta.Tone500 {
+		t.Fatalf("keyword foreground = %v, want magenta tone500 %v", cell.Foreground, theme.Palette.Magenta.Tone500)
 	}
 	if cell.Background != theme.Selection {
 		t.Fatalf("keyword background = %v, want selection %v", cell.Background, theme.Selection)
 	}
 }
 
+func TestUIDiffViewDimsChromaCodeForContextAndDeletes(t *testing.T) {
+	theme := uiDiffTestTheme()
+	base := []vaxis.Segment{{Text: "package", Style: vaxis.Style{Foreground: theme.Palette.Magenta.Tone500}}}
+	contextSegments := uiDiffToneCodeSegments(diff.RowContext, base, theme)
+	deleteSegments := uiDiffToneCodeSegments(diff.RowDelete, base, theme)
+	addSegments := uiDiffToneCodeSegments(diff.RowAdd, base, theme)
+	if contextSegments[0].Style.Foreground != theme.Palette.Magenta.Tone600 {
+		t.Fatalf("context syntax foreground = %v, want magenta tone600", contextSegments[0].Style.Foreground)
+	}
+	if deleteSegments[0].Style.Foreground != theme.Palette.Magenta.Tone600 {
+		t.Fatalf("delete syntax foreground = %v, want magenta tone600", deleteSegments[0].Style.Foreground)
+	}
+	if addSegments[0].Style.Foreground != base[0].Style.Foreground {
+		t.Fatal("add syntax foreground should remain unchanged")
+	}
+}
+
 func TestUIDiffViewSyntaxColorsUseBrighterPaletteTones(t *testing.T) {
 	theme := uiDiffTestTheme()
 	colors := (uiSyntaxTheme{Theme: theme}).uiThemeColors()
-	if colors.Magenta != theme.Palette.Magenta.Tone300 {
-		t.Fatalf("syntax magenta = %v, want tone300 %v", colors.Magenta, theme.Palette.Magenta.Tone300)
+	if colors.Magenta != theme.Palette.Magenta.Tone500 {
+		t.Fatalf("syntax magenta = %v, want tone500 %v", colors.Magenta, theme.Palette.Magenta.Tone500)
 	}
-	if colors.Blue != theme.Palette.Blue.Tone300 {
-		t.Fatalf("syntax blue = %v, want tone300 %v", colors.Blue, theme.Palette.Blue.Tone300)
+	if colors.Blue != theme.Palette.Blue.Tone500 {
+		t.Fatalf("syntax blue = %v, want tone500 %v", colors.Blue, theme.Palette.Blue.Tone500)
 	}
-	if colors.Green != theme.Palette.Green.Tone300 {
-		t.Fatalf("syntax green = %v, want tone300 %v", colors.Green, theme.Palette.Green.Tone300)
+	if colors.Green != theme.Palette.Green.Tone500 {
+		t.Fatalf("syntax green = %v, want tone500 %v", colors.Green, theme.Palette.Green.Tone500)
 	}
 }
 

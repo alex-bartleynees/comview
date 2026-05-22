@@ -122,12 +122,12 @@ func (t uiSyntaxTheme) uiThemeColors() uiThemeColors {
 	return uiThemeColors{
 		Foreground: t.Theme.Foreground,
 		Muted:      t.Theme.MutedForeground,
-		Blue:       t.Theme.Palette.Blue.Tone300,
-		Cyan:       t.Theme.Palette.Cyan.Tone300,
-		Green:      t.Theme.Palette.Green.Tone300,
-		Magenta:    t.Theme.Palette.Magenta.Tone300,
-		Yellow:     t.Theme.Palette.Yellow.Tone300,
-		Red:        t.Theme.Palette.Red.Tone300,
+		Blue:       t.Theme.Palette.Blue.Tone500,
+		Cyan:       t.Theme.Palette.Cyan.Tone500,
+		Green:      t.Theme.Palette.Green.Tone500,
+		Magenta:    t.Theme.Palette.Magenta.Tone500,
+		Yellow:     t.Theme.Palette.Yellow.Tone500,
+		Red:        t.Theme.Palette.Red.Tone500,
 		Header:     t.Theme.Primary,
 		Hunk:       t.Theme.Accent,
 	}
@@ -385,6 +385,7 @@ func (s *uiDiffViewState) buildRow(row diff.Row, rowIndex int, active bool, curs
 	if len(codeSegments) == 0 {
 		codeSegments = []vaxis.Segment{{Text: code, Style: style}}
 	}
+	codeSegments = uiDiffToneCodeSegments(row.Kind, codeSegments, theme)
 	if active {
 		codeSegments = uiDiffApplyBackground(codeSegments, theme.Selection)
 	}
@@ -428,6 +429,79 @@ func uiTextSpans(segments []vaxis.Segment) []vui.TextSpan {
 		spans = append(spans, vui.TextSpan{Text: segment.Text, Style: segment.Style})
 	}
 	return spans
+}
+
+func uiDiffToneCodeSegments(kind diff.RowKind, segments []vaxis.Segment, theme vui.Theme) []vaxis.Segment {
+	switch kind {
+	case diff.RowContext:
+		return uiDiffDimSegments(segments, theme, 1)
+	case diff.RowDelete:
+		return uiDiffDimSegments(segments, theme, 1)
+	default:
+		return segments
+	}
+}
+
+func uiDiffDimSegments(segments []vaxis.Segment, theme vui.Theme, steps int) []vaxis.Segment {
+	styled := make([]vaxis.Segment, len(segments))
+	for i, segment := range segments {
+		if segment.Style.Foreground != vaxis.ColorDefault {
+			segment.Style.Foreground = uiDiffDimSyntaxColor(segment.Style.Foreground, theme, steps)
+		}
+		styled[i] = segment
+	}
+	return styled
+}
+
+func uiDiffDimSyntaxColor(color vaxis.Color, theme vui.Theme, steps int) vaxis.Color {
+	if color == theme.Foreground {
+		return theme.MutedForeground
+	}
+	if dimmed, ok := uiDiffDimScaleColor(color, theme.Palette.Blue, theme.Mode, steps); ok {
+		return dimmed
+	}
+	if dimmed, ok := uiDiffDimScaleColor(color, theme.Palette.Cyan, theme.Mode, steps); ok {
+		return dimmed
+	}
+	if dimmed, ok := uiDiffDimScaleColor(color, theme.Palette.Green, theme.Mode, steps); ok {
+		return dimmed
+	}
+	if dimmed, ok := uiDiffDimScaleColor(color, theme.Palette.Magenta, theme.Mode, steps); ok {
+		return dimmed
+	}
+	if dimmed, ok := uiDiffDimScaleColor(color, theme.Palette.Yellow, theme.Mode, steps); ok {
+		return dimmed
+	}
+	if dimmed, ok := uiDiffDimScaleColor(color, theme.Palette.Red, theme.Mode, steps); ok {
+		return dimmed
+	}
+	return color
+}
+
+func uiDiffDimScaleColor(color vaxis.Color, scale vui.ColorScale, mode vui.ThemeMode, steps int) (vaxis.Color, bool) {
+	tone := []vaxis.Color{
+		scale.Tone50,
+		scale.Tone100,
+		scale.Tone200,
+		scale.Tone300,
+		scale.Tone400,
+		scale.Tone500,
+		scale.Tone600,
+		scale.Tone700,
+		scale.Tone800,
+		scale.Tone900,
+		scale.Tone950,
+	}
+	for index, candidate := range tone {
+		if color != candidate {
+			continue
+		}
+		if mode == vui.LightTheme {
+			return tone[clampUIDiffInt(index-steps, 0, len(tone)-1)], true
+		}
+		return tone[clampUIDiffInt(index+steps, 0, len(tone)-1)], true
+	}
+	return color, false
 }
 
 func uiDiffColumns(rows []diff.Row) []vui.TableColumn {
@@ -719,7 +793,7 @@ func uiStyleForDiffRow(kind diff.RowKind, theme vui.Theme) vaxis.Style {
 	case diff.RowAdd:
 		return vaxis.Style{Foreground: theme.Success, Background: theme.Surface}
 	case diff.RowDelete:
-		return vaxis.Style{Foreground: theme.Danger, Background: uiDiffLineBackground(theme, theme.Palette.Red)}
+		return vaxis.Style{Foreground: uiDiffDimChangedForeground(theme, theme.Palette.Red), Background: uiDiffLineBackground(theme, theme.Palette.Red)}
 	case diff.RowMeta, diff.RowPreamble, diff.RowNoNewline:
 		return vaxis.Style{Foreground: theme.MutedForeground, Background: theme.Background}
 	case diff.RowCommitHeader:
@@ -727,6 +801,13 @@ func uiStyleForDiffRow(kind diff.RowKind, theme vui.Theme) vaxis.Style {
 	case diff.RowCommitMeta:
 		return vaxis.Style{Foreground: theme.Palette.Cyan.Tone500, Background: theme.Background}
 	default:
-		return vaxis.Style{Foreground: theme.Foreground, Background: theme.Background}
+		return vaxis.Style{Foreground: theme.MutedForeground, Background: theme.Background}
 	}
+}
+
+func uiDiffDimChangedForeground(theme vui.Theme, scale vui.ColorScale) vaxis.Color {
+	if theme.Mode == vui.LightTheme {
+		return scale.Tone800
+	}
+	return scale.Tone500
 }
