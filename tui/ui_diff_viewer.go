@@ -211,12 +211,7 @@ func (s *uiDiffViewState) buildItem(rows []diff.Row, rowIndex int, theme vui.The
 	if !uiDiffRowUsesGrid(row) {
 		return uiDiffFullWidthRow(row, active, theme, wrap)
 	}
-	return vui.Table{
-		Columns: uiDiffColumns(rows),
-		Rows: []vui.TableRow{
-			s.buildRow(row, rowIndex, active, s.cursor.Col, theme, highlightedRows, wrap),
-		},
-	}
+	return s.buildRow(rows, row, rowIndex, active, s.cursor.Col, theme, highlightedRows, wrap)
 }
 
 func uiDiffFullWidthRow(row diff.Row, active bool, theme vui.Theme, wrap bool) vui.Widget {
@@ -375,7 +370,7 @@ func uiCommitTrailerValueStyle(theme vui.Theme) vaxis.Style {
 	return vaxis.Style{Foreground: theme.DisabledForeground, Background: theme.Background}
 }
 
-func (s *uiDiffViewState) buildRow(row diff.Row, rowIndex int, active bool, cursorCol int, theme vui.Theme, highlightedRows map[int][]vaxis.Segment, wrap bool) vui.TableRow {
+func (s *uiDiffViewState) buildRow(rows []diff.Row, row diff.Row, rowIndex int, active bool, cursorCol int, theme vui.Theme, highlightedRows map[int][]vaxis.Segment, wrap bool) vui.Widget {
 	style := uiStyleForDiffRow(row.Kind, theme)
 	if active {
 		style.Background = theme.Selection
@@ -390,16 +385,24 @@ func (s *uiDiffViewState) buildRow(row diff.Row, rowIndex int, active bool, curs
 		codeSegments = uiDiffApplyBackground(codeSegments, theme.Selection)
 	}
 	oldLine, newLine, marker := splitDiffGutter(row)
+	oldWidth, newWidth := uiDiffGutterWidths(rows)
 	gutterStyle := uiGutterStyle(row.Kind, active, theme)
-	return vui.TableRow{Children: []vui.Widget{
-		vui.Text{Value: oldLine, Style: gutterStyle, Align: vui.TextAlignRight},
-		vui.Text{Value: " ", Style: gutterStyle},
-		vui.Text{Value: newLine, Style: gutterStyle, Align: vui.TextAlignRight},
-		vui.Text{Value: " ", Style: gutterStyle},
-		vui.Text{Value: marker, Style: gutterStyle},
-		vui.Text{Value: " ", Style: gutterStyle},
-		uiDiffCodeWidget(row, code, codeSegments, active, cursorCol, theme, style.Background, wrap),
-	}}
+	return vui.Row(
+		uiDiffFixedCell(oldWidth, gutterStyle, vui.Text{Value: oldLine, Style: gutterStyle, Align: vui.TextAlignRight}),
+		uiDiffFixedCell(1, gutterStyle, vui.Text{Value: " ", Style: gutterStyle}),
+		uiDiffFixedCell(newWidth, gutterStyle, vui.Text{Value: newLine, Style: gutterStyle, Align: vui.TextAlignRight}),
+		uiDiffFixedCell(1, gutterStyle, vui.Text{Value: " ", Style: gutterStyle}),
+		uiDiffFixedCell(1, gutterStyle, vui.Text{Value: marker, Style: gutterStyle}),
+		uiDiffFixedCell(1, gutterStyle, vui.Text{Value: " ", Style: gutterStyle}),
+		vui.Expanded(uiDiffCodeWidget(row, code, codeSegments, active, cursorCol, theme, style.Background, wrap)),
+	)
+}
+
+func uiDiffFixedCell(width int, style vaxis.Style, child vui.Widget) vui.Widget {
+	return vui.DecoratedBox(
+		vui.Decoration{Style: style},
+		vui.SizedBox{Width: width, Height: 1, Child: child},
+	)
 }
 
 func uiDiffCodeWidget(row diff.Row, code string, segments []vaxis.Segment, active bool, cursorCol int, theme vui.Theme, background vaxis.Color, wrap bool) vui.Widget {
@@ -504,7 +507,7 @@ func uiDiffDimScaleColor(color vaxis.Color, scale vui.ColorScale, mode vui.Theme
 	return color, false
 }
 
-func uiDiffColumns(rows []diff.Row) []vui.TableColumn {
+func uiDiffGutterWidths(rows []diff.Row) (int, int) {
 	oldWidth := 0
 	newWidth := 0
 	for _, row := range rows {
@@ -515,15 +518,7 @@ func uiDiffColumns(rows []diff.Row) []vui.TableColumn {
 		oldWidth = maxInt(oldWidth, textCellWidth(oldLine))
 		newWidth = maxInt(newWidth, textCellWidth(newLine))
 	}
-	return []vui.TableColumn{
-		vui.FixedColumn(oldWidth),
-		vui.FixedColumn(1),
-		vui.FixedColumn(newWidth),
-		vui.FixedColumn(1),
-		vui.FixedColumn(1),
-		vui.FixedColumn(1),
-		vui.FlexColumn(1),
-	}
+	return oldWidth, newWidth
 }
 
 func uiDiffRowUsesGrid(row diff.Row) bool {
