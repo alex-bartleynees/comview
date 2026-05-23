@@ -59,6 +59,7 @@ type uiDiffViewState struct {
 	pendingSpace            bool
 	pendingD                bool
 	fileFinder              bool
+	helpVisible             bool
 	textObject              textObjectState
 	commentEditorActive     bool
 	commentEditorFocused    bool
@@ -146,10 +147,51 @@ func (s *uiDiffViewState) Build(ctx vui.BuildContext) vui.Widget {
 	if s.fileFinder {
 		entries = append(entries, vui.OverlayEntry{Modal: true, Child: s.buildFileFinder(w.Rows, theme)})
 	}
+	if s.helpVisible {
+		entries = append(entries, vui.OverlayEntry{Modal: true, Child: s.buildHelpOverlay(theme)})
+	}
 	if s.editorCommand != nil {
 		entries = append(entries, vui.OverlayEntry{Modal: true, Child: s.buildEditorTerminal(theme)})
 	}
 	return vui.Overlay{Child: content, Entries: entries}
+}
+
+func (s *uiDiffViewState) buildHelpOverlay(theme vui.Theme) vui.Widget {
+	style := vui.Style{Foreground: theme.Foreground, Background: theme.SurfaceRaised}
+	keyStyle := vui.Style{Foreground: theme.MutedForeground, Background: theme.SurfaceRaised}
+	titleStyle := vui.Style{Foreground: theme.Palette.Yellow.Tone500, Background: theme.SurfaceRaised, Attribute: vaxis.AttrBold}
+	keyWidth := helpKeybindWidth()
+	children := []vui.Widget{
+		vui.Text{Value: "Keybinds", Style: titleStyle},
+		vui.SizedBox{Height: 1},
+	}
+	for _, binding := range helpKeybinds {
+		children = append(children, vui.RichText{Spans: []vui.TextSpan{
+			{Text: fmt.Sprintf("%-*s", keyWidth, binding.Key), Style: keyStyle},
+			{Text: "  " + binding.Action, Style: style},
+		}, MaxLines: 1, Overflow: vui.TextOverflowEllipsis})
+	}
+	return vui.ConstrainedBox{
+		Constraints: vui.Constraints{MaxWidth: uiDiffHelpOverlayWidth(), MaxHeight: len(helpKeybinds) + 4},
+		Child: vui.DecoratedBox(
+			vui.Decoration{Style: style},
+			vui.Padding(vui.Symmetric(2, 1), vui.Flex{
+				Axis:               vui.Vertical,
+				MainAxisSize:       vui.MainAxisSizeMin,
+				CrossAxisAlignment: vui.CrossAxisStretch,
+				Children:           children,
+			}),
+		),
+	}
+}
+
+func uiDiffHelpOverlayWidth() int {
+	innerWidth := len("Keybinds")
+	keyWidth := helpKeybindWidth()
+	for _, binding := range helpKeybinds {
+		innerWidth = maxInt(innerWidth, keyWidth+2+textCellWidth(binding.Action))
+	}
+	return innerWidth + 4
 }
 
 func (s *uiDiffViewState) buildEditorTerminal(theme vui.Theme) vui.Widget {
@@ -647,6 +689,14 @@ func (s *uiDiffViewState) HandleEvent(ctx vui.EventContext, ev vui.Event) vui.Ev
 	if s.fileFinder {
 		return vui.EventIgnored
 	}
+	if s.helpVisible {
+		if keyQuestionMark(key) || key.Matches('q') || keyEscape(key) {
+			s.helpVisible = false
+			s.SetState(func() {})
+			return vui.EventHandled
+		}
+		return vui.EventIgnored
+	}
 	w := s.Widget().(uiDiffView)
 	rows := w.Rows
 	if len(rows) == 0 {
@@ -676,6 +726,11 @@ func (s *uiDiffViewState) HandleEvent(ctx vui.EventContext, ev vui.Event) vui.Ev
 	switch {
 	case key.MatchString("Alt+p"):
 		ctx.ToggleProfileOverlay()
+		return vui.EventHandled
+	case keyQuestionMark(key):
+		s.clearPendingKeys()
+		s.helpVisible = true
+		s.SetState(func() {})
 		return vui.EventHandled
 	case key.Matches(':'):
 		s.clearPendingKeys()

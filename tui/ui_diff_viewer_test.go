@@ -173,6 +173,62 @@ func TestUIDiffViewFileFinderStatsAreColorized(t *testing.T) {
 	}
 }
 
+func TestUIDiffViewQuestionTogglesHelpOverlay(t *testing.T) {
+	app := newUIDiffTestAppWithBaseDraftsAndStatus([]diff.Row{{Kind: diff.RowContext, Code: "line"}}, DefaultBaseColors(), false, nil, true)
+	size := vui.Size{Width: 80, Height: len(helpKeybinds) + 6}
+	app.Pump(size)
+	app.Pump(size)
+
+	app.Send(vaxis.Key{Text: "/", Keycode: '/', Modifiers: vaxis.ModShift})
+	app.Pump(size)
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	if _, _, ok := uiDiffFindText(p, "Keybinds"); !ok {
+		t.Fatal("help overlay did not render")
+	}
+	if _, _, ok := uiDiffFindText(p, "Open cursor location in editor"); !ok {
+		t.Fatal("help overlay did not include legacy keybinds")
+	}
+	if _, _, ok := uiDiffFindText(p, "╭"); ok {
+		t.Fatal("help overlay rendered border chrome")
+	}
+
+	app.Send(vaxis.Key{Text: "?", Keycode: '?'})
+	app.Pump(size)
+	p = vui.NewPainter(size)
+	app.Paint(p)
+	if _, _, ok := uiDiffFindText(p, "Keybinds"); ok {
+		t.Fatal("help overlay stayed visible after ?")
+	}
+}
+
+func TestUIDiffViewHelpOverlayClosesWithEscapeAndQ(t *testing.T) {
+	tests := []struct {
+		name string
+		key  vaxis.Key
+	}{
+		{name: "escape", key: vaxis.Key{Keycode: vaxis.KeyEsc}},
+		{name: "q", key: vaxis.Key{Text: "q", Keycode: 'q'}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			app := newUIDiffTestAppWithBaseDraftsAndStatus([]diff.Row{{Kind: diff.RowContext, Code: "line"}}, DefaultBaseColors(), false, nil, true)
+			size := vui.Size{Width: 80, Height: len(helpKeybinds) + 6}
+			app.Pump(size)
+			app.Send(vaxis.Key{Text: "?", Keycode: '?'})
+			app.Pump(size)
+			app.Send(tt.key)
+			app.Pump(size)
+
+			p := vui.NewPainter(size)
+			app.Paint(p)
+			if _, _, ok := uiDiffFindText(p, "Keybinds"); ok {
+				t.Fatal("help overlay stayed visible")
+			}
+		})
+	}
+}
+
 func TestUIDiffViewMovesCursorAndRevealsRows(t *testing.T) {
 	rows := make([]diff.Row, 20)
 	for i := range rows {
