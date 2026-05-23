@@ -17,15 +17,16 @@ type uiDiffView struct {
 	Rows         []diff.Row
 	Wrap         bool
 	ReviewDrafts []review.CommentDraft
+	ReviewFile   string
 	ShowStatus   bool
 }
 
-func uiDiffRoot(rows []diff.Row, wrap bool, drafts []review.CommentDraft) vui.Widget {
-	return uiDiffRootWithStatus(rows, wrap, drafts, true)
+func uiDiffRootWithStatus(rows []diff.Row, wrap bool, drafts []review.CommentDraft, showStatus bool) vui.Widget {
+	return uiDiffRootWithReviewFile(rows, wrap, drafts, "", showStatus)
 }
 
-func uiDiffRootWithStatus(rows []diff.Row, wrap bool, drafts []review.CommentDraft, showStatus bool) vui.Widget {
-	return uiDiffView{Rows: rows, Wrap: wrap, ReviewDrafts: drafts, ShowStatus: showStatus}
+func uiDiffRootWithReviewFile(rows []diff.Row, wrap bool, drafts []review.CommentDraft, reviewFile string, showStatus bool) vui.Widget {
+	return uiDiffView{Rows: rows, Wrap: wrap, ReviewDrafts: drafts, ReviewFile: reviewFile, ShowStatus: showStatus}
 }
 
 func uiThemeFromBaseColors(base BaseColors) vui.Theme {
@@ -85,6 +86,11 @@ type uiDiffViewState struct {
 	searchMatches           []searchMatch
 	searchIndex             int
 	searchStart             selectionPoint
+	commandMode             bool
+	commandLine             string
+	reviewDirty             bool
+	statusMessage           string
+	statusMessageUntil      time.Time
 	syntaxTheme             vui.Theme
 	highlighter             *SyntaxHighlighter
 	highlightedTheme        vui.Theme
@@ -94,6 +100,7 @@ type uiDiffViewState struct {
 func (s *uiDiffViewState) Build(ctx vui.BuildContext) vui.Widget {
 	w := s.Widget().(uiDiffView)
 	s.clearExpiredYank(time.Now())
+	s.clearExpiredStatusMessage(time.Now())
 	s.clampCursor(w.Rows)
 	theme := vui.MustDepend[vui.Theme](ctx)
 	highlightedRows := s.highlightedCodeRows(w.Rows, theme)
@@ -224,8 +231,15 @@ func uiDiffFileStatsFromRow(rows []diff.Row, fileRow int) statusStats {
 
 func (s *uiDiffViewState) buildStatusBar(rows []diff.Row, theme vui.Theme) vui.Widget {
 	style := uiDiffStatusStyle(theme)
+	if s.commandMode {
+		text := ":" + s.commandLine
+		return vui.Cursor{Col: textCellWidth(text), Shape: vui.CursorBeam, Child: uiDiffStatusText(text, style)}
+	}
 	if s.searchMode {
 		return uiDiffStatusText("/"+s.searchQuery, style)
+	}
+	if s.statusMessage != "" {
+		return uiDiffStatusText(" "+s.statusMessage, style)
 	}
 	return uiDiffStatusSegments(s.statusSegments(rows, theme), style)
 }
@@ -567,6 +581,13 @@ func (s *uiDiffViewState) HandleEvent(ctx vui.EventContext, ev vui.Event) vui.Ev
 		ctx.Quit()
 		return vui.EventHandled
 	}
+	if s.commandMode {
+		return s.handleCommandKey(ctx, rows, key)
+	}
+	if s.commentEditorActive && s.commentEditorFocused && !s.commentEditorInsert && key.Matches(':') {
+		s.enterCommandMode()
+		return vui.EventHandled
+	}
 	if s.commentEditorActive && (s.commentEditorFocused || s.commentEditorInsert) {
 		return s.handleCommentEditorKey(rows, key)
 	}
@@ -581,8 +602,9 @@ func (s *uiDiffViewState) HandleEvent(ctx vui.EventContext, ev vui.Event) vui.Ev
 	case key.MatchString("Alt+p"):
 		ctx.ToggleProfileOverlay()
 		return vui.EventHandled
-	case key.Matches('q'):
-		ctx.Quit()
+	case key.Matches(':'):
+		s.clearPendingKeys()
+		s.enterCommandMode()
 		return vui.EventHandled
 	case key.Matches('c') && s.pendingBracket == ']':
 		s.clearPendingKeys()
@@ -1067,10 +1089,119 @@ func (s *uiDiffViewState) submitCommentEditor(rows []diff.Row) {
 			OriginalCommitID: anchor.OriginalCommitID,
 			Body:             s.commentEditorBody,
 		})
+		s.reviewDirty = true
 	}
 	delete(s.commentEditorBodies, s.commentEditorRow)
 	s.commentEditorActive = false
 	s.closeCommentEditor()
+}
+
+func (s *uiDiffViewState) submitActiveCommentEditor(rows []diff.Row) {
+	if !s.commentEditorActive {
+		return
+	}
+	if strings.TrimSpace(s.commentEditorBody) == "" {
+		s.closeCommentEditor()
+		return
+	}
+	s.submitCommentEditor(rows)
+}
+
+func (s *uiDiffViewState) enterCommandMode() {
+	s.commandMode = true
+	s.commandLine = ""
+	s.SetState(func() {})
+}
+
+func (s *uiDiffViewState) handleCommandKey(ctx vui.EventContext, rows []diff.Row, key vaxis.Key) vui.EventResult {
+	switch {
+	case key.Matches(vaxis.KeyEsc):
+		s.commandMode = false
+		s.commandLine = ""
+		s.SetState(func() {})
+		return vui.EventHandled
+	case key.Matches(vaxis.KeyEnter):
+		s.executeCommand(ctx, rows, strings.TrimSpace(s.commandLine))
+		s.SetState(func() {})
+		return vui.EventHandled
+	case key.Matches(vaxis.KeyBackspace), key.Matches('h', vaxis.ModCtrl):
+		if s.commandLine != "" {
+			runes := []rune(s.commandLine)
+			s.commandLine = string(runes[:len(runes)-1])
+			s.SetState(func() {})
+		}
+		return vui.EventHandled
+	case key.Text != "" && key.Modifiers&(vaxis.ModCtrl|vaxis.ModAlt|vaxis.ModSuper) == 0:
+		for _, r := range key.Text {
+			if r >= ' ' {
+				s.commandLine += string(r)
+			}
+		}
+		s.SetState(func() {})
+		return vui.EventHandled
+	default:
+		return vui.EventIgnored
+	}
+}
+
+func (s *uiDiffViewState) executeCommand(ctx vui.EventContext, rows []diff.Row, command string) {
+	s.commandMode = false
+	s.commandLine = ""
+	if command == "" {
+		return
+	}
+	for len(command) > 0 {
+		switch {
+		case strings.HasPrefix(command, "q!"):
+			ctx.Quit()
+			return
+		case strings.HasPrefix(command, "q"):
+			if s.reviewDirty || s.commentEditorActive || len(s.commentEditorBodies) > 0 {
+				s.setStatusMessage("Unsaved comments. Use :w to save or :q! to quit.")
+				return
+			}
+			ctx.Quit()
+			return
+		case strings.HasPrefix(command, "w"):
+			s.writeReviewCommand(rows)
+			command = command[1:]
+		default:
+			return
+		}
+	}
+}
+
+func (s *uiDiffViewState) writeReviewCommand(rows []diff.Row) {
+	s.submitActiveCommentEditor(rows)
+	w := s.Widget().(uiDiffView)
+	drafts := s.allReviewDrafts(w.ReviewDrafts)
+	if len(drafts) == 0 {
+		s.reviewDirty = false
+		s.setStatusMessage("No comments to save.")
+		return
+	}
+	if w.ReviewFile != "" {
+		if err := review.SaveFile(w.ReviewFile, review.CommentFile{Version: 1, Comments: drafts}); err != nil {
+			s.setStatusMessage(fmt.Sprintf("Could not save comments: %v", err))
+			return
+		}
+	}
+	s.reviewDirty = false
+	s.setStatusMessage("Comments saved.")
+}
+
+func (s *uiDiffViewState) setStatusMessage(message string) {
+	s.statusMessage = message
+	s.statusMessageUntil = time.Now().Add(statusMessageTimeout)
+}
+
+func (s *uiDiffViewState) clearExpiredStatusMessage(now time.Time) bool {
+	if s.statusMessage == "" || s.statusMessageUntil.IsZero() || now.Before(s.statusMessageUntil) {
+		return false
+	}
+	s.statusMessage = ""
+	s.statusMessageUntil = time.Time{}
+	return true
 }
 
 func (s *uiDiffViewState) closeCommentEditor() {

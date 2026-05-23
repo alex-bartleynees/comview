@@ -1,6 +1,9 @@
 package tui
 
 import (
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -32,6 +35,10 @@ func newUIDiffTestAppWithBaseAndDrafts(rows []diff.Row, base BaseColors, wrap bo
 func newUIDiffTestAppWithBaseDraftsAndStatus(rows []diff.Row, base BaseColors, wrap bool, drafts []review.CommentDraft, showStatus bool) *vui.App {
 	theme := uiThemeFromBaseColors(base)
 	return vui.NewApp(uiDiffRootWithStatus(rows, wrap, drafts, showStatus), vui.WithTheme(theme))
+}
+
+func newUIDiffTestAppWithReviewFile(rows []diff.Row, drafts []review.CommentDraft, reviewFile string) *vui.App {
+	return vui.NewApp(uiDiffRootWithReviewFile(rows, false, drafts, reviewFile, true), vui.WithTheme(uiDiffTestTheme()))
 }
 
 func TestUIDiffViewRendersRowsAsSliverTable(t *testing.T) {
@@ -668,6 +675,162 @@ func TestUIDiffViewSearchModeUsesStatusBar(t *testing.T) {
 	app.Paint(p)
 	if got := uiDiffPainterText(p, 1); got != "/needle" {
 		t.Fatalf("search status = %q, want /needle", got)
+	}
+}
+
+func TestUIDiffViewCommandModeUsesStatusBar(t *testing.T) {
+	app := newUIDiffTestAppWithBaseDraftsAndStatus([]diff.Row{{Kind: diff.RowContext, Text: "line"}}, DefaultBaseColors(), false, nil, true)
+	app.Pump(vui.Size{Width: 20, Height: 2})
+	app.Pump(vui.Size{Width: 20, Height: 2})
+
+	app.Send(vaxis.Key{Text: ":", Keycode: ':'})
+	app.Send(vaxis.Key{Text: "wq"})
+	app.Pump(vui.Size{Width: 20, Height: 2})
+	p := vui.NewPainter(vui.Size{Width: 20, Height: 2})
+	app.Paint(p)
+	if got := uiDiffPainterText(p, 1); got != ":wq" {
+		t.Fatalf("command status = %q, want :wq", got)
+	}
+	cursor, ok := p.Cursor()
+	if !ok {
+		t.Fatal("command cursor was not rendered")
+	}
+	if cursor.Col != 3 || cursor.Row != 1 || cursor.Shape != vui.CursorBeam {
+		t.Fatalf("command cursor = %+v, want beam at 3,1", cursor)
+	}
+}
+
+func TestUIDiffViewCommandQQuits(t *testing.T) {
+	app := newUIDiffTestAppWithBaseDraftsAndStatus([]diff.Row{{Kind: diff.RowContext, Text: "line"}}, DefaultBaseColors(), false, nil, true)
+	app.Pump(vui.Size{Width: 20, Height: 2})
+
+	app.Send(vaxis.Key{Text: ":", Keycode: ':'})
+	app.Send(vaxis.Key{Text: "q"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEnter})
+	if !app.ShouldQuit() {
+		t.Fatal(":q did not quit")
+	}
+}
+
+func TestUIDiffViewCommandQWarnsWithUnsavedComments(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowAdd, Gutter: "1 1 + ", Code: "line", Review: review.Anchor{Path: "main.go", Line: 1, Side: review.SideRight}}}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	size := vui.Size{Width: 60, Height: 6}
+	app.Pump(size)
+	app.Pump(size)
+
+	app.Send(vaxis.Key{Text: "i", Keycode: 'i'})
+	app.Pump(size)
+	app.Send(vaxis.Key{Text: "draft"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEsc})
+	app.Pump(size)
+	app.Send(vaxis.Key{Text: ":", Keycode: ':'})
+	app.Send(vaxis.Key{Text: "q"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEnter})
+	app.Pump(size)
+	if app.ShouldQuit() {
+		t.Fatal(":q quit with unsaved comment")
+	}
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	if got := uiDiffPainterText(p, size.Height-1); !strings.Contains(got, "Unsaved comments") {
+		t.Fatalf("status message = %q, want unsaved warning", got)
+	}
+}
+
+func TestUIDiffViewCommandWWritesCommentsFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".comview", "comments.json")
+	rows := []diff.Row{{Kind: diff.RowAdd, Gutter: "1 1 + ", Code: "line", Review: review.Anchor{Path: "main.go", Line: 1, Side: review.SideRight}}}
+	app := newUIDiffTestAppWithReviewFile(rows, nil, path)
+	size := vui.Size{Width: 60, Height: 6}
+	app.Pump(size)
+	app.Pump(size)
+
+	app.Send(vaxis.Key{Text: "i", Keycode: 'i'})
+	app.Pump(size)
+	app.Send(vaxis.Key{Text: "saved"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEsc})
+	app.Pump(size)
+	app.Send(vaxis.Key{Text: ":", Keycode: ':'})
+	app.Send(vaxis.Key{Text: "w"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEnter})
+	app.Pump(size)
+	file, err := review.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(file.Comments) != 1 || file.Comments[0].Body != "saved" {
+		t.Fatalf("comments file = %+v", file)
+	}
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	if got := uiDiffPainterText(p, size.Height-1); !strings.Contains(got, "Comments saved.") {
+		t.Fatalf("status message = %q, want save confirmation", got)
+	}
+}
+
+func TestUIDiffViewCommandWWithoutCommentsShowsNoopStatus(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".comview", "comments.json")
+	app := newUIDiffTestAppWithReviewFile([]diff.Row{{Kind: diff.RowContext, Text: "line"}}, nil, path)
+	size := vui.Size{Width: 60, Height: 3}
+	app.Pump(size)
+	app.Pump(size)
+
+	app.Send(vaxis.Key{Text: ":", Keycode: ':'})
+	app.Send(vaxis.Key{Text: "w"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEnter})
+	app.Pump(size)
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	if got := uiDiffPainterText(p, size.Height-1); !strings.Contains(got, "No comments to save.") {
+		t.Fatalf("status message = %q, want no comments status", got)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("created comments file for no-op save")
+	}
+}
+
+func TestUIDiffViewCommandWQWritesAndQuits(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".comview", "comments.json")
+	rows := []diff.Row{{Kind: diff.RowAdd, Gutter: "1 1 + ", Code: "line", Review: review.Anchor{Path: "main.go", Line: 1, Side: review.SideRight}}}
+	app := newUIDiffTestAppWithReviewFile(rows, nil, path)
+	app.Pump(vui.Size{Width: 60, Height: 6})
+
+	app.Send(vaxis.Key{Text: "i", Keycode: 'i'})
+	app.Pump(vui.Size{Width: 60, Height: 6})
+	app.Send(vaxis.Key{Text: "saved"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEsc})
+	app.Pump(vui.Size{Width: 60, Height: 6})
+	app.Send(vaxis.Key{Text: ":", Keycode: ':'})
+	app.Send(vaxis.Key{Text: "wq"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEnter})
+	if !app.ShouldQuit() {
+		t.Fatal(":wq did not quit")
+	}
+	file, err := review.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(file.Comments) != 1 || file.Comments[0].Body != "saved" {
+		t.Fatalf("comments file = %+v", file)
+	}
+}
+
+func TestUIDiffViewCommandQBangQuitsWithUnsavedComments(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowAdd, Gutter: "1 1 + ", Code: "line", Review: review.Anchor{Path: "main.go", Line: 1, Side: review.SideRight}}}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	app.Pump(vui.Size{Width: 60, Height: 6})
+
+	app.Send(vaxis.Key{Text: "i", Keycode: 'i'})
+	app.Pump(vui.Size{Width: 60, Height: 6})
+	app.Send(vaxis.Key{Text: "draft"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEsc})
+	app.Pump(vui.Size{Width: 60, Height: 6})
+	app.Send(vaxis.Key{Text: ":", Keycode: ':'})
+	app.Send(vaxis.Key{Text: "q!"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEnter})
+	if !app.ShouldQuit() {
+		t.Fatal(":q! did not quit")
 	}
 }
 

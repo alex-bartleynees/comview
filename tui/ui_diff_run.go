@@ -20,8 +20,8 @@ func runUIDiff(rows []diff.Row) error {
 	if cfg.Theme != "" {
 		if t, ok := ThemeByName(cfg.Theme); ok {
 			theme := uiThemeFromBaseColors(t.Colors)
-			return vui.Run(uiDiffRoot(rows, cfg.Wrap, commentFile.Comments), vui.WithTheme(theme))
+			return vui.Run(uiDiffRootWithReviewFile(rows, cfg.Wrap, commentFile.Comments, commentPath, true), vui.WithTheme(theme))
 		}
 	}
-	return vui.Run(uiDiffRoot(rows, cfg.Wrap, commentFile.Comments))
+	return vui.Run(uiDiffRootWithReviewFile(rows, cfg.Wrap, commentFile.Comments, commentPath, true))
 }
