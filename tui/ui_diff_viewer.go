@@ -62,6 +62,7 @@ type uiDiffViewState struct {
 	themeFinder             bool
 	themeName               string
 	helpVisible             bool
+	xScroll                 int
 	textObject              textObjectState
 	commentEditorActive     bool
 	commentEditorFocused    bool
@@ -1053,6 +1054,12 @@ func (s *uiDiffViewState) handleMouse(_ vui.EventContext, mouse vaxis.Mouse) vui
 }
 
 func (s *uiDiffViewState) handleMouseWheel(mouse vaxis.Mouse) vui.EventResult {
+	switch mouse.Button {
+	case mouseWheelLeft:
+		return s.scrollHorizontallyBy(-mouseWheelScrollColumns)
+	case mouseWheelRight:
+		return s.scrollHorizontallyBy(mouseWheelScrollColumns)
+	}
 	if !s.mouseSelecting || !s.selectionActive {
 		return vui.EventIgnored
 	}
@@ -1073,6 +1080,22 @@ func (s *uiDiffViewState) handleMouseWheel(mouse vaxis.Mouse) vui.EventResult {
 	if point, ok := s.selectionPointForMouse(w.Rows, mouse); ok {
 		s.setCursorPointWithoutReveal(w.Rows, point)
 	}
+	s.SetState(func() {})
+	return vui.EventHandled
+}
+
+func (s *uiDiffViewState) scrollHorizontallyBy(cols int) vui.EventResult {
+	if cols == 0 {
+		return vui.EventIgnored
+	}
+	next := s.xScroll + cols
+	if next < 0 {
+		next = 0
+	}
+	if next == s.xScroll {
+		return vui.EventIgnored
+	}
+	s.xScroll = next
 	s.SetState(func() {})
 	return vui.EventHandled
 }
@@ -2478,7 +2501,7 @@ func (s *uiDiffViewState) buildRow(rows []diff.Row, row diff.Row, rowIndex int, 
 		uiDiffFixedCell(1, gutterStyle, vui.Text{Value: " ", Style: gutterStyle}),
 		uiDiffFixedCell(1, gutterStyle, vui.Text{Value: marker, Style: gutterStyle}),
 		uiDiffFixedCell(1, gutterStyle, vui.Text{Value: " ", Style: gutterStyle}),
-		vui.Expanded(uiDiffCodeWidget(row, code, codeSegments, active, s.selectionActive && !s.selectionLinewise, cursorCol, theme, fillBackground, wrap)),
+		vui.Expanded(uiDiffCodeWidget(row, code, codeSegments, active, s.selectionActive && !s.selectionLinewise, cursorCol, theme, fillBackground, wrap, s.xScroll)),
 	)
 }
 
@@ -2489,18 +2512,23 @@ func uiDiffFixedCell(width int, style vaxis.Style, child vui.Widget) vui.Widget 
 	)
 }
 
-func uiDiffCodeWidget(row diff.Row, code string, segments []vaxis.Segment, active bool, cursorTabEnd bool, cursorCol int, theme vui.Theme, background vaxis.Color, wrap bool) vui.Widget {
+func uiDiffCodeWidget(row diff.Row, code string, segments []vaxis.Segment, active bool, cursorTabEnd bool, cursorCol int, theme vui.Theme, background vaxis.Color, wrap bool, xScroll int) vui.Widget {
+	if wrap {
+		xScroll = 0
+	}
 	if !active || code == "" {
+		segments = uiDiffClipSegments(segments, xScroll, tabWidthForFile(row.FileName))
 		return vui.DecoratedBox(
 			vui.Decoration{Style: vaxis.Style{Background: background}},
-			vui.RichText{Spans: uiTextSpans(segments), SoftWrap: wrap},
+			vui.RichText{Spans: uiTextSpans(segments), SoftWrap: wrap, Overflow: vui.TextOverflowClip},
 		)
 	}
 	cursorStyle := vaxis.Style{Foreground: uiDiffCursorForeground(theme), Background: uiDiffCursorBackground(theme)}
 	segments = uiDiffCursorSegments(segments, cursorCol, cursorStyle, tabWidthForFile(row.FileName), cursorTabEnd)
+	segments = uiDiffClipSegments(segments, xScroll, tabWidthForFile(row.FileName))
 	return vui.DecoratedBox(
 		vui.Decoration{Style: vaxis.Style{Background: background}},
-		vui.RichText{Spans: uiTextSpans(segments), SoftWrap: wrap},
+		vui.RichText{Spans: uiTextSpans(segments), SoftWrap: wrap, Overflow: vui.TextOverflowClip},
 	)
 }
 
@@ -2532,6 +2560,36 @@ func uiDiffCursorSegments(segments []vaxis.Segment, cursorCol int, cursorStyle v
 		}
 	}
 	return styled
+}
+
+func uiDiffClipSegments(segments []vaxis.Segment, xScroll int, tabWidth int) []vaxis.Segment {
+	if xScroll <= 0 {
+		return segments
+	}
+	clipped := make([]vaxis.Segment, 0, len(segments))
+	col := 0
+	for _, segment := range segments {
+		it := uucode.NewGraphemeIterator(segment.Text)
+		text := ""
+		for g, ok := it.Next(); ok; g, ok = it.Next() {
+			grapheme := segment.Text[g.Start:g.End]
+			char := characterForGraphemeWithTabWidth(grapheme, tabWidth)
+			next := col + char.Width
+			if next > xScroll {
+				if col < xScroll && char.Width > 1 {
+					text += strings.Repeat(" ", next-xScroll)
+				} else {
+					text += grapheme
+				}
+			}
+			col = next
+		}
+		if text != "" {
+			segment.Text = text
+			clipped = append(clipped, segment)
+		}
+	}
+	return clipped
 }
 
 func uiDiffApplySegmentBackgroundRange(segments []vaxis.Segment, start int, end int, background vaxis.Color, tabWidth int) []vaxis.Segment {
@@ -2953,6 +3011,7 @@ func (s *uiDiffViewState) moveCursorCols(rows []diff.Row, delta int) {
 	s.cursor.Col = uiDiffMoveCursorCol(rows[s.cursor.Row], s.cursor.Col, delta)
 	s.cursorCol = s.cursor.Col
 	s.revealCursorRow()
+	s.revealCursorCol(rows)
 	s.SetState(func() {})
 }
 
@@ -3034,6 +3093,7 @@ func (s *uiDiffViewState) moveCursorLineStart(rows []diff.Row) {
 	if start, _, ok := uiDiffCodeRange(rows, s.cursor.Row); ok {
 		s.cursor.Col = start
 		s.cursorCol = s.cursor.Col
+		s.xScroll = 0
 		s.SetState(func() {})
 	}
 }
@@ -3042,8 +3102,35 @@ func (s *uiDiffViewState) moveCursorLineEnd(rows []diff.Row) {
 	if start, end, ok := uiDiffCodeRange(rows, s.cursor.Row); ok {
 		s.cursor.Col = maxInt(start, end-1)
 		s.cursorCol = s.cursor.Col
+		s.revealCursorCol(rows)
 		s.SetState(func() {})
 	}
+}
+
+func (s *uiDiffViewState) revealCursorCol(rows []diff.Row) {
+	if s.cursor.Row < 0 || s.cursor.Row >= len(rows) {
+		return
+	}
+	codeWidth := s.codeViewportWidth(rows)
+	if codeWidth <= 0 {
+		return
+	}
+	if s.cursor.Col < s.xScroll {
+		s.xScroll = s.cursor.Col
+	}
+	if s.cursor.Col >= s.xScroll+codeWidth {
+		s.xScroll = s.cursor.Col - codeWidth + 1
+	}
+	if s.xScroll < 0 {
+		s.xScroll = 0
+	}
+}
+
+func (s *uiDiffViewState) codeViewportWidth(rows []diff.Row) int {
+	if !s.scroll.Attached() {
+		return 0
+	}
+	return maxInt(0, s.scroll.Metrics().ViewportWidth-uiDiffCodeOffset(rows))
 }
 
 func (s *uiDiffViewState) clampCursor(rows []diff.Row) {

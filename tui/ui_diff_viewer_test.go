@@ -316,6 +316,78 @@ func TestUIDiffViewMovesCursorAndRevealsRows(t *testing.T) {
 	}
 }
 
+func TestUIDiffViewHorizontalScrollKeepsGuttersFixed(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowContext, Gutter: "1 1   ", Code: "abcdefghijklmnop"}}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	size := vui.Size{Width: 14, Height: 3}
+	app.Pump(size)
+	app.Pump(size)
+
+	for i := 0; i < 9; i++ {
+		app.Send(vaxis.Key{Text: "l", Keycode: 'l'})
+		app.Pump(size)
+	}
+	app.Pump(size)
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	if got := uiDiffPainterText(p, 0); !strings.HasPrefix(got, "1 1   ") {
+		t.Fatalf("row = %q, want fixed gutter prefix", got)
+	}
+	if got := uiDiffPainterText(p, 0); !strings.Contains(got, "cdefghij") {
+		t.Fatalf("row = %q, want horizontally scrolled code", got)
+	}
+}
+
+func TestUIDiffViewDollarAndZeroAdjustHorizontalScroll(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowContext, Gutter: "1 1   ", Code: "abcdefghijklmnop"}}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	size := vui.Size{Width: 14, Height: 3}
+	app.Pump(size)
+	app.Pump(size)
+
+	app.Send(vaxis.Key{Text: "$", Keycode: '$'})
+	app.Pump(size)
+	app.Pump(size)
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	if got := uiDiffPainterText(p, 0); !strings.Contains(got, "ijklmnop") {
+		t.Fatalf("row after $ = %q, want line end visible", got)
+	}
+
+	app.Send(vaxis.Key{Text: "0", Keycode: '0'})
+	app.Pump(size)
+	app.Pump(size)
+	p = vui.NewPainter(size)
+	app.Paint(p)
+	if got := uiDiffPainterText(p, 0); !strings.Contains(got, "abcdefgh") {
+		t.Fatalf("row after 0 = %q, want line start visible", got)
+	}
+}
+
+func TestUIDiffViewHorizontalMouseWheelScrollsCode(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowContext, Gutter: "1 1   ", Code: "abcdefghijklmnop"}}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	size := vui.Size{Width: 14, Height: 3}
+	app.Pump(size)
+	app.Pump(size)
+
+	app.Send(vaxis.Mouse{Button: mouseWheelRight, EventType: vaxis.EventPress})
+	app.Pump(size)
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	if got := uiDiffPainterText(p, 0); !strings.Contains(got, "bcdefghi") {
+		t.Fatalf("row after right wheel = %q, want horizontally scrolled code", got)
+	}
+
+	app.Send(vaxis.Mouse{Button: mouseWheelLeft, EventType: vaxis.EventPress})
+	app.Pump(size)
+	p = vui.NewPainter(size)
+	app.Paint(p)
+	if got := uiDiffPainterText(p, 0); !strings.Contains(got, "abcdefgh") {
+		t.Fatalf("row after left wheel = %q, want line start visible", got)
+	}
+}
+
 func TestUIDiffViewSkipsBlankRowsWhenMovingCursor(t *testing.T) {
 	rows := []diff.Row{
 		{Kind: diff.RowContext, Gutter: "1 1   ", Code: "first"},
