@@ -55,6 +55,7 @@ type uiDiffViewState struct {
 	pendingBracket    rune
 	pendingSpace      bool
 	fileFinder        bool
+	textObject        textObjectState
 	selectionAnchor   selectionPoint
 	selectionActive   bool
 	selectionLinewise bool
@@ -541,6 +542,10 @@ func (s *uiDiffViewState) HandleEvent(ctx vui.EventContext, ev vui.Event) vui.Ev
 	if s.searchMode {
 		return s.handleSearchKey(rows, key)
 	}
+	s.clearExpiredTextObject(time.Now())
+	if s.textObject.active {
+		return s.handleTextObjectKey(rows, key)
+	}
 	switch {
 	case key.MatchString("Alt+p"):
 		ctx.ToggleProfileOverlay()
@@ -572,9 +577,17 @@ func (s *uiDiffViewState) HandleEvent(ctx vui.EventContext, ev vui.Event) vui.Ev
 		s.clearPendingKeys()
 		s.toggleSelection(false)
 		return vui.EventHandled
+	case key.Matches('a') && s.selectionActive:
+		s.clearPendingKeys()
+		s.startTextObject(textObjectAround)
+		return vui.EventHandled
 	case key.Matches('V'):
 		s.clearPendingKeys()
 		s.toggleSelection(true)
+		return vui.EventHandled
+	case key.Matches('i') && s.selectionActive && !s.selectionLinewise:
+		s.clearPendingKeys()
+		s.startTextObject(textObjectInner)
 		return vui.EventHandled
 	case key.Matches('y'):
 		s.clearPendingKeys()
@@ -911,6 +924,148 @@ func (s *uiDiffViewState) clearPendingKeys() {
 	s.pendingG = false
 	s.pendingBracket = 0
 	s.pendingSpace = false
+}
+
+func (s *uiDiffViewState) startTextObject(kind textObjectKind) {
+	s.textObject = textObjectState{active: true, kind: kind, at: time.Now()}
+	s.SetState(func() {})
+}
+
+func (s *uiDiffViewState) clearExpiredTextObject(now time.Time) {
+	if s.textObject.active && now.Sub(s.textObject.at) > pendingKeyTimeout {
+		s.textObject = textObjectState{}
+	}
+}
+
+func (s *uiDiffViewState) handleTextObjectKey(rows []diff.Row, key vaxis.Key) vui.EventResult {
+	state := s.textObject
+	s.textObject = textObjectState{}
+	if key.Matches(vaxis.KeyEsc) {
+		s.SetState(func() {})
+		return vui.EventHandled
+	}
+	object := textObjectKeyRune(key)
+	if object == 'w' {
+		if s.selectWordTextObject(rows, state.kind) {
+			s.SetState(func() {})
+			return vui.EventHandled
+		}
+		s.SetState(func() {})
+		return vui.EventHandled
+	}
+	open, close, ok := textObjectDelimiters(object)
+	if !ok || !s.selectDelimitedTextObject(rows, state.kind, open, close) {
+		s.SetState(func() {})
+		return vui.EventHandled
+	}
+	s.SetState(func() {})
+	return vui.EventHandled
+}
+
+func (s *uiDiffViewState) selectWordTextObject(rows []diff.Row, kind textObjectKind) bool {
+	if s.cursor.Row < 0 || s.cursor.Row >= len(rows) || !selectableDiffRow(rows[s.cursor.Row].Kind) {
+		return false
+	}
+	row := rows[s.cursor.Row]
+	start, end := tokenRangeAtWithTabWidth(row.Code, s.cursor.Col, tabWidthForFile(row.FileName))
+	_, codeEnd, ok := uiDiffCodeRange(rows, s.cursor.Row)
+	if !ok {
+		return false
+	}
+	start = clampUIDiffInt(start, 0, maxInt(0, codeEnd-1))
+	end = clampUIDiffInt(end, start+1, codeEnd)
+	if kind == textObjectAround {
+		end = uiDiffExtendAroundWord(row, start, end, codeEnd)
+		if end == start {
+			end = minInt(codeEnd, start+1)
+		}
+	}
+	s.selectionActive = true
+	s.selectionLinewise = false
+	s.selectionAnchor = selectionPoint{Row: s.cursor.Row, Col: start}
+	s.setCursorPointWithoutReveal(rows, selectionPoint{Row: s.cursor.Row, Col: maxInt(start, end-1)})
+	return true
+}
+
+func uiDiffExtendAroundWord(row diff.Row, start int, end int, codeEnd int) int {
+	for end < codeEnd && isSpaceRune(runeAtCellWithTabWidth(row.Code, end, tabWidthForFile(row.FileName))) {
+		end++
+	}
+	if end == codeEnd {
+		for start > 0 && isSpaceRune(runeAtCellWithTabWidth(row.Code, start-1, tabWidthForFile(row.FileName))) {
+			start--
+		}
+	}
+	return end
+}
+
+func (s *uiDiffViewState) selectDelimitedTextObject(rows []diff.Row, kind textObjectKind, open rune, close rune) bool {
+	bounds, ok := s.textObjectSearchBounds(rows)
+	if !ok {
+		return false
+	}
+	cursor := textObjectPosition{Row: s.cursor.Row, Col: s.cursor.Col - bounds.CodeStart[s.cursor.Row]}
+	if cursor.Col < 0 {
+		cursor.Col = 0
+	}
+	if width := bounds.CodeWidth[s.cursor.Row]; cursor.Col >= width {
+		cursor.Col = maxInt(0, width-1)
+	}
+	openPos, closePos, ok := findDelimitedTextObject(bounds, cursor, open, close)
+	if !ok {
+		return false
+	}
+	start := openPos
+	end := closePos
+	if kind == textObjectInner {
+		start = advanceTextObjectPosition(bounds, openPos)
+		end = previousTextObjectPosition(bounds, closePos)
+	}
+	if textObjectPositionLess(end, start) {
+		return false
+	}
+	s.selectionActive = true
+	s.selectionLinewise = false
+	s.selectionAnchor = selectionPoint{Row: start.Row, Col: bounds.CodeStart[start.Row] + start.Col}
+	s.setCursorPointWithoutReveal(rows, selectionPoint{Row: end.Row, Col: bounds.CodeStart[end.Row] + end.Col})
+	return true
+}
+
+func (s *uiDiffViewState) textObjectSearchBounds(rows []diff.Row) (textObjectBounds, bool) {
+	if s.cursor.Row < 0 || s.cursor.Row >= len(rows) || !selectableDiffRow(rows[s.cursor.Row].Kind) {
+		return textObjectBounds{}, false
+	}
+	side := sideForRow(rows[s.cursor.Row])
+	start := s.cursor.Row
+	for start > 0 && textObjectRowsContiguous(rows[start-1]) {
+		start--
+	}
+	end := s.cursor.Row
+	for end+1 < len(rows) && textObjectRowsContiguous(rows[end+1]) {
+		end++
+	}
+	bounds := textObjectBounds{
+		Start:     start,
+		End:       end,
+		Side:      side,
+		Code:      make(map[int]string, end-start+1),
+		CodeStart: make(map[int]int, end-start+1),
+		CodeWidth: make(map[int]int, end-start+1),
+		TabWidth:  make(map[int]int, end-start+1),
+	}
+	for rowIndex := start; rowIndex <= end; rowIndex++ {
+		if !rowOnTextObjectSide(rows[rowIndex], side) {
+			continue
+		}
+		bounds.Code[rowIndex] = rows[rowIndex].Code
+		bounds.CodeStart[rowIndex] = 0
+		bounds.CodeWidth[rowIndex] = codeCellWidth(rows[rowIndex])
+		bounds.TabWidth[rowIndex] = tabWidthForFile(rows[rowIndex].FileName)
+	}
+	if _, ok := bounds.CodeStart[s.cursor.Row]; !ok {
+		return textObjectBounds{}, false
+	}
+	return bounds, true
 }
 
 func (s *uiDiffViewState) toggleSelection(linewise bool) {

@@ -1206,6 +1206,131 @@ func TestUIDiffViewSelectionTextPreservesTabs(t *testing.T) {
 	}
 }
 
+func TestUIDiffViewTextObjectSelectsInnerWord(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowContext, Code: "foo bar.baz", Text: "foo bar.baz"}}
+	state := &uiDiffViewState{
+		cursor: selectionPoint{Row: 0, Col: 5},
+	}
+	if !state.selectWordTextObject(rows, textObjectInner) {
+		t.Fatal("inner word text object failed")
+	}
+	if got, want := state.selectionText(rows), "bar"; got != want {
+		t.Fatalf("selection text = %q, want %q", got, want)
+	}
+	if got, want := state.cursor, (selectionPoint{Row: 0, Col: 6}); got != want {
+		t.Fatalf("cursor = %+v, want %+v", got, want)
+	}
+}
+
+func TestUIDiffViewTextObjectSelectsAroundWord(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowContext, Code: "foo bar baz", Text: "foo bar baz"}}
+	state := &uiDiffViewState{
+		cursor: selectionPoint{Row: 0, Col: 5},
+	}
+	if !state.selectWordTextObject(rows, textObjectAround) {
+		t.Fatal("around word text object failed")
+	}
+	if got, want := state.selectionText(rows), "bar "; got != want {
+		t.Fatalf("selection text = %q, want %q", got, want)
+	}
+}
+
+func TestUIDiffViewTextObjectSelectsPunctuationToken(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowContext, Code: "foo bar.baz", Text: "foo bar.baz"}}
+	state := &uiDiffViewState{
+		cursor: selectionPoint{Row: 0, Col: 7},
+	}
+	if !state.selectWordTextObject(rows, textObjectInner) {
+		t.Fatal("punctuation token text object failed")
+	}
+	if got, want := state.selectionText(rows), "."; got != want {
+		t.Fatalf("selection text = %q, want %q", got, want)
+	}
+}
+
+func TestUIDiffViewTextObjectKeysSelectInnerWord(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowContext, Gutter: "1 1   ", Code: "foo bar.baz"}}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	app.Pump(vui.Size{Width: 30, Height: 3})
+	app.Pump(vui.Size{Width: 30, Height: 3})
+
+	for i := 0; i < 5; i++ {
+		app.Send(vaxis.Key{Text: "l", Keycode: 'l'})
+	}
+	app.Send(vaxis.Key{Text: "v", Keycode: 'v'})
+	app.Send(vaxis.Key{Text: "i", Keycode: 'i'})
+	app.Send(vaxis.Key{Text: "w", Keycode: 'w'})
+	app.Pump(vui.Size{Width: 30, Height: 3})
+
+	p := vui.NewPainter(vui.Size{Width: 30, Height: 3})
+	app.Paint(p)
+	codeOffset := uiDiffCodeOffset(rows)
+	theme := uiDiffTestTheme()
+	for col := codeOffset + 4; col <= codeOffset+6; col++ {
+		if got := p.Cell(col, 0).Background; got != theme.Selection && got != uiDiffCursorBackground(theme) {
+			t.Fatalf("word cell %d background = %v, want selected/cursor", col, got)
+		}
+	}
+	if got := p.Cell(codeOffset+7, 0).Background; got == theme.Selection {
+		t.Fatal("punctuation after word was selected")
+	}
+}
+
+func TestUIDiffViewTextObjectIgnoresShiftModifierPress(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowContext, Gutter: "1 1   ", Code: "foo bar.baz"}}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	app.Pump(vui.Size{Width: 30, Height: 3})
+	app.Pump(vui.Size{Width: 30, Height: 3})
+
+	for i := 0; i < 5; i++ {
+		app.Send(vaxis.Key{Text: "l", Keycode: 'l'})
+	}
+	app.Send(vaxis.Key{Text: "v", Keycode: 'v'})
+	app.Send(vaxis.Key{Text: "i", Keycode: 'i'})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyLeftShift})
+	app.Send(vaxis.Key{Text: "w", Keycode: 'w'})
+	app.Pump(vui.Size{Width: 30, Height: 3})
+
+	p := vui.NewPainter(vui.Size{Width: 30, Height: 3})
+	app.Paint(p)
+	codeOffset := uiDiffCodeOffset(rows)
+	theme := uiDiffTestTheme()
+	for col := codeOffset + 4; col <= codeOffset+6; col++ {
+		if got := p.Cell(col, 0).Background; got != theme.Selection && got != uiDiffCursorBackground(theme) {
+			t.Fatalf("word cell %d background = %v, want selected/cursor", col, got)
+		}
+	}
+}
+
+func TestUIDiffViewTextObjectUsesShiftedPunctuation(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowContext, Gutter: "1 1   ", Code: "call(foo)"}}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	app.Pump(vui.Size{Width: 30, Height: 3})
+	app.Pump(vui.Size{Width: 30, Height: 3})
+
+	for i := 0; i < strings.Index(rows[0].Code, "foo"); i++ {
+		app.Send(vaxis.Key{Text: "l", Keycode: 'l'})
+	}
+	app.Send(vaxis.Key{Text: "v", Keycode: 'v'})
+	app.Send(vaxis.Key{Text: "a", Keycode: 'a'})
+	app.Send(vaxis.Key{Text: ")", Keycode: '0', Modifiers: vaxis.ModShift})
+	app.Pump(vui.Size{Width: 30, Height: 3})
+
+	p := vui.NewPainter(vui.Size{Width: 30, Height: 3})
+	app.Paint(p)
+	codeOffset := uiDiffCodeOffset(rows)
+	theme := uiDiffTestTheme()
+	if got := p.Cell(codeOffset+4, 0).Background; got != theme.Selection {
+		t.Fatalf("opening paren background = %v, want selection", got)
+	}
+	if got := p.Cell(codeOffset+8, 0).Background; got != uiDiffCursorBackground(theme) {
+		t.Fatalf("closing paren cursor background = %v, want cursor", got)
+	}
+	if got := p.Cell(codeOffset, 0).Background; got == uiDiffCursorBackground(theme) {
+		t.Fatal("shifted punctuation fell through to 0 cursor movement")
+	}
+}
+
 func TestUIDiffViewSelectionTextSkipsCommitRows(t *testing.T) {
 	rows := []diff.Row{
 		{Kind: diff.RowContext, Code: "selectable", Text: "selectable"},
