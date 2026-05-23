@@ -549,6 +549,110 @@ func TestUIDiffViewVimNavigationKeys(t *testing.T) {
 	}
 }
 
+func TestUIDiffViewEditorTargetUsesCursorRow(t *testing.T) {
+	rows, err := rowsForInput(`diff --git a/main.go b/main.go
+--- a/main.go
++++ b/main.go
+@@ -10,2 +10,2 @@
+ old context
+-old
++new
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, ok := uiDiffEditorTarget(rows, selectionPoint{Row: 3, Col: 2})
+	if !ok {
+		t.Fatal("editor target not found")
+	}
+	if target.Path != "main.go" || target.Line != 11 || target.Column != 3 {
+		t.Fatalf("target = %+v, want main.go:11:3", target)
+	}
+}
+
+func TestUIDiffViewEditorTargetUsesTextColumnForTabs(t *testing.T) {
+	row := diff.Row{
+		Kind:     diff.RowAdd,
+		FileName: "main.go",
+		Code:     "\tfoo",
+		Review:   review.Anchor{Line: 12},
+	}
+	tests := []struct {
+		name       string
+		cursorCell int
+		wantColumn int
+	}{
+		{name: "inside tab", cursorCell: 4, wantColumn: 1},
+		{name: "after tab", cursorCell: 8, wantColumn: 2},
+		{name: "after first rune", cursorCell: 9, wantColumn: 3},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			target, ok := uiDiffEditorTarget([]diff.Row{row}, selectionPoint{Row: 0, Col: tt.cursorCell})
+			if !ok {
+				t.Fatal("editor target not found")
+			}
+			if target.Column != tt.wantColumn {
+				t.Fatalf("column = %d, want %d", target.Column, tt.wantColumn)
+			}
+		})
+	}
+}
+
+func TestUIDiffViewEditorTargetUsesFourCellTabsForNonGoFiles(t *testing.T) {
+	row := diff.Row{Kind: diff.RowAdd, FileName: "main.py", Code: "\tfoo", Review: review.Anchor{Line: 12}}
+	target, ok := uiDiffEditorTarget([]diff.Row{row}, selectionPoint{Row: 0, Col: 4})
+	if !ok {
+		t.Fatal("editor target not found")
+	}
+	if target.Column != 2 {
+		t.Fatalf("column = %d, want 2", target.Column)
+	}
+}
+
+func TestUIDiffViewEditorTargetFallsBackToLineOne(t *testing.T) {
+	target, ok := uiDiffEditorTarget([]diff.Row{{Kind: diff.RowFile, FileName: "main.go"}}, selectionPoint{})
+	if !ok {
+		t.Fatal("editor target not found")
+	}
+	if target.Path != "main.go" || target.Line != 1 || target.Column != 1 {
+		t.Fatalf("target = %+v, want main.go:1:1", target)
+	}
+}
+
+func TestUIDiffViewOReportsMissingFile(t *testing.T) {
+	app := newUIDiffTestAppWithBaseDraftsAndStatus([]diff.Row{{Kind: diff.RowBlank}}, DefaultBaseColors(), false, nil, true)
+	size := vui.Size{Width: 40, Height: 3}
+	app.Pump(size)
+	app.Pump(size)
+
+	app.Send(vaxis.Key{Text: "o", Keycode: 'o'})
+	app.Pump(size)
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	if got := uiDiffPainterText(p, size.Height-1); !strings.Contains(got, "No file.") {
+		t.Fatalf("status = %q, want no file", got)
+	}
+}
+
+func TestUIDiffViewEditorTerminalReceivesCommandKeys(t *testing.T) {
+	t.Setenv("GIT_EDITOR", "true")
+	row := diff.Row{Kind: diff.RowAdd, FileName: "main.go", Code: "line", Review: review.Anchor{Line: 12}}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus([]diff.Row{row}, DefaultBaseColors(), false, nil, true)
+	size := vui.Size{Width: 40, Height: 5}
+	app.Pump(size)
+	app.Pump(size)
+
+	app.Send(vaxis.Key{Text: "o", Keycode: 'o'})
+	app.Send(vaxis.Key{Text: ":", Keycode: ':'})
+	app.Pump(size)
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	if got := uiDiffPainterText(p, size.Height-1); strings.HasPrefix(got, ":") {
+		t.Fatalf("diff command mode intercepted terminal key: status = %q", got)
+	}
+}
+
 func TestUIDiffViewBracketCJumpsBetweenChanges(t *testing.T) {
 	rows := []diff.Row{
 		{Kind: diff.RowContext, Gutter: "1 1   ", Code: "same"},

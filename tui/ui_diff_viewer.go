@@ -2,11 +2,13 @@ package tui
 
 import (
 	"fmt"
+	"os/exec"
 	"strings"
 	"time"
 
 	"git.sr.ht/~rockorager/vaxis"
 	vui "git.sr.ht/~rockorager/vaxis/ui"
+	"git.sr.ht/~rockorager/vaxis/widgets/term"
 	"github.com/rockorager/go-uucode"
 
 	"github.com/rockorager/comview/diff"
@@ -94,6 +96,7 @@ type uiDiffViewState struct {
 	reviewDirty             bool
 	statusMessage           string
 	statusMessageUntil      time.Time
+	editorCommand           *exec.Cmd
 	syntaxTheme             vui.Theme
 	highlighter             *SyntaxHighlighter
 	highlightedTheme        vui.Theme
@@ -143,7 +146,60 @@ func (s *uiDiffViewState) Build(ctx vui.BuildContext) vui.Widget {
 	if s.fileFinder {
 		entries = append(entries, vui.OverlayEntry{Modal: true, Child: s.buildFileFinder(w.Rows, theme)})
 	}
+	if s.editorCommand != nil {
+		entries = append(entries, vui.OverlayEntry{Modal: true, Child: s.buildEditorTerminal(theme)})
+	}
 	return vui.Overlay{Child: content, Entries: entries}
+}
+
+func (s *uiDiffViewState) buildEditorTerminal(theme vui.Theme) vui.Widget {
+	border := vui.BorderLine(theme.Border)
+	border.Chars = vui.BorderChars{
+		TopLeft:     vui.Character{Grapheme: "╭", Width: 1},
+		TopRight:    vui.Character{Grapheme: "╮", Width: 1},
+		BottomLeft:  vui.Character{Grapheme: "╰", Width: 1},
+		BottomRight: vui.Character{Grapheme: "╯", Width: 1},
+	}
+	terminal := vui.Padding(vui.All(2), vui.DecoratedBox(
+		vui.Decoration{Style: vui.Style{Background: theme.Background}, Border: border},
+		vui.Padding(vui.All(1), vui.SizedBox{Width: 10000, Height: 10000, Child: term.Terminal{
+			Command: s.editorCommand,
+			Options: []term.Option{term.WithKittyKeyboard(true)},
+			OnEvent: func(_ vui.EventContext, ev vui.Event) vui.EventResult {
+				closed, ok := ev.(term.EventClosed)
+				if !ok {
+					return vui.EventIgnored
+				}
+				s.editorCommand = nil
+				if closed.Error != nil {
+					s.setStatusMessage(fmt.Sprintf("Editor exited: %v", closed.Error))
+				}
+				s.SetState(func() {})
+				return vui.EventHandled
+			},
+		}}),
+	))
+	return vui.FocusScope{Trap: true, AutoFocus: true, Child: vui.Stack{Children: []vui.Widget{terminal, uiFocusNextOnce{}}}}
+}
+
+type uiFocusNextOnce struct{}
+
+func (uiFocusNextOnce) CreateState() vui.State {
+	return &uiFocusNextOnceState{}
+}
+
+type uiFocusNextOnceState struct {
+	vui.StateBase
+	dispatched bool
+}
+
+func (s *uiFocusNextOnceState) Build(ctx vui.BuildContext) vui.Widget {
+	if !s.dispatched {
+		s.dispatched = true
+		eventCtx := ctx.EventContext()
+		ctx.Runtime().Dispatch(func() { eventCtx.FocusNext() })
+	}
+	return vui.SizedBox{}
 }
 
 func (s *uiDiffViewState) allReviewDrafts(base []review.CommentDraft) []review.CommentDraft {
@@ -578,6 +634,9 @@ func (s *uiDiffViewState) HandleEvent(ctx vui.EventContext, ev vui.Event) vui.Ev
 	if ctx.Phase() != vui.CapturePhase {
 		return vui.EventIgnored
 	}
+	if s.editorCommand != nil {
+		return vui.EventIgnored
+	}
 	if mouse, ok := ev.(vaxis.Mouse); ok {
 		return s.handleMouse(ctx, mouse)
 	}
@@ -635,6 +694,10 @@ func (s *uiDiffViewState) HandleEvent(ctx vui.EventContext, ev vui.Event) vui.Ev
 		s.pendingBracket = 0
 		s.pendingSpace = false
 		s.pendingD = true
+		return vui.EventHandled
+	case key.Matches('o'):
+		s.clearPendingKeys()
+		s.openEditor()
 		return vui.EventHandled
 	case key.Matches('c') && s.pendingBracket == ']':
 		s.clearPendingKeys()
@@ -1345,6 +1408,51 @@ func (s *uiDiffViewState) clearExpiredStatusMessage(now time.Time) bool {
 	s.statusMessage = ""
 	s.statusMessageUntil = time.Time{}
 	return true
+}
+
+func (s *uiDiffViewState) openEditor() {
+	target, ok := s.editorTarget()
+	if !ok || target.Path == "" {
+		s.SetState(func() {})
+		return
+	}
+	name, args, err := editorCommand(configuredEditor(), target)
+	if err != nil {
+		s.setStatusMessage(fmt.Sprintf("Could not open editor: %v", err))
+		s.SetState(func() {})
+		return
+	}
+	s.editorCommand = exec.Command(name, args...)
+	s.SetState(func() {})
+}
+
+func (s *uiDiffViewState) editorTarget() (EditorTarget, bool) {
+	w := s.Widget().(uiDiffView)
+	target, ok := uiDiffEditorTarget(w.Rows, s.cursor)
+	if !ok {
+		s.setStatusMessage("No file.")
+		return EditorTarget{}, false
+	}
+	return target, true
+}
+
+func uiDiffEditorTarget(rows []diff.Row, cursor selectionPoint) (EditorTarget, bool) {
+	if cursor.Row < 0 || cursor.Row >= len(rows) {
+		return EditorTarget{}, false
+	}
+	row := rows[cursor.Row]
+	if row.FileName == "" {
+		return EditorTarget{}, false
+	}
+	line := row.Review.Line
+	if line <= 0 {
+		line = 1
+	}
+	column := 1
+	if row.Code != "" {
+		column = editorColumnAtCell(row.Code, cursor.Col, tabWidthForFile(row.FileName))
+	}
+	return EditorTarget{Path: row.FileName, Line: line, Column: column}, true
 }
 
 func (s *uiDiffViewState) deleteReviewDraftCommand(rows []diff.Row, base []review.CommentDraft) {
