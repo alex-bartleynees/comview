@@ -912,6 +912,27 @@ func TestUIDiffViewSelectionTextLinewiseSkipsHunkRows(t *testing.T) {
 	}
 }
 
+func TestUIDiffViewSelectionTextSkipsNonSelectableRowsWithoutExtraNewline(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowContext, Code: "hello", Text: "hello"},
+		{Kind: diff.RowHunk, Text: "@@ -1 +1 @@ func main()", Prefix: "@@ -1 +1 @@", Code: " func main()"},
+		{Kind: diff.RowContext, Code: "world", Text: "world"},
+	}
+	state := &uiDiffViewState{
+		selectionActive: true,
+		selectionAnchor: selectionPoint{Row: 0, Col: 0},
+		cursor:          selectionPoint{Row: 1, Col: textCellWidth(rows[1].Text) - 1},
+	}
+	if got, want := state.selectionText(rows), "hello"; got != want {
+		t.Fatalf("selection text = %q, want %q", got, want)
+	}
+
+	state.cursor = selectionPoint{Row: 2, Col: textCellWidth(rows[2].Text) - 1}
+	if got, want := state.selectionText(rows), "hello\nworld"; got != want {
+		t.Fatalf("selection text = %q, want %q", got, want)
+	}
+}
+
 func TestUIDiffViewSelectionTextCharacterwise(t *testing.T) {
 	rows := []diff.Row{
 		{Kind: diff.RowContext, Gutter: "1 1   ", Code: "abcd"},
@@ -923,6 +944,173 @@ func TestUIDiffViewSelectionTextCharacterwise(t *testing.T) {
 		cursor:          selectionPoint{Row: 1, Col: 2},
 	}
 	if got, want := state.selectionText(rows), "bcd\nwxy"; got != want {
+		t.Fatalf("selection text = %q, want %q", got, want)
+	}
+}
+
+func TestUIDiffViewMouseDragSelectsCode(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowContext, Gutter: "1 1   ", Code: "abcde"},
+		{Kind: diff.RowContext, Gutter: "2 2   ", Code: "fghij"},
+	}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	app.Pump(vui.Size{Width: 30, Height: 3})
+	app.Pump(vui.Size{Width: 30, Height: 3})
+	codeOffset := uiDiffCodeOffset(rows)
+
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventPress, Row: 0, Col: codeOffset + 1})
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventMotion, Row: 1, Col: codeOffset + 2})
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventRelease, Row: 1, Col: codeOffset + 2})
+	app.Pump(vui.Size{Width: 30, Height: 3})
+
+	p := vui.NewPainter(vui.Size{Width: 30, Height: 3})
+	app.Paint(p)
+	theme := uiDiffTestTheme()
+	if got := p.Cell(codeOffset+1, 0).Background; got != theme.Selection {
+		t.Fatalf("first selected cell background = %v, want selection", got)
+	}
+	if got := p.Cell(codeOffset+2, 1).Background; got != uiDiffCursorBackground(theme) {
+		t.Fatalf("cursor cell background = %v, want cursor", got)
+	}
+	if got := p.Cell(0, 0).Background; got == theme.Selection {
+		t.Fatal("gutter was selected")
+	}
+}
+
+func TestUIDiffViewMouseClickDoesNotSelect(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowContext, Gutter: "1 1   ", Code: "abcde"}}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	app.Pump(vui.Size{Width: 30, Height: 3})
+	app.Pump(vui.Size{Width: 30, Height: 3})
+	codeOffset := uiDiffCodeOffset(rows)
+
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventPress, Row: 0, Col: codeOffset + 2})
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventRelease, Row: 0, Col: codeOffset + 2})
+	app.Pump(vui.Size{Width: 30, Height: 3})
+
+	p := vui.NewPainter(vui.Size{Width: 30, Height: 3})
+	app.Paint(p)
+	if got := p.Cell(codeOffset+2, 0).Background; got == uiDiffTestTheme().Selection {
+		t.Fatal("single click selected text")
+	}
+	if got := uiDiffPainterText(p, 2); !strings.HasPrefix(got, " NORMAL ") {
+		t.Fatalf("status bar = %q, want NORMAL", got)
+	}
+}
+
+func TestUIDiffViewDoubleClickSelectsToken(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowContext, Gutter: "1 1   ", Code: "foo bar.baz"}}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	app.Pump(vui.Size{Width: 30, Height: 3})
+	app.Pump(vui.Size{Width: 30, Height: 3})
+	codeOffset := uiDiffCodeOffset(rows)
+
+	for i := 0; i < 2; i++ {
+		app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventPress, Row: 0, Col: codeOffset + 5})
+		app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventRelease, Row: 0, Col: codeOffset + 5})
+	}
+	app.Pump(vui.Size{Width: 30, Height: 3})
+
+	p := vui.NewPainter(vui.Size{Width: 30, Height: 3})
+	app.Paint(p)
+	theme := uiDiffTestTheme()
+	for col := codeOffset + 4; col <= codeOffset+6; col++ {
+		if got := p.Cell(col, 0).Background; got != theme.Selection && got != uiDiffCursorBackground(theme) {
+			t.Fatalf("token cell %d background = %v, want selected/cursor", col, got)
+		}
+	}
+	if got := p.Cell(codeOffset+7, 0).Background; got == theme.Selection {
+		t.Fatal("punctuation after token was selected")
+	}
+	if got := uiDiffPainterText(p, 2); !strings.HasPrefix(got, " VISUAL ") {
+		t.Fatalf("status bar = %q, want VISUAL", got)
+	}
+}
+
+func TestUIDiffViewTripleClickSelectsCodeRow(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowAdd, Gutter: "1 1 + ", Code: "hello"}}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	app.Pump(vui.Size{Width: 30, Height: 3})
+	app.Pump(vui.Size{Width: 30, Height: 3})
+	codeOffset := uiDiffCodeOffset(rows)
+
+	for i := 0; i < 3; i++ {
+		app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventPress, Row: 0, Col: codeOffset + 1})
+		app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventRelease, Row: 0, Col: codeOffset + 1})
+	}
+	app.Pump(vui.Size{Width: 30, Height: 3})
+
+	p := vui.NewPainter(vui.Size{Width: 30, Height: 3})
+	app.Paint(p)
+	for col := codeOffset; col < codeOffset+len("hello"); col++ {
+		if got := p.Cell(col, 0).Background; got != uiDiffTestTheme().Selection && got != uiDiffCursorBackground(uiDiffTestTheme()) {
+			t.Fatalf("row cell %d background = %v, want selected/cursor", col, got)
+		}
+	}
+	if got := p.Cell(0, 0).Background; got == uiDiffTestTheme().Selection {
+		t.Fatal("triple click selected gutter")
+	}
+	if got := uiDiffPainterText(p, 2); !strings.HasPrefix(got, " V-LINE ") {
+		t.Fatalf("status bar = %q, want V-LINE", got)
+	}
+}
+
+func TestUIDiffViewMouseSelectionSkipsHunkRows(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowContext, Gutter: "1 1   ", Code: "hello"},
+		{Kind: diff.RowHunk, Text: "@@ -1 +1 @@", Prefix: "@@ -1 +1 @@"},
+		{Kind: diff.RowContext, Gutter: "2 2   ", Code: "world"},
+	}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	app.Pump(vui.Size{Width: 30, Height: 4})
+	app.Pump(vui.Size{Width: 30, Height: 4})
+	codeOffset := uiDiffCodeOffset(rows)
+
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventPress, Row: 0, Col: codeOffset})
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventMotion, Row: 1, Col: codeOffset + 2})
+	app.Pump(vui.Size{Width: 30, Height: 4})
+	p := vui.NewPainter(vui.Size{Width: 30, Height: 4})
+	app.Paint(p)
+	if got := p.Cell(0, 1).Background; got == uiDiffTestTheme().Selection {
+		t.Fatal("hunk row was selected")
+	}
+
+	app.Pump(vui.Size{Width: 30, Height: 4})
+
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventMotion, Row: 2, Col: codeOffset + 1})
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventRelease, Row: 2, Col: codeOffset + 1})
+	app.Pump(vui.Size{Width: 30, Height: 4})
+	p = vui.NewPainter(vui.Size{Width: 30, Height: 4})
+	app.Paint(p)
+	if got := p.Cell(codeOffset, 2).Background; got != uiDiffTestTheme().Selection {
+		t.Fatalf("second code row selected cell background = %v, want selection", got)
+	}
+}
+
+func TestUIDiffViewSelectionTextPreservesTabs(t *testing.T) {
+	row := diff.Row{Kind: diff.RowContext, Code: "a\tb", Text: "a\tb"}
+	state := &uiDiffViewState{
+		selectionActive: true,
+		selectionAnchor: selectionPoint{Row: 0, Col: 1},
+		cursor:          selectionPoint{Row: 0, Col: 1},
+	}
+	if got, want := state.selectionText([]diff.Row{row}), "\t"; got != want {
+		t.Fatalf("selection text = %q, want %q", got, want)
+	}
+}
+
+func TestUIDiffViewSelectionTextSkipsCommitRows(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowContext, Code: "selectable", Text: "selectable"},
+		{Kind: diff.RowCommitHeader, Text: "commit abc123"},
+		{Kind: diff.RowCommitMeta, Text: "Author: Example"},
+	}
+	state := &uiDiffViewState{
+		selectionActive: true,
+		selectionAnchor: selectionPoint{Row: 0, Col: 0},
+		cursor:          selectionPoint{Row: 2, Col: textCellWidth(rows[2].Text) - 1},
+	}
+	if got, want := state.selectionText(rows), "selectable"; got != want {
 		t.Fatalf("selection text = %q, want %q", got, want)
 	}
 }

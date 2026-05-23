@@ -57,6 +57,9 @@ type uiDiffViewState struct {
 	selectionAnchor   selectionPoint
 	selectionActive   bool
 	selectionLinewise bool
+	mouseSelecting    bool
+	mouseAnchor       selectionPoint
+	clicks            clickState
 	yankAnchor        selectionPoint
 	yankCursor        selectionPoint
 	yankActive        bool
@@ -512,6 +515,9 @@ func (s *uiDiffViewState) HandleEvent(ctx vui.EventContext, ev vui.Event) vui.Ev
 	if ctx.Phase() != vui.CapturePhase {
 		return vui.EventIgnored
 	}
+	if mouse, ok := ev.(vaxis.Mouse); ok {
+		return s.handleMouse(ctx, mouse)
+	}
 	key, ok := ev.(vaxis.Key)
 	if !ok || key.EventType == vaxis.EventRelease || pureModifierKey(key) {
 		return vui.EventIgnored
@@ -672,6 +678,162 @@ func (s *uiDiffViewState) HandleEvent(ctx vui.EventContext, ev vui.Event) vui.Ev
 		s.clearPendingKeys()
 		return vui.EventIgnored
 	}
+}
+
+func (s *uiDiffViewState) handleMouse(_ vui.EventContext, mouse vaxis.Mouse) vui.EventResult {
+	if s.fileFinder {
+		return vui.EventIgnored
+	}
+	w := s.Widget().(uiDiffView)
+	rows := w.Rows
+	if len(rows) == 0 {
+		return vui.EventIgnored
+	}
+	if mouseWheelButton(mouse.Button) {
+		return vui.EventIgnored
+	}
+	switch mouse.EventType {
+	case vaxis.EventPress:
+		if mouse.Button != vaxis.MouseLeftButton {
+			return vui.EventIgnored
+		}
+		point, ok := s.selectionPointForMouse(rows, mouse)
+		if !ok {
+			s.mouseSelecting = false
+			return vui.EventIgnored
+		}
+		s.setCursorPointWithoutReveal(rows, point)
+		s.clearLineSelection()
+		s.yankActive = false
+		s.clearPendingKeys()
+		switch s.registerClick(point, time.Now()) {
+		case 2:
+			s.mouseSelecting = false
+			s.selectTokenAt(rows, point)
+			s.SetState(func() {})
+			return vui.EventHandled
+		case 3:
+			s.mouseSelecting = false
+			s.selectRowAt(rows, point)
+			s.SetState(func() {})
+			return vui.EventHandled
+		}
+		s.mouseSelecting = true
+		s.mouseAnchor = point
+		s.SetState(func() {})
+		return vui.EventHandled
+	case vaxis.EventMotion:
+		if !s.mouseSelecting || mouse.Button == vaxis.MouseNoButton {
+			return vui.EventIgnored
+		}
+		point, ok := s.selectionPointForMouse(rows, mouse)
+		if !ok {
+			return vui.EventIgnored
+		}
+		if !s.selectionActive && point == s.mouseAnchor {
+			return vui.EventIgnored
+		}
+		if !s.selectionActive {
+			s.selectionActive = true
+			s.selectionLinewise = false
+			s.selectionAnchor = s.mouseAnchor
+		}
+		s.setCursorPointWithoutReveal(rows, point)
+		s.SetState(func() {})
+		return vui.EventHandled
+	case vaxis.EventRelease:
+		if !s.mouseSelecting {
+			return vui.EventIgnored
+		}
+		s.mouseSelecting = false
+		if point, ok := s.selectionPointForMouse(rows, mouse); ok {
+			s.setCursorPointWithoutReveal(rows, point)
+		}
+		s.SetState(func() {})
+		return vui.EventHandled
+	default:
+		return vui.EventIgnored
+	}
+}
+
+func (s *uiDiffViewState) registerClick(point selectionPoint, now time.Time) int {
+	if s.clicks.Point == point && now.Sub(s.clicks.At) <= multiClickTimeout {
+		s.clicks.Count++
+	} else {
+		s.clicks.Count = 1
+	}
+	if s.clicks.Count > 3 {
+		s.clicks.Count = 1
+	}
+	s.clicks.Point = point
+	s.clicks.At = now
+	return s.clicks.Count
+}
+
+func (s *uiDiffViewState) selectTokenAt(rows []diff.Row, point selectionPoint) {
+	if point.Row < 0 || point.Row >= len(rows) || !selectableDiffRow(rows[point.Row].Kind) {
+		return
+	}
+	row := rows[point.Row]
+	start, end := tokenRangeAtWithTabWidth(row.Code, point.Col, tabWidthForFile(row.FileName))
+	_, codeEnd, ok := uiDiffCodeRange(rows, point.Row)
+	if !ok {
+		return
+	}
+	start = clampUIDiffInt(start, 0, maxInt(0, codeEnd-1))
+	end = clampUIDiffInt(end, start+1, codeEnd)
+	s.selectionActive = true
+	s.selectionLinewise = false
+	s.selectionAnchor = selectionPoint{Row: point.Row, Col: start}
+	s.setCursorPointWithoutReveal(rows, selectionPoint{Row: point.Row, Col: maxInt(start, end-1)})
+}
+
+func (s *uiDiffViewState) selectRowAt(rows []diff.Row, point selectionPoint) {
+	if point.Row < 0 || point.Row >= len(rows) || !selectableDiffRow(rows[point.Row].Kind) {
+		return
+	}
+	_, end, ok := uiDiffCodeRange(rows, point.Row)
+	if !ok {
+		return
+	}
+	s.selectionActive = true
+	s.selectionLinewise = true
+	s.selectionAnchor = selectionPoint{Row: point.Row, Col: 0}
+	s.setCursorPointWithoutReveal(rows, selectionPoint{Row: point.Row, Col: maxInt(0, end-1)})
+}
+
+func (s *uiDiffViewState) selectionPointForMouse(rows []diff.Row, mouse vaxis.Mouse) (selectionPoint, bool) {
+	rowIndex, ok := s.rowForMouse(mouse)
+	if !ok || rowIndex < 0 || rowIndex >= len(rows) || !selectableDiffRow(rows[rowIndex].Kind) {
+		return selectionPoint{}, false
+	}
+	col := mouse.Col - uiDiffCodeOffset(rows)
+	_, end, ok := uiDiffCodeRange(rows, rowIndex)
+	if !ok {
+		return selectionPoint{}, false
+	}
+	col = clampUIDiffInt(col, 0, maxInt(0, end-1))
+	return selectionPoint{Row: rowIndex, Col: col}, true
+}
+
+func (s *uiDiffViewState) rowForMouse(mouse vaxis.Mouse) (int, bool) {
+	first, last, ok := s.list.VisibleRange()
+	if !ok || mouse.Row < 0 {
+		return 0, false
+	}
+	row := first + mouse.Row
+	if row < first || row >= last {
+		return 0, false
+	}
+	return row, true
+}
+
+func uiDiffCodeOffset(rows []diff.Row) int {
+	oldWidth, newWidth := uiDiffGutterWidths(rows)
+	if oldWidth == 0 && newWidth == 0 {
+		return 0
+	}
+	return oldWidth + 1 + newWidth + 1 + 1 + 1
 }
 
 func (s *uiDiffViewState) clearPendingKeys() {
