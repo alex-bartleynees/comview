@@ -47,37 +47,41 @@ func (w uiDiffView) CreateState() vui.State {
 
 type uiDiffViewState struct {
 	vui.StateBase
-	scroll            vui.ScrollController
-	list              vui.SliverListController
-	cursor            selectionPoint
-	cursorCol         int
-	pendingG          bool
-	pendingBracket    rune
-	pendingSpace      bool
-	fileFinder        bool
-	textObject        textObjectState
-	selectionAnchor   selectionPoint
-	selectionActive   bool
-	selectionLinewise bool
-	mouseSelecting    bool
-	mouseAnchor       selectionPoint
-	mouseHasAnchor    bool
-	mouseStartRow     int
-	clicks            clickState
-	yankAnchor        selectionPoint
-	yankCursor        selectionPoint
-	yankActive        bool
-	yankLinewise      bool
-	yankUntil         time.Time
-	searchMode        bool
-	searchQuery       string
-	searchMatches     []searchMatch
-	searchIndex       int
-	searchStart       selectionPoint
-	syntaxTheme       vui.Theme
-	highlighter       *SyntaxHighlighter
-	highlightedTheme  vui.Theme
-	highlightedRows   map[int][]vaxis.Segment
+	scroll                  vui.ScrollController
+	list                    vui.SliverListController
+	cursor                  selectionPoint
+	cursorCol               int
+	pendingG                bool
+	pendingBracket          rune
+	pendingSpace            bool
+	fileFinder              bool
+	textObject              textObjectState
+	selectionAnchor         selectionPoint
+	selectionActive         bool
+	selectionLinewise       bool
+	selectionInitialNewline bool
+	selectionFinalNewline   bool
+	selectionSideFiltered   bool
+	selectionSide           diffSide
+	mouseSelecting          bool
+	mouseAnchor             selectionPoint
+	mouseHasAnchor          bool
+	mouseStartRow           int
+	clicks                  clickState
+	yankAnchor              selectionPoint
+	yankCursor              selectionPoint
+	yankActive              bool
+	yankLinewise            bool
+	yankUntil               time.Time
+	searchMode              bool
+	searchQuery             string
+	searchMatches           []searchMatch
+	searchIndex             int
+	searchStart             selectionPoint
+	syntaxTheme             vui.Theme
+	highlighter             *SyntaxHighlighter
+	highlightedTheme        vui.Theme
+	highlightedRows         map[int][]vaxis.Segment
 }
 
 func (s *uiDiffViewState) Build(ctx vui.BuildContext) vui.Widget {
@@ -982,6 +986,9 @@ func (s *uiDiffViewState) selectWordTextObject(rows []diff.Row, kind textObjectK
 	}
 	s.selectionActive = true
 	s.selectionLinewise = false
+	s.selectionInitialNewline = false
+	s.selectionFinalNewline = false
+	s.selectionSideFiltered = false
 	s.selectionAnchor = selectionPoint{Row: s.cursor.Row, Col: start}
 	s.setCursorPointWithoutReveal(rows, selectionPoint{Row: s.cursor.Row, Col: maxInt(start, end-1)})
 	return true
@@ -1017,16 +1024,31 @@ func (s *uiDiffViewState) selectDelimitedTextObject(rows []diff.Row, kind textOb
 	}
 	start := openPos
 	end := closePos
+	includeInitialNewline := false
+	includeFinalNewline := false
 	if kind == textObjectInner {
 		start = advanceTextObjectPosition(bounds, openPos)
 		end = previousTextObjectPosition(bounds, closePos)
+		includeInitialNewline = openPos.Row != closePos.Row && start.Row > openPos.Row
+		includeFinalNewline = openPos.Row != closePos.Row && end.Row < closePos.Row
 	}
 	if textObjectPositionLess(end, start) {
 		return false
 	}
+	anchor := selectionPoint{Row: start.Row, Col: bounds.CodeStart[start.Row] + start.Col}
+	if includeInitialNewline {
+		anchor = selectionPoint{Row: openPos.Row, Col: bounds.CodeStart[openPos.Row] + bounds.CodeWidth[openPos.Row]}
+	}
 	s.selectionActive = true
 	s.selectionLinewise = false
-	s.selectionAnchor = selectionPoint{Row: start.Row, Col: bounds.CodeStart[start.Row] + start.Col}
+	s.selectionInitialNewline = includeInitialNewline
+	s.selectionFinalNewline = includeFinalNewline
+	s.selectionSideFiltered = false
+	if start.Row != end.Row && s.cursor.Row >= 0 && s.cursor.Row < len(rows) {
+		s.selectionSideFiltered = true
+		s.selectionSide = sideForRow(rows[s.cursor.Row])
+	}
+	s.selectionAnchor = anchor
 	s.setCursorPointWithoutReveal(rows, selectionPoint{Row: end.Row, Col: bounds.CodeStart[end.Row] + end.Col})
 	return true
 }
@@ -1087,6 +1109,9 @@ func (s *uiDiffViewState) toggleSelection(linewise bool) {
 func (s *uiDiffViewState) clearLineSelection() {
 	s.selectionActive = false
 	s.selectionLinewise = false
+	s.selectionInitialNewline = false
+	s.selectionFinalNewline = false
+	s.selectionSideFiltered = false
 	s.selectionAnchor = selectionPoint{}
 }
 
@@ -1136,11 +1161,15 @@ func (s *uiDiffViewState) selectionText(rows []diff.Row) string {
 	var text strings.Builder
 	wroteRow := false
 	for rowIndex := start.Row; rowIndex <= end.Row && rowIndex < len(rows); rowIndex++ {
-		if rowIndex < 0 || !selectableDiffRow(rows[rowIndex].Kind) {
+		if rowIndex < 0 || !s.selectionIncludesRow(rows[rowIndex]) {
 			continue
 		}
 		row := rows[rowIndex]
 		rowStart, rowEnd := 0, codeCellWidth(row)
+		if s.selectionInitialNewline && rowIndex == start.Row {
+			wroteRow = true
+			continue
+		}
 		if !s.selectionLinewise {
 			if rowIndex == start.Row {
 				rowStart = maxInt(rowStart, start.Col)
@@ -1159,7 +1188,17 @@ func (s *uiDiffViewState) selectionText(rows []diff.Row) string {
 		text.WriteString(rowText)
 		wroteRow = true
 	}
+	if s.selectionFinalNewline && wroteRow {
+		text.WriteByte('\n')
+	}
 	return text.String()
+}
+
+func (s *uiDiffViewState) selectionIncludesRow(row diff.Row) bool {
+	if !selectableDiffRow(row.Kind) {
+		return false
+	}
+	return !s.selectionSideFiltered || rowOnTextObjectSide(row, s.selectionSide)
 }
 
 func (s *uiDiffViewState) lineSelected(row int) bool {
@@ -1187,6 +1226,9 @@ func (s *uiDiffViewState) lineInRange(row int, anchor selectionPoint, cursor sel
 
 func (s *uiDiffViewState) charSelectionRange(rowIndex int, row diff.Row) (int, int, bool) {
 	if !s.selectionActive || s.selectionLinewise {
+		return 0, 0, false
+	}
+	if !s.selectionIncludesRow(row) {
 		return 0, 0, false
 	}
 	return uiDiffSelectionRange(rowIndex, row, s.selectionAnchor, s.cursor)

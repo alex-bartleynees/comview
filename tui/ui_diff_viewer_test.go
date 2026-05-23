@@ -1331,6 +1331,85 @@ func TestUIDiffViewTextObjectUsesShiftedPunctuation(t *testing.T) {
 	}
 }
 
+func TestUIDiffViewTextObjectSelectsMultilineBraces(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowContext, Code: "func main() {", Text: "func main() {"},
+		{Kind: diff.RowContext, Code: "\tcall()", Text: "\tcall()"},
+		{Kind: diff.RowContext, Code: "}", Text: "}"},
+	}
+	state := &uiDiffViewState{cursor: selectionPoint{Row: 1, Col: 2}}
+	open, close, ok := textObjectDelimiters('{')
+	if !ok {
+		t.Fatal("brace delimiter missing")
+	}
+	if !state.selectDelimitedTextObject(rows, textObjectAround, open, close) {
+		t.Fatal("around brace text object failed")
+	}
+	if got, want := state.selectionText(rows), "{\n\tcall()\n}"; got != want {
+		t.Fatalf("selection text = %q, want %q", got, want)
+	}
+}
+
+func TestUIDiffViewInnerTextObjectIncludesBoundaryNewlines(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowContext, Code: "foo{", Text: "foo{"},
+		{Kind: diff.RowContext, Code: "  foo,", Text: "  foo,"},
+		{Kind: diff.RowContext, Code: "}", Text: "}"},
+	}
+	state := &uiDiffViewState{cursor: selectionPoint{Row: 1, Col: 0}}
+	open, close, ok := textObjectDelimiters('{')
+	if !ok {
+		t.Fatal("brace delimiter missing")
+	}
+	if !state.selectDelimitedTextObject(rows, textObjectInner, open, close) {
+		t.Fatal("inner brace text object failed")
+	}
+	if got, want := state.selectionText(rows), "\n  foo,\n"; got != want {
+		t.Fatalf("selection text = %q, want %q", got, want)
+	}
+}
+
+func TestUIDiffViewTextObjectStopsAtHunkBoundary(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowContext, Code: "func main() {", Text: "func main() {"},
+		{Kind: diff.RowContext, Code: "\tcall()", Text: "\tcall()"},
+		{Kind: diff.RowContext, Code: "}", Text: "}"},
+		{Kind: diff.RowHunk, Text: "@@ -10 +10 @@"},
+		{Kind: diff.RowContext, Code: "other {}", Text: "other {}"},
+	}
+	state := &uiDiffViewState{cursor: selectionPoint{Row: 1, Col: 2}}
+	open, close, ok := textObjectDelimiters('{')
+	if !ok {
+		t.Fatal("brace delimiter missing")
+	}
+	if !state.selectDelimitedTextObject(rows, textObjectAround, open, close) {
+		t.Fatal("around brace text object failed")
+	}
+	if got, want := state.selectionText(rows), "{\n\tcall()\n}"; got != want {
+		t.Fatalf("selection text = %q, want %q", got, want)
+	}
+}
+
+func TestUIDiffViewTextObjectSkipsOppositeSideRows(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowContext, Code: "if ok {", Text: "if ok {", FileName: "main.go"},
+		{Kind: diff.RowDelete, Code: "old()", Text: "old()", FileName: "main.go"},
+		{Kind: diff.RowAdd, Code: "new()", Text: "new()", FileName: "main.go"},
+		{Kind: diff.RowContext, Code: "}", Text: "}", FileName: "main.go"},
+	}
+	state := &uiDiffViewState{cursor: selectionPoint{Row: 2, Col: 0}}
+	open, close, ok := textObjectDelimiters('{')
+	if !ok {
+		t.Fatal("brace delimiter missing")
+	}
+	if !state.selectDelimitedTextObject(rows, textObjectAround, open, close) {
+		t.Fatal("around brace text object failed")
+	}
+	if got, want := state.selectionText(rows), "{\nnew()\n}"; got != want {
+		t.Fatalf("selection text = %q, want %q", got, want)
+	}
+}
+
 func TestUIDiffViewSelectionTextSkipsCommitRows(t *testing.T) {
 	rows := []diff.Row{
 		{Kind: diff.RowContext, Code: "selectable", Text: "selectable"},
