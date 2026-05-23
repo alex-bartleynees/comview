@@ -94,6 +94,77 @@ func TestUIDiffViewStatusBarShowsFileAndStats(t *testing.T) {
 	}
 }
 
+func TestUIDiffViewFileFinderItemsIncludeDiffStatFiles(t *testing.T) {
+	rows, err := rowsForInput(` README.md        |  1 +
+ tui/app.go       | 12 ++++++------
+ 2 files changed, 7 insertions(+), 6 deletions(-)
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	items := uiDiffFileFinderItems(rows)
+	if len(items) != 2 {
+		t.Fatalf("items = %+v, want 2", items)
+	}
+	if items[1].Label != "tui/app.go" || items[1].Detail != "+6 -6" {
+		t.Fatalf("second item = %+v", items[1])
+	}
+}
+
+func TestUIDiffViewFileFinderJumpsToSelectedFile(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowFile, Text: "first.go"},
+		{Kind: diff.RowContext, Gutter: "1 1   ", Code: "first"},
+		{Kind: diff.RowFile, Text: "second.go"},
+		{Kind: diff.RowContext, Gutter: "1 1   ", Code: "second"},
+	}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	app.Pump(vui.Size{Width: 60, Height: 10})
+	app.Pump(vui.Size{Width: 60, Height: 10})
+
+	app.Send(vaxis.Key{Text: " ", Keycode: vaxis.KeySpace})
+	app.Send(vaxis.Key{Text: "e", Keycode: 'e'})
+	app.Pump(vui.Size{Width: 60, Height: 10})
+	p := vui.NewPainter(vui.Size{Width: 60, Height: 10})
+	app.Paint(p)
+	if _, _, ok := uiDiffFindText(p, "Find file…"); !ok {
+		t.Fatal("file finder did not open")
+	}
+
+	app.Send(vaxis.Key{Text: "second"})
+	app.Pump(vui.Size{Width: 60, Height: 10})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEnter})
+	app.Pump(vui.Size{Width: 60, Height: 10})
+	app.Pump(vui.Size{Width: 60, Height: 10})
+	p = vui.NewPainter(vui.Size{Width: 60, Height: 10})
+	app.Paint(p)
+	if got := uiDiffPainterText(p, 2); got != "second.go" {
+		t.Fatalf("selected row = %q, want second.go", got)
+	}
+	if got := uiDiffPainterText(p, 9); got != " NORMAL  2/2 second.go  +0 -0" {
+		t.Fatalf("status row = %q, want second file status", got)
+	}
+}
+
+func TestUIDiffViewFileFinderStatsAreColorized(t *testing.T) {
+	theme := uiDiffTestTheme()
+	app := vui.NewApp(vui.Provider[vui.Theme]{Value: theme, Child: uiDiffFileStatWidget("+1 -1", theme)})
+	app.Pump(vui.Size{Width: 10, Height: 1})
+	p := vui.NewPainter(vui.Size{Width: 10, Height: 1})
+	app.Paint(p)
+
+	if got := uiDiffPainterText(p, 0); got != "+1 -1" {
+		t.Fatalf("stat text = %q, want +1 -1", got)
+	}
+	if got := p.Cell(0, 0).Foreground; got != theme.Palette.Green.Tone500 {
+		t.Fatalf("add stat foreground = %v, want green tone500 %v", got, theme.Palette.Green.Tone500)
+	}
+	if got := p.Cell(3, 0).Foreground; got != theme.Palette.Red.Tone500 {
+		t.Fatalf("delete stat foreground = %v, want red tone500 %v", got, theme.Palette.Red.Tone500)
+	}
+}
+
 func TestUIDiffViewMovesCursorAndRevealsRows(t *testing.T) {
 	rows := make([]diff.Row, 20)
 	for i := range rows {
@@ -951,6 +1022,26 @@ func uiDiffPainterText(p *vui.Painter, row int) string {
 		text += p.Cell(col, row).Grapheme
 	}
 	return strings.TrimRight(text, " ")
+}
+
+func uiDiffFindText(p *vui.Painter, text string) (int, int, bool) {
+	size := p.Size()
+	for row := 0; row < size.Height; row++ {
+		if col, ok := uiDiffFindTextOnRow(p, row, text); ok {
+			return col, row, true
+		}
+	}
+	return 0, 0, false
+}
+
+func uiDiffFindTextOnRow(p *vui.Painter, row int, text string) (int, bool) {
+	size := p.Size()
+	line := ""
+	for col := 0; col < size.Width; col++ {
+		line += p.Cell(col, row).Grapheme
+	}
+	col := strings.Index(line, text)
+	return col, col >= 0
 }
 
 func TestUIDiffViewAltPTogglesProfileOverlay(t *testing.T) {

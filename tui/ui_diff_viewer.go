@@ -51,6 +51,8 @@ type uiDiffViewState struct {
 	cursorCol        int
 	pendingG         bool
 	pendingBracket   rune
+	pendingSpace     bool
+	fileFinder       bool
 	searchMode       bool
 	searchQuery      string
 	searchMatches    []searchMatch
@@ -84,7 +86,7 @@ func (s *uiDiffViewState) Build(ctx vui.BuildContext) vui.Widget {
 	if !w.ShowStatus {
 		return scrollView
 	}
-	return vui.Flex{
+	content := vui.Flex{
 		Axis:               vui.Vertical,
 		CrossAxisAlignment: vui.CrossAxisStretch,
 		Children: []vui.Widget{
@@ -92,6 +94,92 @@ func (s *uiDiffViewState) Build(ctx vui.BuildContext) vui.Widget {
 			s.buildStatusBar(w.Rows, theme),
 		},
 	}
+	entries := []vui.OverlayEntry{}
+	if s.fileFinder {
+		entries = append(entries, vui.OverlayEntry{Modal: true, Child: s.buildFileFinder(w.Rows, theme)})
+	}
+	return vui.Overlay{Child: content, Entries: entries}
+}
+
+type uiDiffFileItem struct {
+	Label  string
+	Detail string
+	Row    int
+}
+
+func (s *uiDiffViewState) buildFileFinder(rows []diff.Row, theme vui.Theme) vui.Widget {
+	return vui.FuzzySelect[uiDiffFileItem]{
+		Items:          uiDiffFileFinderItems(rows),
+		Item:           func(item uiDiffFileItem) vui.FuzzySelectItem { return uiDiffFileSelectItem(item, theme) },
+		Placeholder:    "Find file…",
+		EmptyText:      "No matching files",
+		MaxVisibleRows: 8,
+		RowStyle:       vui.FuzzySelectOneLine,
+		OnDismiss: func(vui.EventContext) {
+			s.fileFinder = false
+			s.SetState(func() {})
+		},
+		OnSelected: func(_ vui.EventContext, item uiDiffFileItem) {
+			s.fileFinder = false
+			s.setCursorRowAtStart(rows, item.Row)
+		},
+	}
+}
+
+func uiDiffFileSelectItem(item uiDiffFileItem, theme vui.Theme) vui.FuzzySelectItem {
+	return vui.FuzzySelectItem{
+		Title:       item.Label,
+		Description: item.Detail,
+		Aliases:     []string{item.Label},
+		Trailing:    uiDiffFileStatWidget(item.Detail, theme),
+	}
+}
+
+func uiDiffFileStatWidget(detail string, theme vui.Theme) vui.Widget {
+	if detail == "" {
+		return nil
+	}
+	parts := strings.Split(detail, " ")
+	if len(parts) != 2 {
+		return vui.Text{Value: detail, Style: vui.Style{Foreground: theme.MutedForeground}}
+	}
+	return vui.RichText{Spans: []vui.TextSpan{
+		{Text: parts[0], Style: vui.Style{Foreground: theme.Palette.Green.Tone500}},
+		{Text: " ", Style: vui.Style{Foreground: theme.MutedForeground}},
+		{Text: parts[1], Style: vui.Style{Foreground: theme.Palette.Red.Tone500}},
+	}, MaxLines: 1, Overflow: vui.TextOverflowEllipsis}
+}
+
+func uiDiffFileFinderItems(rows []diff.Row) []uiDiffFileItem {
+	items := make([]uiDiffFileItem, 0)
+	for rowIndex, row := range rows {
+		switch row.Kind {
+		case diff.RowFile:
+			items = append(items, uiDiffFileItem{Label: row.Text, Detail: uiDiffFileStatsFromRow(rows, rowIndex).String(), Row: rowIndex})
+		case diff.RowDiffStat:
+			if row.FileName != "" {
+				items = append(items, uiDiffFileItem{Label: row.FileName, Detail: statDetail(row.Stat), Row: rowIndex})
+			}
+		}
+	}
+	return items
+}
+
+func uiDiffFileStatsFromRow(rows []diff.Row, fileRow int) statusStats {
+	if fileRow < 0 || fileRow >= len(rows) || rows[fileRow].Kind != diff.RowFile {
+		return statusStats{}
+	}
+	fileEnd := len(rows)
+	for rowIndex := fileRow + 1; rowIndex < len(rows); rowIndex++ {
+		switch rows[rowIndex].Kind {
+		case diff.RowFile, diff.RowCommitHeader:
+			fileEnd = rowIndex
+		}
+		if fileEnd == rowIndex {
+			break
+		}
+	}
+	return rowsStats(rows[fileRow:fileEnd])
 }
 
 func (s *uiDiffViewState) buildStatusBar(rows []diff.Row, theme vui.Theme) vui.Widget {
@@ -408,6 +496,9 @@ func (s *uiDiffViewState) HandleEvent(ctx vui.EventContext, ev vui.Event) vui.Ev
 	if !ok || key.EventType == vaxis.EventRelease || pureModifierKey(key) {
 		return vui.EventIgnored
 	}
+	if s.fileFinder {
+		return vui.EventIgnored
+	}
 	w := s.Widget().(uiDiffView)
 	rows := w.Rows
 	if len(rows) == 0 {
@@ -446,6 +537,19 @@ func (s *uiDiffViewState) HandleEvent(ctx vui.EventContext, ev vui.Event) vui.Ev
 	case key.Matches('/'):
 		s.clearPendingKeys()
 		s.enterSearchMode()
+		return vui.EventHandled
+	case key.Matches(vaxis.KeySpace):
+		s.pendingG = false
+		s.pendingBracket = 0
+		s.pendingSpace = true
+		return vui.EventHandled
+	case key.Matches('e') && s.pendingSpace:
+		s.clearPendingKeys()
+		if len(uiDiffFileFinderItems(rows)) == 0 {
+			return vui.EventHandled
+		}
+		s.fileFinder = true
+		s.SetState(func() {})
 		return vui.EventHandled
 	case key.Matches('n'):
 		s.clearPendingKeys()
@@ -536,6 +640,7 @@ func (s *uiDiffViewState) HandleEvent(ctx vui.EventContext, ev vui.Event) vui.Ev
 func (s *uiDiffViewState) clearPendingKeys() {
 	s.pendingG = false
 	s.pendingBracket = 0
+	s.pendingSpace = false
 }
 
 func (s *uiDiffViewState) enterSearchMode() {
