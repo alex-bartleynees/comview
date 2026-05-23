@@ -834,6 +834,103 @@ func TestUIDiffViewCommandQBangQuitsWithUnsavedComments(t *testing.T) {
 	}
 }
 
+func TestUIDiffViewXDeletesNoteAtCursor(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowAdd, Gutter: "1 1 + ", Code: "line", Review: review.Anchor{Path: "main.go", Line: 12, Side: review.SideRight}}}
+	drafts := []review.CommentDraft{{Path: "main.go", Line: 12, Side: review.SideRight, Body: "comment"}}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, drafts, true)
+	size := vui.Size{Width: 60, Height: 6}
+	app.Pump(size)
+	app.Pump(size)
+
+	app.Send(vaxis.Key{Text: "x", Keycode: 'x'})
+	app.Pump(size)
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	if uiDiffPainterRowContaining(p, "comment") != -1 {
+		t.Fatal("deleted note is still rendered")
+	}
+	if got := uiDiffPainterText(p, size.Height-1); !strings.Contains(got, "Note deleted.") {
+		t.Fatalf("status message = %q, want note deleted", got)
+	}
+
+	path := filepath.Join(t.TempDir(), ".comview", "comments.json")
+	app = newUIDiffTestAppWithReviewFile(rows, drafts, path)
+	app.Pump(size)
+	app.Pump(size)
+	app.Send(vaxis.Key{Text: "x", Keycode: 'x'})
+	app.Send(vaxis.Key{Text: ":", Keycode: ':'})
+	app.Send(vaxis.Key{Text: "w"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEnter})
+	file, err := review.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(file.Comments) != 0 {
+		t.Fatalf("saved comments = %+v, want none", file.Comments)
+	}
+}
+
+func TestUIDiffViewDDDeletesNoteAtCursor(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowAdd, Gutter: "1 1 + ", Code: "line", Review: review.Anchor{Path: "main.go", Line: 12, Side: review.SideRight}}}
+	drafts := []review.CommentDraft{{Path: "main.go", Line: 12, Side: review.SideRight, Body: "comment"}}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, drafts, true)
+	size := vui.Size{Width: 60, Height: 6}
+	app.Pump(size)
+	app.Pump(size)
+
+	app.Send(vaxis.Key{Text: "d", Keycode: 'd'})
+	app.Pump(size)
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	if uiDiffPainterRowContaining(p, "comment") == -1 {
+		t.Fatal("first d deleted note")
+	}
+	app.Send(vaxis.Key{Text: "d", Keycode: 'd'})
+	app.Pump(size)
+	p = vui.NewPainter(size)
+	app.Paint(p)
+	if uiDiffPainterRowContaining(p, "comment") != -1 {
+		t.Fatal("dd did not delete note")
+	}
+}
+
+func TestUIDiffViewXDeletesNoteOverlappingSelection(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowAdd, Gutter: "1 1 + ", Code: "hello", Review: review.Anchor{Path: "main.go", Line: 12, Side: review.SideRight}}}
+	drafts := []review.CommentDraft{{Path: "main.go", Line: 12, Side: review.SideRight, StartColumn: intPtr(2), EndColumn: intPtr(4), Body: "inline"}}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, drafts, true)
+	size := vui.Size{Width: 60, Height: 6}
+	app.Pump(size)
+	app.Pump(size)
+
+	app.Send(vaxis.Key{Text: "v", Keycode: 'v'})
+	app.Send(vaxis.Key{Text: "x", Keycode: 'x'})
+	app.Pump(size)
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	if uiDiffPainterRowContaining(p, "inline") != -1 {
+		t.Fatal("selection-overlapping note is still rendered")
+	}
+	if got := uiDiffPainterText(p, size.Height-1); !strings.Contains(got, "Note deleted.") {
+		t.Fatalf("status message = %q, want note deleted", got)
+	}
+}
+
+func TestUIDiffViewXShowsMessageWithoutNote(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowAdd, Gutter: "1 1 + ", Code: "line", Review: review.Anchor{Path: "main.go", Line: 12, Side: review.SideRight}}}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	size := vui.Size{Width: 60, Height: 4}
+	app.Pump(size)
+	app.Pump(size)
+
+	app.Send(vaxis.Key{Text: "x", Keycode: 'x'})
+	app.Pump(size)
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	if got := uiDiffPainterText(p, size.Height-1); !strings.Contains(got, "No note.") {
+		t.Fatalf("status message = %q, want no note", got)
+	}
+}
+
 func TestUIDiffViewIncrementalSearchHighlightsMatches(t *testing.T) {
 	theme := uiDiffTestTheme()
 	rows := []diff.Row{
@@ -1773,6 +1870,83 @@ func TestUIDiffViewCommentEditorSubmitCreatesDraft(t *testing.T) {
 	}
 	if got := uiDiffPainterText(p, 5); !strings.HasPrefix(got, " NORMAL ") {
 		t.Fatalf("status bar = %q, want NORMAL", got)
+	}
+}
+
+func TestUIDiffViewVisualLineIOpensCommentEditor(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".comview", "comments.json")
+	rows := []diff.Row{
+		{Kind: diff.RowAdd, Gutter: "1 1 + ", Code: "first", Review: review.Anchor{Path: "main.go", Line: 1, Side: review.SideRight}},
+		{Kind: diff.RowAdd, Gutter: "2 2 + ", Code: "second", Review: review.Anchor{Path: "main.go", Line: 2, Side: review.SideRight}},
+	}
+	app := newUIDiffTestAppWithReviewFile(rows, nil, path)
+	size := vui.Size{Width: 80, Height: 8}
+	app.Pump(size)
+	app.Pump(size)
+
+	app.Send(vaxis.Key{Text: "V", Keycode: 'V'})
+	app.Send(vaxis.Key{Text: "j", Keycode: 'j'})
+	app.Send(vaxis.Key{Text: "I", Keycode: 'I'})
+	app.Pump(size)
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	if got := uiDiffPainterText(p, size.Height-1); !strings.HasPrefix(got, " INSERT ") {
+		t.Fatalf("status = %q, want insert", got)
+	}
+
+	app.Send(vaxis.Key{Text: "range"})
+	app.Send(vaxis.Key{Text: "s", Keycode: 's', Modifiers: vaxis.ModCtrl})
+	app.Send(vaxis.Key{Text: ":", Keycode: ':'})
+	app.Send(vaxis.Key{Text: "w"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEnter})
+	file, err := review.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(file.Comments) != 1 {
+		t.Fatalf("comments = %+v, want one", file.Comments)
+	}
+	draft := file.Comments[0]
+	if draft.Body != "range" || draft.StartLine != 1 || draft.Line != 2 || draft.StartColumn != nil || draft.EndColumn != nil {
+		t.Fatalf("draft = %+v, want line range 1-2 without columns", draft)
+	}
+}
+
+func TestUIDiffViewVisualIOpensColumnCommentEditor(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".comview", "comments.json")
+	rows := []diff.Row{{Kind: diff.RowAdd, Gutter: "1 1 + ", Code: "hello", Review: review.Anchor{Path: "main.go", Line: 12, Side: review.SideRight}}}
+	app := newUIDiffTestAppWithReviewFile(rows, nil, path)
+	size := vui.Size{Width: 80, Height: 7}
+	app.Pump(size)
+	app.Pump(size)
+
+	app.Send(vaxis.Key{Text: "l", Keycode: 'l'})
+	app.Send(vaxis.Key{Text: "v", Keycode: 'v'})
+	app.Send(vaxis.Key{Text: "l", Keycode: 'l'})
+	app.Send(vaxis.Key{Text: "l", Keycode: 'l'})
+	app.Send(vaxis.Key{Text: "I", Keycode: 'I'})
+	app.Pump(size)
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	if got := uiDiffPainterText(p, size.Height-1); !strings.HasPrefix(got, " INSERT ") {
+		t.Fatalf("status = %q, want insert", got)
+	}
+
+	app.Send(vaxis.Key{Text: "inline"})
+	app.Send(vaxis.Key{Text: "s", Keycode: 's', Modifiers: vaxis.ModCtrl})
+	app.Send(vaxis.Key{Text: ":", Keycode: ':'})
+	app.Send(vaxis.Key{Text: "w"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEnter})
+	file, err := review.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(file.Comments) != 1 {
+		t.Fatalf("comments = %+v, want one", file.Comments)
+	}
+	draft := file.Comments[0]
+	if draft.Body != "inline" || draft.Line != 12 || draft.StartLine != 0 || draft.StartColumn == nil || draft.EndColumn == nil || *draft.StartColumn != 2 || *draft.EndColumn != 3 {
+		t.Fatalf("draft = %+v, want columns 2-3", draft)
 	}
 }
 

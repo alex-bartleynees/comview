@@ -55,15 +55,18 @@ type uiDiffViewState struct {
 	pendingG                bool
 	pendingBracket          rune
 	pendingSpace            bool
+	pendingD                bool
 	fileFinder              bool
 	textObject              textObjectState
 	commentEditorActive     bool
 	commentEditorFocused    bool
 	commentEditorInsert     bool
 	commentEditorRow        int
+	commentEditorTarget     uiDiffCommentTarget
 	commentEditorBody       string
 	commentEditorBodies     map[int]string
 	reviewDrafts            []review.CommentDraft
+	deletedReviewDrafts     map[review.CommentDraft]bool
 	selectionAnchor         selectionPoint
 	selectionActive         bool
 	selectionLinewise       bool
@@ -95,6 +98,11 @@ type uiDiffViewState struct {
 	highlighter             *SyntaxHighlighter
 	highlightedTheme        vui.Theme
 	highlightedRows         map[int][]vaxis.Segment
+}
+
+type uiDiffCommentTarget struct {
+	Draft review.CommentDraft
+	Row   int
 }
 
 func (s *uiDiffViewState) Build(ctx vui.BuildContext) vui.Widget {
@@ -139,12 +147,20 @@ func (s *uiDiffViewState) Build(ctx vui.BuildContext) vui.Widget {
 }
 
 func (s *uiDiffViewState) allReviewDrafts(base []review.CommentDraft) []review.CommentDraft {
-	if len(s.reviewDrafts) == 0 {
-		return base
-	}
 	drafts := make([]review.CommentDraft, 0, len(base)+len(s.reviewDrafts))
-	drafts = append(drafts, base...)
-	drafts = append(drafts, s.reviewDrafts...)
+	for _, draft := range base {
+		if !s.deletedReviewDrafts[draft] {
+			drafts = append(drafts, draft)
+		}
+	}
+	if len(s.reviewDrafts) == 0 {
+		return drafts
+	}
+	for _, draft := range s.reviewDrafts {
+		if !s.deletedReviewDrafts[draft] {
+			drafts = append(drafts, draft)
+		}
+	}
 	return drafts
 }
 
@@ -606,6 +622,20 @@ func (s *uiDiffViewState) HandleEvent(ctx vui.EventContext, ev vui.Event) vui.Ev
 		s.clearPendingKeys()
 		s.enterCommandMode()
 		return vui.EventHandled
+	case key.Matches('x'):
+		s.clearPendingKeys()
+		s.deleteReviewDraftCommand(rows, w.ReviewDrafts)
+		return vui.EventHandled
+	case key.Matches('d') && s.pendingD:
+		s.clearPendingKeys()
+		s.deleteReviewDraftCommand(rows, w.ReviewDrafts)
+		return vui.EventHandled
+	case key.Matches('d'):
+		s.pendingG = false
+		s.pendingBracket = 0
+		s.pendingSpace = false
+		s.pendingD = true
+		return vui.EventHandled
 	case key.Matches('c') && s.pendingBracket == ']':
 		s.clearPendingKeys()
 		s.jumpChange(rows, 1)
@@ -637,6 +667,10 @@ func (s *uiDiffViewState) HandleEvent(ctx vui.EventContext, ev vui.Event) vui.Ev
 	case key.Matches('V'):
 		s.clearPendingKeys()
 		s.toggleSelection(true)
+		return vui.EventHandled
+	case key.Matches('I') && s.selectionActive:
+		s.clearPendingKeys()
+		s.openCommentEditor(rows)
 		return vui.EventHandled
 	case key.Matches('i') && s.selectionActive && !s.selectionLinewise:
 		s.clearPendingKeys()
@@ -1003,9 +1037,14 @@ func (s *uiDiffViewState) clearPendingKeys() {
 	s.pendingG = false
 	s.pendingBracket = 0
 	s.pendingSpace = false
+	s.pendingD = false
 }
 
 func (s *uiDiffViewState) openCommentEditor(rows []diff.Row) {
+	if s.selectionActive {
+		s.openCommentEditorForSelection(rows)
+		return
+	}
 	if s.cursor.Row < 0 || s.cursor.Row >= len(rows) || !reviewAnchorValid(rows[s.cursor.Row].Review) {
 		return
 	}
@@ -1021,9 +1060,116 @@ func (s *uiDiffViewState) openCommentEditor(rows []diff.Row) {
 	s.commentEditorFocused = true
 	s.commentEditorInsert = true
 	s.commentEditorRow = s.cursor.Row
+	s.commentEditorTarget = uiDiffCommentTarget{Draft: commentDraftForAnchor(rows[s.cursor.Row].Review), Row: s.cursor.Row}
 	s.commentEditorBody = s.commentEditorBodies[s.cursor.Row]
 	s.clearLineSelection()
 	s.SetState(func() {})
+}
+
+func (s *uiDiffViewState) openCommentEditorForSelection(rows []diff.Row) {
+	draft, ok := s.reviewDraftForSelection(rows)
+	if !ok {
+		return
+	}
+	s.storeCommentEditorBody()
+	s.commentEditorActive = true
+	s.commentEditorFocused = true
+	s.commentEditorInsert = true
+	s.commentEditorRow = s.reviewDraftTargetRow(rows, draft)
+	s.commentEditorTarget = uiDiffCommentTarget{Draft: draft, Row: s.commentEditorRow}
+	s.commentEditorBody = s.commentEditorBodies[s.commentEditorRow]
+	s.clearLineSelection()
+	s.SetState(func() {})
+}
+
+func (s *uiDiffViewState) reviewDraftForSelection(rows []diff.Row) (review.CommentDraft, bool) {
+	start := s.selectionAnchor
+	end := s.cursor
+	if selectionPointLess(end, start) {
+		start, end = end, start
+	}
+	startAnchor, ok := firstReviewAnchor(rows, start.Row, end.Row)
+	if !ok {
+		return review.CommentDraft{}, false
+	}
+	endAnchor, ok := lastReviewAnchor(rows, start.Row, end.Row)
+	if !ok {
+		return review.CommentDraft{}, false
+	}
+	if startAnchor.Path != endAnchor.Path || startAnchor.CommitID != endAnchor.CommitID || startAnchor.OriginalCommitID != endAnchor.OriginalCommitID {
+		return review.CommentDraft{}, false
+	}
+	draft := review.CommentDraft{
+		Path:             startAnchor.Path,
+		Line:             endAnchor.Line,
+		Side:             endAnchor.Side,
+		CommitID:         endAnchor.CommitID,
+		OriginalCommitID: endAnchor.OriginalCommitID,
+	}
+	if startAnchor.Line != endAnchor.Line || startAnchor.Side != endAnchor.Side {
+		draft.StartLine = startAnchor.Line
+		draft.StartSide = startAnchor.Side
+	}
+	if !s.selectionLinewise && start.Row == end.Row && startAnchor.Line == endAnchor.Line && startAnchor.Side == endAnchor.Side {
+		startColumn, endColumn, ok := uiDiffReviewColumnsForSelection(rows, start.Row, start.Col, end.Col)
+		if ok {
+			draft.StartColumn = &startColumn
+			draft.EndColumn = &endColumn
+		}
+	}
+	return draft, true
+}
+
+func (s *uiDiffViewState) reviewDraftTargetRow(rows []diff.Row, draft review.CommentDraft) int {
+	for rowIndex, row := range rows {
+		if reviewDraftEndsAt(draft, row.Review) {
+			return rowIndex
+		}
+	}
+	return s.cursor.Row
+}
+
+func firstReviewAnchor(rows []diff.Row, start int, end int) (review.Anchor, bool) {
+	if start < 0 {
+		start = 0
+	}
+	if end >= len(rows) {
+		end = len(rows) - 1
+	}
+	for row := start; row <= end; row++ {
+		if reviewAnchorValid(rows[row].Review) {
+			return rows[row].Review, true
+		}
+	}
+	return review.Anchor{}, false
+}
+
+func lastReviewAnchor(rows []diff.Row, start int, end int) (review.Anchor, bool) {
+	if start < 0 {
+		start = 0
+	}
+	if end >= len(rows) {
+		end = len(rows) - 1
+	}
+	for row := end; row >= start; row-- {
+		if reviewAnchorValid(rows[row].Review) {
+			return rows[row].Review, true
+		}
+	}
+	return review.Anchor{}, false
+}
+
+func uiDiffReviewColumnsForSelection(rows []diff.Row, rowIndex int, startCol int, endCol int) (int, int, bool) {
+	codeStart, codeEnd, ok := uiDiffCodeRange(rows, rowIndex)
+	if !ok {
+		return 0, 0, false
+	}
+	startCol = maxInt(startCol, codeStart)
+	endCol = minInt(endCol, codeEnd)
+	if startCol >= endCol {
+		return 0, 0, false
+	}
+	return startCol - codeStart + 1, endCol - codeStart, true
 }
 
 func (s *uiDiffViewState) handleCommentEditorKey(rows []diff.Row, key vaxis.Key) vui.EventResult {
@@ -1080,15 +1226,12 @@ func (s *uiDiffViewState) submitCommentEditor(rows []diff.Row) {
 	}
 	body := strings.TrimSpace(s.commentEditorBody)
 	if body != "" {
-		anchor := rows[s.commentEditorRow].Review
-		s.reviewDrafts = append(s.reviewDrafts, review.CommentDraft{
-			Path:             anchor.Path,
-			Line:             anchor.Line,
-			Side:             anchor.Side,
-			CommitID:         anchor.CommitID,
-			OriginalCommitID: anchor.OriginalCommitID,
-			Body:             s.commentEditorBody,
-		})
+		draft := s.commentEditorTarget.Draft
+		if draft.Path == "" {
+			draft = commentDraftForAnchor(rows[s.commentEditorRow].Review)
+		}
+		draft.Body = s.commentEditorBody
+		s.reviewDrafts = append(s.reviewDrafts, draft)
 		s.reviewDirty = true
 	}
 	delete(s.commentEditorBodies, s.commentEditorRow)
@@ -1204,11 +1347,93 @@ func (s *uiDiffViewState) clearExpiredStatusMessage(now time.Time) bool {
 	return true
 }
 
+func (s *uiDiffViewState) deleteReviewDraftCommand(rows []diff.Row, base []review.CommentDraft) {
+	if !s.deleteReviewDraftAtTarget(rows, base) {
+		s.setStatusMessage("No note.")
+		s.SetState(func() {})
+		return
+	}
+	s.SetState(func() {})
+}
+
+func (s *uiDiffViewState) deleteReviewDraftAtTarget(rows []diff.Row, base []review.CommentDraft) bool {
+	draft, ok := s.findReviewDraftAtTarget(rows, base)
+	if !ok {
+		return false
+	}
+	for index, local := range s.reviewDrafts {
+		if local == draft {
+			s.reviewDrafts = append(s.reviewDrafts[:index], s.reviewDrafts[index+1:]...)
+			s.reviewDirty = true
+			s.clearLineSelection()
+			s.setStatusMessage("Note deleted.")
+			return true
+		}
+	}
+	if s.deletedReviewDrafts == nil {
+		s.deletedReviewDrafts = make(map[review.CommentDraft]bool)
+	}
+	s.deletedReviewDrafts[draft] = true
+	s.reviewDirty = true
+	s.clearLineSelection()
+	s.setStatusMessage("Note deleted.")
+	return true
+}
+
+func (s *uiDiffViewState) findReviewDraftAtTarget(rows []diff.Row, base []review.CommentDraft) (review.CommentDraft, bool) {
+	drafts := s.allReviewDrafts(base)
+	if s.selectionActive {
+		start, end := orderedUIDiffInts(s.selectionAnchor.Row, s.cursor.Row)
+		if start < 0 {
+			start = 0
+		}
+		if end >= len(rows) {
+			end = len(rows) - 1
+		}
+		for row := start; row <= end; row++ {
+			if !selectableDiffRow(rows[row].Kind) {
+				continue
+			}
+			if draft, ok := findReviewDraftContainingAnchor(drafts, rows[row].Review); ok {
+				return draft, true
+			}
+		}
+		return review.CommentDraft{}, false
+	}
+	if s.cursor.Row < 0 || s.cursor.Row >= len(rows) {
+		return review.CommentDraft{}, false
+	}
+	return findReviewDraftContainingAnchor(drafts, rows[s.cursor.Row].Review)
+}
+
+func findReviewDraftContainingAnchor(drafts []review.CommentDraft, anchor review.Anchor) (review.CommentDraft, bool) {
+	if !reviewAnchorValid(anchor) {
+		return review.CommentDraft{}, false
+	}
+	for _, draft := range drafts {
+		if reviewDraftContains(draft, anchor) {
+			return draft, true
+		}
+	}
+	return review.CommentDraft{}, false
+}
+
+func commentDraftForAnchor(anchor review.Anchor) review.CommentDraft {
+	return review.CommentDraft{
+		Path:             anchor.Path,
+		Line:             anchor.Line,
+		Side:             anchor.Side,
+		CommitID:         anchor.CommitID,
+		OriginalCommitID: anchor.OriginalCommitID,
+	}
+}
+
 func (s *uiDiffViewState) closeCommentEditor() {
 	delete(s.commentEditorBodies, s.commentEditorRow)
 	s.commentEditorActive = false
 	s.commentEditorFocused = false
 	s.commentEditorInsert = false
+	s.commentEditorTarget = uiDiffCommentTarget{}
 	s.commentEditorBody = ""
 }
 
