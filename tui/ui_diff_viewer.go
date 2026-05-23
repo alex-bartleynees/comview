@@ -46,22 +46,25 @@ func (w uiDiffView) CreateState() vui.State {
 
 type uiDiffViewState struct {
 	vui.StateBase
-	list             vui.SliverListController
-	cursor           selectionPoint
-	cursorCol        int
-	pendingG         bool
-	pendingBracket   rune
-	pendingSpace     bool
-	fileFinder       bool
-	searchMode       bool
-	searchQuery      string
-	searchMatches    []searchMatch
-	searchIndex      int
-	searchStart      selectionPoint
-	syntaxTheme      vui.Theme
-	highlighter      *SyntaxHighlighter
-	highlightedTheme vui.Theme
-	highlightedRows  map[int][]vaxis.Segment
+	list              vui.SliverListController
+	cursor            selectionPoint
+	cursorCol         int
+	pendingG          bool
+	pendingBracket    rune
+	pendingSpace      bool
+	fileFinder        bool
+	selectionAnchor   selectionPoint
+	selectionActive   bool
+	selectionLinewise bool
+	searchMode        bool
+	searchQuery       string
+	searchMatches     []searchMatch
+	searchIndex       int
+	searchStart       selectionPoint
+	syntaxTheme       vui.Theme
+	highlighter       *SyntaxHighlighter
+	highlightedTheme  vui.Theme
+	highlightedRows   map[int][]vaxis.Segment
 }
 
 func (s *uiDiffViewState) Build(ctx vui.BuildContext) vui.Widget {
@@ -197,11 +200,21 @@ func (s *uiDiffViewState) statusSegments(rows []diff.Row, theme vui.Theme) []vax
 		separatorBackground = leftSegments[0].Style.Background
 	}
 	segments := []vaxis.Segment{
-		{Text: " NORMAL ", Style: uiDiffStatusModeStyle(theme)},
+		{Text: " " + s.statusModeLabel() + " ", Style: uiDiffStatusModeStyle(theme)},
 		{Text: "", Style: vaxis.Style{Foreground: theme.Primary, Background: separatorBackground}},
 	}
 	segments = append(segments, leftSegments...)
 	return segments
+}
+
+func (s *uiDiffViewState) statusModeLabel() string {
+	if !s.selectionActive {
+		return "NORMAL"
+	}
+	if s.selectionLinewise {
+		return "V-LINE"
+	}
+	return "VISUAL"
 }
 
 func (s *uiDiffViewState) statusLeftSegments(rows []diff.Row, theme vui.Theme) []vaxis.Segment {
@@ -538,6 +551,14 @@ func (s *uiDiffViewState) HandleEvent(ctx vui.EventContext, ev vui.Event) vui.Ev
 		s.clearPendingKeys()
 		s.enterSearchMode()
 		return vui.EventHandled
+	case key.Matches('v'):
+		s.clearPendingKeys()
+		s.toggleSelection(false)
+		return vui.EventHandled
+	case key.Matches('V'):
+		s.clearPendingKeys()
+		s.toggleSelection(true)
+		return vui.EventHandled
 	case key.Matches(vaxis.KeySpace):
 		s.pendingG = false
 		s.pendingBracket = 0
@@ -561,6 +582,11 @@ func (s *uiDiffViewState) HandleEvent(ctx vui.EventContext, ev vui.Event) vui.Ev
 		return vui.EventHandled
 	case key.Matches(vaxis.KeyEsc):
 		s.clearPendingKeys()
+		if s.selectionActive {
+			s.clearLineSelection()
+			s.SetState(func() {})
+			return vui.EventHandled
+		}
 		if s.searchQuery != "" || len(s.searchMatches) > 0 || s.searchIndex != -1 {
 			s.clearSearch()
 			s.SetState(func() {})
@@ -643,6 +669,62 @@ func (s *uiDiffViewState) clearPendingKeys() {
 	s.pendingSpace = false
 }
 
+func (s *uiDiffViewState) toggleSelection(linewise bool) {
+	if s.selectionActive {
+		s.clearLineSelection()
+	} else {
+		s.selectionActive = true
+		s.selectionLinewise = linewise
+		s.selectionAnchor = s.cursor
+	}
+	s.SetState(func() {})
+}
+
+func (s *uiDiffViewState) clearLineSelection() {
+	s.selectionActive = false
+	s.selectionLinewise = false
+	s.selectionAnchor = selectionPoint{}
+}
+
+func (s *uiDiffViewState) lineSelected(row int) bool {
+	if !s.selectionActive || !s.selectionLinewise {
+		return false
+	}
+	start, end := orderedUIDiffInts(s.selectionAnchor.Row, s.cursor.Row)
+	return row >= start && row <= end
+}
+
+func (s *uiDiffViewState) charSelectionRange(rowIndex int, row diff.Row) (int, int, bool) {
+	if !s.selectionActive || s.selectionLinewise {
+		return 0, 0, false
+	}
+	start := s.selectionAnchor
+	end := s.cursor
+	if selectionPointLess(end, start) {
+		start, end = end, start
+	}
+	if rowIndex < start.Row || rowIndex > end.Row {
+		return 0, 0, false
+	}
+	_, codeEnd, ok := uiDiffCodeRangeForRow(row)
+	if !ok {
+		return 0, 0, false
+	}
+	from, to := 0, maxInt(0, codeEnd-1)
+	if rowIndex == start.Row {
+		from = start.Col
+	}
+	if rowIndex == end.Row {
+		to = end.Col
+	}
+	from = clampUIDiffInt(from, 0, maxInt(0, codeEnd-1))
+	to = clampUIDiffInt(to, 0, maxInt(0, codeEnd-1))
+	if to < from {
+		return 0, 0, false
+	}
+	return from, to + 1, true
+}
+
 func (s *uiDiffViewState) enterSearchMode() {
 	s.searchMode = true
 	s.searchQuery = ""
@@ -701,23 +783,34 @@ func (s *uiDiffViewState) clearSearch() {
 func (s *uiDiffViewState) buildItem(rows []diff.Row, rowIndex int, theme vui.Theme, highlightedRows map[int][]vaxis.Segment, wrap bool) vui.Widget {
 	row := rows[rowIndex]
 	active := rowIndex == s.cursor.Row
+	selected := s.lineSelected(rowIndex)
 	if !uiDiffRowUsesGrid(row) {
-		return uiDiffFullWidthRow(row, rowIndex, active, theme, s.searchMatches, wrap)
+		return uiDiffFullWidthRow(row, rowIndex, uiDiffRowBackground(active, selected, theme), theme, s.searchMatches, wrap)
 	}
-	return s.buildRow(rows, row, rowIndex, active, s.cursor.Col, theme, highlightedRows, s.searchMatches, wrap)
+	return s.buildRow(rows, row, rowIndex, active, selected, s.cursor.Col, theme, highlightedRows, s.searchMatches, wrap)
 }
 
-func uiDiffFullWidthRow(row diff.Row, rowIndex int, active bool, theme vui.Theme, searchMatches []searchMatch, wrap bool) vui.Widget {
+func uiDiffRowBackground(active bool, selected bool, theme vui.Theme) vaxis.Color {
+	if selected {
+		return theme.Selection
+	}
+	if active {
+		return uiDiffCursorRowBackground(theme)
+	}
+	return 0
+}
+
+func uiDiffFullWidthRow(row diff.Row, rowIndex int, background vaxis.Color, theme vui.Theme, searchMatches []searchMatch, wrap bool) vui.Widget {
 	if segments, ok := uiDiffStructuredSegments(row, theme); ok {
-		if active {
-			segments = uiDiffApplyBackground(segments, theme.Selection)
+		if background != 0 {
+			segments = uiDiffApplyBackground(segments, background)
 		}
 		segments = uiDiffSearchSegments(rowIndex, row, segments, searchMatches, theme)
 		return vui.RichText{Spans: uiTextSpans(segments), SoftWrap: wrap}
 	}
 	style := uiStyleForDiffRow(row.Kind, theme)
-	if active {
-		style.Background = theme.Selection
+	if background != 0 {
+		style.Background = background
 	}
 	segments := []vaxis.Segment{{Text: uiDiffRowCode(row), Style: style}}
 	segments = uiDiffSearchSegments(rowIndex, row, segments, searchMatches, theme)
@@ -798,6 +891,10 @@ func uiDiffSearchSegments(rowIndex int, row diff.Row, segments []vaxis.Segment, 
 
 func uiDiffSearchHighlightStyle(theme vui.Theme) vaxis.Style {
 	return vaxis.Style{Foreground: theme.Background, Background: theme.Warning}
+}
+
+func uiDiffCursorRowBackground(theme vui.Theme) vaxis.Color {
+	return theme.SurfaceHovered
 }
 
 func uiDiffLineBackground(theme vui.Theme, scale vui.ColorScale) vaxis.Color {
@@ -890,10 +987,22 @@ func uiCommitTrailerValueStyle(theme vui.Theme) vaxis.Style {
 	return vaxis.Style{Foreground: theme.DisabledForeground, Background: theme.Background}
 }
 
-func (s *uiDiffViewState) buildRow(rows []diff.Row, row diff.Row, rowIndex int, active bool, cursorCol int, theme vui.Theme, highlightedRows map[int][]vaxis.Segment, searchMatches []searchMatch, wrap bool) vui.Widget {
+func (s *uiDiffViewState) buildRow(rows []diff.Row, row diff.Row, rowIndex int, active bool, selected bool, cursorCol int, theme vui.Theme, highlightedRows map[int][]vaxis.Segment, searchMatches []searchMatch, wrap bool) vui.Widget {
 	style := uiStyleForDiffRow(row.Kind, theme)
+	rowBackground := vaxis.Color(0)
 	if active {
-		style.Background = theme.Selection
+		rowBackground = uiDiffCursorRowBackground(theme)
+	}
+	fillBackground := style.Background
+	if rowBackground != 0 {
+		fillBackground = rowBackground
+	}
+	textBackground := rowBackground
+	if selected {
+		textBackground = theme.Selection
+	}
+	if textBackground != 0 {
+		style.Background = textBackground
 	}
 	code := uiDiffRowCode(row)
 	codeSegments := highlightedRows[rowIndex]
@@ -901,14 +1010,17 @@ func (s *uiDiffViewState) buildRow(rows []diff.Row, row diff.Row, rowIndex int, 
 		codeSegments = []vaxis.Segment{{Text: code, Style: style}}
 	}
 	codeSegments = uiDiffToneCodeSegments(row.Kind, codeSegments, theme)
-	if active {
-		codeSegments = uiDiffApplyBackground(codeSegments, theme.Selection)
+	if textBackground != 0 {
+		codeSegments = uiDiffApplyBackground(codeSegments, textBackground)
+	}
+	if start, end, ok := s.charSelectionRange(rowIndex, row); ok {
+		codeSegments = uiDiffApplySegmentBackgroundRange(codeSegments, start, end, theme.Selection, tabWidthForFile(row.FileName))
 	}
 	codeSegments = uiDiffSearchSegments(rowIndex, row, codeSegments, searchMatches, theme)
 	oldLine, newLine, marker := splitDiffGutter(row)
 	oldWidth, newWidth := uiDiffGutterWidths(rows)
-	gutterStyle := uiGutterStyle(row.Kind, active, theme)
-	lineNumberStyle := uiLineNumberGutterStyle(row.Kind, active, theme)
+	gutterStyle := uiGutterStyle(row.Kind, rowBackground, theme)
+	lineNumberStyle := uiLineNumberGutterStyle(row.Kind, rowBackground, theme)
 	return vui.Row(
 		uiDiffFixedCell(oldWidth, lineNumberStyle, vui.Text{Value: oldLine, Style: lineNumberStyle, Align: vui.TextAlignRight}),
 		uiDiffFixedCell(1, gutterStyle, vui.Text{Value: " ", Style: gutterStyle}),
@@ -916,7 +1028,7 @@ func (s *uiDiffViewState) buildRow(rows []diff.Row, row diff.Row, rowIndex int, 
 		uiDiffFixedCell(1, gutterStyle, vui.Text{Value: " ", Style: gutterStyle}),
 		uiDiffFixedCell(1, gutterStyle, vui.Text{Value: marker, Style: gutterStyle}),
 		uiDiffFixedCell(1, gutterStyle, vui.Text{Value: " ", Style: gutterStyle}),
-		vui.Expanded(uiDiffCodeWidget(row, code, codeSegments, active, cursorCol, theme, style.Background, wrap)),
+		vui.Expanded(uiDiffCodeWidget(row, code, codeSegments, active, s.selectionActive && !s.selectionLinewise, cursorCol, theme, fillBackground, wrap)),
 	)
 }
 
@@ -927,7 +1039,7 @@ func uiDiffFixedCell(width int, style vaxis.Style, child vui.Widget) vui.Widget 
 	)
 }
 
-func uiDiffCodeWidget(row diff.Row, code string, segments []vaxis.Segment, active bool, cursorCol int, theme vui.Theme, background vaxis.Color, wrap bool) vui.Widget {
+func uiDiffCodeWidget(row diff.Row, code string, segments []vaxis.Segment, active bool, cursorTabEnd bool, cursorCol int, theme vui.Theme, background vaxis.Color, wrap bool) vui.Widget {
 	if !active || code == "" {
 		return vui.DecoratedBox(
 			vui.Decoration{Style: vaxis.Style{Background: background}},
@@ -935,14 +1047,14 @@ func uiDiffCodeWidget(row diff.Row, code string, segments []vaxis.Segment, activ
 		)
 	}
 	cursorStyle := vaxis.Style{Foreground: uiDiffCursorForeground(theme), Background: uiDiffCursorBackground(theme)}
-	segments = uiDiffCursorSegments(segments, cursorCol, cursorStyle, tabWidthForFile(row.FileName))
+	segments = uiDiffCursorSegments(segments, cursorCol, cursorStyle, tabWidthForFile(row.FileName), cursorTabEnd)
 	return vui.DecoratedBox(
 		vui.Decoration{Style: vaxis.Style{Background: background}},
 		vui.RichText{Spans: uiTextSpans(segments), SoftWrap: wrap},
 	)
 }
 
-func uiDiffCursorSegments(segments []vaxis.Segment, cursorCol int, cursorStyle vaxis.Style, tabWidth int) []vaxis.Segment {
+func uiDiffCursorSegments(segments []vaxis.Segment, cursorCol int, cursorStyle vaxis.Style, tabWidth int, cursorTabEnd bool) []vaxis.Segment {
 	var styled []vaxis.Segment
 	col := 0
 	for _, segment := range segments {
@@ -953,14 +1065,42 @@ func uiDiffCursorSegments(segments []vaxis.Segment, cursorCol int, cursorStyle v
 			next := col + char.Width
 			if cursorCol >= col && cursorCol < next {
 				if grapheme == "\t" && char.Width > 1 {
-					styled = appendSegment(styled, vaxis.Segment{Text: " ", Style: cursorStyle})
-					styled = appendSegment(styled, vaxis.Segment{Text: strings.Repeat(" ", char.Width-1), Style: segment.Style})
+					if cursorTabEnd {
+						styled = appendSegment(styled, vaxis.Segment{Text: strings.Repeat(" ", char.Width-1), Style: segment.Style})
+						styled = appendSegment(styled, vaxis.Segment{Text: " ", Style: cursorStyle})
+					} else {
+						styled = appendSegment(styled, vaxis.Segment{Text: " ", Style: cursorStyle})
+						styled = appendSegment(styled, vaxis.Segment{Text: strings.Repeat(" ", char.Width-1), Style: segment.Style})
+					}
 				} else {
 					styled = appendSegment(styled, vaxis.Segment{Text: grapheme, Style: cursorStyle})
 				}
 			} else {
 				styled = appendSegment(styled, vaxis.Segment{Text: grapheme, Style: segment.Style})
 			}
+			col = next
+		}
+	}
+	return styled
+}
+
+func uiDiffApplySegmentBackgroundRange(segments []vaxis.Segment, start int, end int, background vaxis.Color, tabWidth int) []vaxis.Segment {
+	if end <= start {
+		return segments
+	}
+	var styled []vaxis.Segment
+	col := 0
+	for _, segment := range segments {
+		it := uucode.NewGraphemeIterator(segment.Text)
+		for g, ok := it.Next(); ok; g, ok = it.Next() {
+			grapheme := segment.Text[g.Start:g.End]
+			char := characterForGraphemeWithTabWidth(grapheme, tabWidth)
+			next := col + char.Width
+			style := segment.Style
+			if next > start && col < end {
+				style.Background = background
+			}
+			styled = appendSegment(styled, vaxis.Segment{Text: grapheme, Style: style})
 			col = next
 		}
 	}
@@ -1453,6 +1593,13 @@ func clampUIDiffInt(v int, lo int, hi int) int {
 	return v
 }
 
+func orderedUIDiffInts(a int, b int) (int, int) {
+	if a <= b {
+		return a, b
+	}
+	return b, a
+}
+
 func uiDiffCodeRange(rows []diff.Row, rowIndex int) (int, int, bool) {
 	if rowIndex < 0 || rowIndex >= len(rows) {
 		return 0, 0, false
@@ -1523,10 +1670,10 @@ func stringsFields(s string) []string {
 	return fields
 }
 
-func uiGutterStyle(kind diff.RowKind, active bool, theme vui.Theme) vaxis.Style {
+func uiGutterStyle(kind diff.RowKind, background vaxis.Color, theme vui.Theme) vaxis.Style {
 	style := vaxis.Style{Foreground: theme.MutedForeground, Background: theme.Background}
-	if active {
-		style.Background = theme.Selection
+	if background != 0 {
+		style.Background = background
 	}
 	switch kind {
 	case diff.RowAdd:
@@ -1537,8 +1684,8 @@ func uiGutterStyle(kind diff.RowKind, active bool, theme vui.Theme) vaxis.Style 
 	return style
 }
 
-func uiLineNumberGutterStyle(kind diff.RowKind, active bool, theme vui.Theme) vaxis.Style {
-	style := uiGutterStyle(kind, active, theme)
+func uiLineNumberGutterStyle(kind diff.RowKind, background vaxis.Color, theme vui.Theme) vaxis.Style {
+	style := uiGutterStyle(kind, background, theme)
 	if kind == diff.RowAdd {
 		style.Foreground = uiDiffAddedLineNumberForeground(theme)
 	}

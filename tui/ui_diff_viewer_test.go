@@ -179,7 +179,7 @@ func TestUIDiffViewMovesCursorAndRevealsRows(t *testing.T) {
 	app.Pump(vui.Size{Width: 20, Height: 4})
 	p := vui.NewPainter(vui.Size{Width: 20, Height: 4})
 	app.Paint(p)
-	if got := p.Cell(0, 3).Background; got != uiDiffTestTheme().Selection {
+	if got := p.Cell(0, 3).Background; got != uiDiffCursorRowBackground(uiDiffTestTheme()) {
 		t.Fatalf("bottom visible row background = %v, want active selection", got)
 	}
 
@@ -187,7 +187,7 @@ func TestUIDiffViewMovesCursorAndRevealsRows(t *testing.T) {
 	app.Pump(vui.Size{Width: 20, Height: 4})
 	p = vui.NewPainter(vui.Size{Width: 20, Height: 4})
 	app.Paint(p)
-	if got := p.Cell(0, 2).Background; got != uiDiffTestTheme().Selection {
+	if got := p.Cell(0, 2).Background; got != uiDiffCursorRowBackground(uiDiffTestTheme()) {
 		t.Fatalf("row above bottom background = %v, want active selection", got)
 	}
 }
@@ -206,7 +206,7 @@ func TestUIDiffViewSkipsBlankRowsWhenMovingCursor(t *testing.T) {
 	app.Pump(vui.Size{Width: 20, Height: 3})
 	p := vui.NewPainter(vui.Size{Width: 20, Height: 3})
 	app.Paint(p)
-	if got := uiDiffHighlightedScreenRow(p, uiDiffTestTheme().Selection); got != 2 {
+	if got := uiDiffHighlightedScreenRow(p, uiDiffCursorRowBackground(uiDiffTestTheme())); got != 2 {
 		t.Fatalf("highlight row after j = %d, want 2", got)
 	}
 
@@ -214,7 +214,7 @@ func TestUIDiffViewSkipsBlankRowsWhenMovingCursor(t *testing.T) {
 	app.Pump(vui.Size{Width: 20, Height: 3})
 	p = vui.NewPainter(vui.Size{Width: 20, Height: 3})
 	app.Paint(p)
-	if got := uiDiffHighlightedScreenRow(p, uiDiffTestTheme().Selection); got != 0 {
+	if got := uiDiffHighlightedScreenRow(p, uiDiffCursorRowBackground(uiDiffTestTheme())); got != 0 {
 		t.Fatalf("highlight row after k = %d, want 0", got)
 	}
 }
@@ -234,7 +234,7 @@ func TestUIDiffViewKeepsCursorVisibleWhenMovingDown(t *testing.T) {
 		app.Pump(vui.Size{Width: 20, Height: 3})
 		p := vui.NewPainter(vui.Size{Width: 20, Height: 3})
 		app.Paint(p)
-		if got := uiDiffHighlightedScreenRow(p, uiDiffTestTheme().Selection); got == -1 {
+		if got := uiDiffHighlightedScreenRow(p, uiDiffCursorRowBackground(uiDiffTestTheme())); got == -1 {
 			t.Fatalf("cursor not visible after %d j presses", i+1)
 		}
 	}
@@ -252,7 +252,7 @@ func TestUIDiffViewActiveCodeRowHighlightsToRightEdge(t *testing.T) {
 		if col == 6 {
 			continue
 		}
-		if got := p.Cell(col, 0).Background; got != uiDiffTestTheme().Selection {
+		if got := p.Cell(col, 0).Background; got != uiDiffCursorRowBackground(uiDiffTestTheme()) {
 			t.Fatalf("active row background at col %d = %v, want selection", col, got)
 		}
 	}
@@ -270,7 +270,7 @@ func TestUIDiffViewChangedRowsHighlightToRightEdge(t *testing.T) {
 
 	p := vui.NewPainter(vui.Size{Width: 20, Height: 2})
 	app.Paint(p)
-	if got := p.Cell(19, 0).Background; got != theme.Selection {
+	if got := p.Cell(19, 0).Background; got != uiDiffCursorRowBackground(theme) {
 		t.Fatalf("active delete row right edge background = %v, want selection", got)
 	}
 	if got := p.Cell(19, 1).Background; got != theme.Surface {
@@ -361,10 +361,10 @@ func TestUIDiffViewDerivesDiffColorsFromUITheme(t *testing.T) {
 	if style := uiStyleForDiffRow(diff.RowContext, theme); style.Foreground != theme.MutedForeground {
 		t.Fatalf("context foreground = %v, want muted %v", style.Foreground, theme.MutedForeground)
 	}
-	if style := uiGutterStyle(diff.RowContext, true, theme); style.Background != theme.Selection {
-		t.Fatalf("active gutter background = %v, want %v", style.Background, theme.Selection)
+	if style := uiGutterStyle(diff.RowContext, uiDiffCursorRowBackground(theme), theme); style.Background != uiDiffCursorRowBackground(theme) {
+		t.Fatalf("active gutter background = %v, want %v", style.Background, uiDiffCursorRowBackground(theme))
 	}
-	if style := uiGutterStyle(diff.RowContext, false, theme); style.Background != theme.Background {
+	if style := uiGutterStyle(diff.RowContext, 0, theme); style.Background != theme.Background {
 		t.Fatalf("gutter background = %v, want %v", style.Background, theme.Background)
 	}
 	if style := uiStyleForDiffRow(diff.RowAdd, theme); style.Foreground != theme.Success {
@@ -397,8 +397,8 @@ func TestUIDiffViewHighlightsCodeWithChroma(t *testing.T) {
 	if cell.Foreground != theme.Palette.Magenta.Tone500 {
 		t.Fatalf("keyword foreground = %v, want magenta tone500 %v", cell.Foreground, theme.Palette.Magenta.Tone500)
 	}
-	if cell.Background != theme.Selection {
-		t.Fatalf("keyword background = %v, want selection %v", cell.Background, theme.Selection)
+	if cell.Background != uiDiffCursorRowBackground(theme) {
+		t.Fatalf("keyword background = %v, want selection %v", cell.Background, uiDiffCursorRowBackground(theme))
 	}
 }
 
@@ -445,20 +445,20 @@ func TestUIDiffViewCursorUsesThemeForeground(t *testing.T) {
 
 func TestUIDiffViewChangedGutterUsesBrighterTone(t *testing.T) {
 	theme := uiDiffTestTheme()
-	if got := uiGutterStyle(diff.RowAdd, false, theme).Foreground; got != theme.Palette.Green.Tone400 {
+	if got := uiGutterStyle(diff.RowAdd, 0, theme).Foreground; got != theme.Palette.Green.Tone400 {
 		t.Fatalf("add marker foreground = %v, want green tone400 %v", got, theme.Palette.Green.Tone400)
 	}
-	if got := uiGutterStyle(diff.RowDelete, false, theme).Foreground; got != theme.Palette.Red.Tone400 {
+	if got := uiGutterStyle(diff.RowDelete, 0, theme).Foreground; got != theme.Palette.Red.Tone400 {
 		t.Fatalf("delete marker foreground = %v, want red tone400 %v", got, theme.Palette.Red.Tone400)
 	}
 }
 
 func TestUIDiffViewAddLineNumberGutterUsesSoftGreenForeground(t *testing.T) {
 	theme := uiDiffTestTheme()
-	if got := uiLineNumberGutterStyle(diff.RowAdd, false, theme).Foreground; got != theme.Palette.Green.Tone300 {
+	if got := uiLineNumberGutterStyle(diff.RowAdd, 0, theme).Foreground; got != theme.Palette.Green.Tone300 {
 		t.Fatalf("add line number foreground = %v, want soft green %v", got, theme.Palette.Green.Tone300)
 	}
-	if got := uiGutterStyle(diff.RowAdd, false, theme).Foreground; got != theme.Palette.Green.Tone400 {
+	if got := uiGutterStyle(diff.RowAdd, 0, theme).Foreground; got != theme.Palette.Green.Tone400 {
 		t.Fatalf("add marker foreground = %v, want green tone400 %v", got, theme.Palette.Green.Tone400)
 	}
 }
@@ -534,7 +534,7 @@ func TestUIDiffViewVimNavigationKeys(t *testing.T) {
 
 			p := vui.NewPainter(vui.Size{Width: 20, Height: 4})
 			app.Paint(p)
-			if got := uiDiffHighlightedScreenRow(p, uiDiffTestTheme().Selection); got != tt.wantHighlight {
+			if got := uiDiffHighlightedScreenRow(p, uiDiffCursorRowBackground(uiDiffTestTheme())); got != tt.wantHighlight {
 				t.Fatalf("highlight row = %d, want %d", got, tt.wantHighlight)
 			}
 		})
@@ -559,7 +559,7 @@ func TestUIDiffViewBracketCJumpsBetweenChanges(t *testing.T) {
 	app.Pump(vui.Size{Width: 24, Height: 5})
 	p := vui.NewPainter(vui.Size{Width: 24, Height: 5})
 	app.Paint(p)
-	if got := uiDiffHighlightedScreenRow(p, uiDiffTestTheme().Selection); got != 1 {
+	if got := uiDiffHighlightedScreenRow(p, uiDiffCursorRowBackground(uiDiffTestTheme())); got != 1 {
 		t.Fatalf("]c highlight row = %d, want 1", got)
 	}
 
@@ -568,7 +568,7 @@ func TestUIDiffViewBracketCJumpsBetweenChanges(t *testing.T) {
 	app.Pump(vui.Size{Width: 24, Height: 5})
 	p = vui.NewPainter(vui.Size{Width: 24, Height: 5})
 	app.Paint(p)
-	if got := uiDiffHighlightedScreenRow(p, uiDiffTestTheme().Selection); got != 4 {
+	if got := uiDiffHighlightedScreenRow(p, uiDiffCursorRowBackground(uiDiffTestTheme())); got != 4 {
 		t.Fatalf("second ]c highlight row = %d, want 4", got)
 	}
 
@@ -577,7 +577,7 @@ func TestUIDiffViewBracketCJumpsBetweenChanges(t *testing.T) {
 	app.Pump(vui.Size{Width: 24, Height: 5})
 	p = vui.NewPainter(vui.Size{Width: 24, Height: 5})
 	app.Paint(p)
-	if got := uiDiffHighlightedScreenRow(p, uiDiffTestTheme().Selection); got != 1 {
+	if got := uiDiffHighlightedScreenRow(p, uiDiffCursorRowBackground(uiDiffTestTheme())); got != 1 {
 		t.Fatalf("[c highlight row = %d, want 1", got)
 	}
 }
@@ -602,7 +602,7 @@ func TestUIDiffViewBracketNJumpsBetweenNotes(t *testing.T) {
 	app.Pump(vui.Size{Width: 24, Height: 3})
 	p := vui.NewPainter(vui.Size{Width: 24, Height: 3})
 	app.Paint(p)
-	if got := uiDiffHighlightedScreenRow(p, uiDiffTestTheme().Selection); got != 1 {
+	if got := uiDiffHighlightedScreenRow(p, uiDiffCursorRowBackground(uiDiffTestTheme())); got != 1 {
 		t.Fatalf("]n highlight row = %d, want 1", got)
 	}
 
@@ -611,7 +611,7 @@ func TestUIDiffViewBracketNJumpsBetweenNotes(t *testing.T) {
 	app.Pump(vui.Size{Width: 24, Height: 3})
 	p = vui.NewPainter(vui.Size{Width: 24, Height: 3})
 	app.Paint(p)
-	if got := uiDiffHighlightedScreenRow(p, uiDiffTestTheme().Selection); got != 2 {
+	if got := uiDiffHighlightedScreenRow(p, uiDiffCursorRowBackground(uiDiffTestTheme())); got != 2 {
 		t.Fatalf("second ]n highlight row = %d, want 2", got)
 	}
 
@@ -620,7 +620,7 @@ func TestUIDiffViewBracketNJumpsBetweenNotes(t *testing.T) {
 	app.Pump(vui.Size{Width: 24, Height: 3})
 	p = vui.NewPainter(vui.Size{Width: 24, Height: 3})
 	app.Paint(p)
-	if got := uiDiffHighlightedScreenRow(p, uiDiffTestTheme().Selection); got != 1 {
+	if got := uiDiffHighlightedScreenRow(p, uiDiffCursorRowBackground(uiDiffTestTheme())); got != 1 {
 		t.Fatalf("[n highlight row = %d, want 1", got)
 	}
 }
@@ -643,7 +643,7 @@ func TestUIDiffViewSlashSearchMovesToMatch(t *testing.T) {
 	if cell := p.Cell(6, 1); cell.Grapheme != "n" || cell.Background != uiDiffCursorBackground(uiDiffTestTheme()) {
 		t.Fatalf("search cursor = %q/%v, want n/cursor", cell.Grapheme, cell.Background)
 	}
-	if got := uiDiffHighlightedScreenRow(p, uiDiffTestTheme().Selection); got != 1 {
+	if got := uiDiffHighlightedScreenRow(p, uiDiffCursorRowBackground(uiDiffTestTheme())); got != 1 {
 		t.Fatalf("search highlight row = %d, want 1", got)
 	}
 }
@@ -716,7 +716,7 @@ func TestUIDiffViewSearchesStructuredRows(t *testing.T) {
 	app.Pump(vui.Size{Width: 24, Height: 3})
 	p := vui.NewPainter(vui.Size{Width: 24, Height: 3})
 	app.Paint(p)
-	if got := uiDiffHighlightedScreenRow(p, uiDiffTestTheme().Selection); got != 1 {
+	if got := uiDiffHighlightedScreenRow(p, uiDiffCursorRowBackground(uiDiffTestTheme())); got != 1 {
 		t.Fatalf("structured hunk search highlight row = %d, want 1", got)
 	}
 
@@ -726,7 +726,7 @@ func TestUIDiffViewSearchesStructuredRows(t *testing.T) {
 	app.Pump(vui.Size{Width: 24, Height: 3})
 	p = vui.NewPainter(vui.Size{Width: 24, Height: 3})
 	app.Paint(p)
-	if got := uiDiffHighlightedScreenRow(p, uiDiffTestTheme().Selection); got != 2 {
+	if got := uiDiffHighlightedScreenRow(p, uiDiffCursorRowBackground(uiDiffTestTheme())); got != 2 {
 		t.Fatalf("structured commit search highlight row = %d, want 2", got)
 	}
 }
@@ -778,7 +778,7 @@ func TestUIDiffViewSearchNextPrevious(t *testing.T) {
 	app.Pump(vui.Size{Width: 20, Height: 2})
 	p := vui.NewPainter(vui.Size{Width: 20, Height: 2})
 	app.Paint(p)
-	if got := uiDiffHighlightedScreenRow(p, uiDiffTestTheme().Selection); got != 1 {
+	if got := uiDiffHighlightedScreenRow(p, uiDiffCursorRowBackground(uiDiffTestTheme())); got != 1 {
 		t.Fatalf("n highlight row = %d, want 1", got)
 	}
 
@@ -786,7 +786,7 @@ func TestUIDiffViewSearchNextPrevious(t *testing.T) {
 	app.Pump(vui.Size{Width: 20, Height: 2})
 	p = vui.NewPainter(vui.Size{Width: 20, Height: 2})
 	app.Paint(p)
-	if got := uiDiffHighlightedScreenRow(p, uiDiffTestTheme().Selection); got != 0 {
+	if got := uiDiffHighlightedScreenRow(p, uiDiffCursorRowBackground(uiDiffTestTheme())); got != 0 {
 		t.Fatalf("N highlight row = %d, want 0", got)
 	}
 }
@@ -805,7 +805,7 @@ func TestUIDiffViewEscapeClearsSearch(t *testing.T) {
 	app.Pump(vui.Size{Width: 20, Height: 1})
 	p := vui.NewPainter(vui.Size{Width: 20, Height: 1})
 	app.Paint(p)
-	if cell := p.Cell(0, 0); cell.Background != uiDiffTestTheme().Selection {
+	if cell := p.Cell(0, 0); cell.Background != uiDiffCursorRowBackground(uiDiffTestTheme()) {
 		t.Fatalf("cursor moved after escaped search: first cell bg = %v, want selection", cell.Background)
 	}
 }
@@ -831,6 +831,219 @@ func TestUIDiffViewEscapeClearsAcceptedSearch(t *testing.T) {
 	app.Paint(p)
 	if got := p.Cell(1, 0).Background; got == uiDiffSearchHighlightStyle(uiDiffTestTheme()).Background {
 		t.Fatal("search highlight still visible after escape")
+	}
+}
+
+func TestUIDiffViewLinewiseSelectionExtendsWithCursor(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowContext, Gutter: "1 1   ", Code: "one"},
+		{Kind: diff.RowContext, Gutter: "2 2   ", Code: "two"},
+		{Kind: diff.RowContext, Gutter: "3 3   ", Code: "three"},
+	}
+	app := newUIDiffTestApp(rows, false)
+	app.Pump(vui.Size{Width: 30, Height: 3})
+	app.Pump(vui.Size{Width: 30, Height: 3})
+
+	app.Send(vaxis.Key{Text: "V", Keycode: 'V'})
+	app.Send(vaxis.Key{Text: "j", Keycode: 'j'})
+	app.Pump(vui.Size{Width: 30, Height: 3})
+	p := vui.NewPainter(vui.Size{Width: 30, Height: 3})
+	app.Paint(p)
+	theme := uiDiffTestTheme()
+	if got := p.Cell(6, 0).Background; got != theme.Selection {
+		t.Fatalf("anchor text background = %v, want selection", got)
+	}
+	if got := p.Cell(7, 1).Background; got != theme.Selection {
+		t.Fatalf("cursor text background = %v, want selection", got)
+	}
+	if got := p.Cell(29, 0).Background; got == theme.Selection {
+		t.Fatal("anchor row selection extends past text")
+	}
+	if got := p.Cell(29, 1).Background; got == theme.Selection {
+		t.Fatal("cursor row selection extends past text")
+	}
+	if got := p.Cell(29, 2).Background; got == theme.Selection {
+		t.Fatal("unselected row has selection background")
+	}
+}
+
+func TestUIDiffViewVisualLineStatusMode(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowContext, Gutter: "1 1   ", Code: "one"}}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	app.Pump(vui.Size{Width: 40, Height: 3})
+	app.Pump(vui.Size{Width: 40, Height: 3})
+
+	app.Send(vaxis.Key{Text: "V", Keycode: 'V'})
+	app.Pump(vui.Size{Width: 40, Height: 3})
+	p := vui.NewPainter(vui.Size{Width: 40, Height: 3})
+	app.Paint(p)
+	if got := uiDiffPainterText(p, 2); !strings.HasPrefix(got, " V-LINE ") {
+		t.Fatalf("status bar = %q, want V-LINE mode", got)
+	}
+}
+
+func TestUIDiffViewVisualCharDoesNotEnterLinewiseSelection(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowContext, Gutter: "1 1   ", Code: "one"},
+		{Kind: diff.RowContext, Gutter: "2 2   ", Code: "two"},
+	}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	app.Pump(vui.Size{Width: 30, Height: 4})
+	app.Pump(vui.Size{Width: 30, Height: 4})
+
+	app.Send(vaxis.Key{Text: "v", Keycode: 'v'})
+	app.Send(vaxis.Key{Text: "j", Keycode: 'j'})
+	app.Pump(vui.Size{Width: 30, Height: 4})
+	p := vui.NewPainter(vui.Size{Width: 30, Height: 4})
+	app.Paint(p)
+	theme := uiDiffTestTheme()
+	if got := p.Cell(29, 0).Background; got == theme.Selection {
+		t.Fatal("visual character mode selected the full anchor row")
+	}
+	if got := uiDiffPainterText(p, 3); !strings.HasPrefix(got, " VISUAL ") {
+		t.Fatalf("status bar = %q, want VISUAL mode", got)
+	}
+}
+
+func TestUIDiffViewVisualCharSelectsSameLineRange(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowContext, Gutter: "1 1   ", Code: "abcdef"}}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	app.Pump(vui.Size{Width: 20, Height: 3})
+	app.Pump(vui.Size{Width: 20, Height: 3})
+
+	app.Send(vaxis.Key{Text: "l", Keycode: 'l'})
+	app.Send(vaxis.Key{Text: "v", Keycode: 'v'})
+	app.Send(vaxis.Key{Text: "l", Keycode: 'l'})
+	app.Send(vaxis.Key{Text: "l", Keycode: 'l'})
+	app.Pump(vui.Size{Width: 20, Height: 3})
+	p := vui.NewPainter(vui.Size{Width: 20, Height: 3})
+	app.Paint(p)
+	theme := uiDiffTestTheme()
+	for col := 7; col <= 9; col++ {
+		if col == 9 {
+			continue
+		}
+		if got := p.Cell(col, 0).Background; got != theme.Selection {
+			t.Fatalf("selected char col %d background = %v, want selection", col, got)
+		}
+	}
+	if got := p.Cell(9, 0).Background; got != uiDiffCursorBackground(theme) {
+		t.Fatalf("selected cursor background = %v, want cursor", got)
+	}
+	if got := p.Cell(6, 0).Background; got == theme.Selection {
+		t.Fatal("character before selection is highlighted")
+	}
+	if got := p.Cell(10, 0).Background; got == theme.Selection {
+		t.Fatal("character after selection is highlighted")
+	}
+}
+
+func TestUIDiffViewVisualCharStillRendersCursor(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowContext, Gutter: "1 1   ", Code: "abcdef"}}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	app.Pump(vui.Size{Width: 20, Height: 3})
+	app.Pump(vui.Size{Width: 20, Height: 3})
+
+	app.Send(vaxis.Key{Text: "v", Keycode: 'v'})
+	app.Send(vaxis.Key{Text: "l", Keycode: 'l'})
+	app.Pump(vui.Size{Width: 20, Height: 3})
+	p := vui.NewPainter(vui.Size{Width: 20, Height: 3})
+	app.Paint(p)
+	cell := p.Cell(7, 0)
+	if cell.Grapheme != "b" {
+		t.Fatalf("cursor grapheme = %q, want b", cell.Grapheme)
+	}
+	if cell.Background != uiDiffCursorBackground(uiDiffTestTheme()) {
+		t.Fatalf("cursor background = %v, want cursor", cell.Background)
+	}
+	if cell.Foreground != uiDiffCursorForeground(uiDiffTestTheme()) {
+		t.Fatalf("cursor foreground = %v, want cursor contrast", cell.Foreground)
+	}
+}
+
+func TestUIDiffViewVisualCharTabCursorUsesLastTabCell(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowContext, Gutter: "1 1   ", Code: "a\tb"}}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	app.Pump(vui.Size{Width: 20, Height: 3})
+	app.Pump(vui.Size{Width: 20, Height: 3})
+
+	app.Send(vaxis.Key{Text: "l", Keycode: 'l'})
+	app.Send(vaxis.Key{Text: "v", Keycode: 'v'})
+	app.Pump(vui.Size{Width: 20, Height: 3})
+	p := vui.NewPainter(vui.Size{Width: 20, Height: 3})
+	app.Paint(p)
+	for col := 7; col < 14; col++ {
+		if got := p.Cell(col, 0).Background; got == uiDiffCursorBackground(uiDiffTestTheme()) {
+			t.Fatalf("tab cursor rendered too early at col %d", col)
+		}
+	}
+	if got := p.Cell(14, 0).Background; got != uiDiffCursorBackground(uiDiffTestTheme()) {
+		t.Fatalf("tab cursor background = %v, want cursor on last tab cell", got)
+	}
+}
+
+func TestUIDiffViewVisualCharSelectsPartialCrossLineRange(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowContext, Gutter: "1 1   ", Code: "abcd"},
+		{Kind: diff.RowContext, Gutter: "2 2   ", Code: "wxyz"},
+	}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	app.Pump(vui.Size{Width: 20, Height: 4})
+	app.Pump(vui.Size{Width: 20, Height: 4})
+
+	app.Send(vaxis.Key{Text: "l", Keycode: 'l'})
+	app.Send(vaxis.Key{Text: "v", Keycode: 'v'})
+	app.Send(vaxis.Key{Text: "j", Keycode: 'j'})
+	app.Send(vaxis.Key{Text: "l", Keycode: 'l'})
+	app.Pump(vui.Size{Width: 20, Height: 4})
+	p := vui.NewPainter(vui.Size{Width: 20, Height: 4})
+	app.Paint(p)
+	theme := uiDiffTestTheme()
+	for col := 7; col <= 9; col++ {
+		if got := p.Cell(col, 0).Background; got != theme.Selection {
+			t.Fatalf("first row selected col %d background = %v, want selection", col, got)
+		}
+	}
+	if got := p.Cell(6, 0).Background; got == theme.Selection {
+		t.Fatal("first row character before selection is highlighted")
+	}
+	for col := 6; col <= 8; col++ {
+		if col == 8 {
+			continue
+		}
+		if got := p.Cell(col, 1).Background; got != theme.Selection {
+			t.Fatalf("second row selected col %d background = %v, want selection", col, got)
+		}
+	}
+	if got := p.Cell(8, 1).Background; got != uiDiffCursorBackground(theme) {
+		t.Fatalf("second row cursor background = %v, want cursor", got)
+	}
+	if got := p.Cell(9, 1).Background; got == theme.Selection {
+		t.Fatal("second row character after selection is highlighted")
+	}
+}
+
+func TestUIDiffViewEscapeClearsLinewiseSelection(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowContext, Gutter: "1 1   ", Code: "one"},
+		{Kind: diff.RowContext, Gutter: "2 2   ", Code: "two"},
+	}
+	app := newUIDiffTestApp(rows, false)
+	app.Pump(vui.Size{Width: 30, Height: 2})
+	app.Pump(vui.Size{Width: 30, Height: 2})
+
+	app.Send(vaxis.Key{Text: "V", Keycode: 'V'})
+	app.Send(vaxis.Key{Text: "j", Keycode: 'j'})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEsc})
+	app.Pump(vui.Size{Width: 30, Height: 2})
+	p := vui.NewPainter(vui.Size{Width: 30, Height: 2})
+	app.Paint(p)
+	theme := uiDiffTestTheme()
+	if got := p.Cell(29, 0).Background; got == theme.Selection {
+		t.Fatal("anchor row still selected after escape")
+	}
+	if got := p.Cell(29, 1).Background; got != uiDiffCursorRowBackground(theme) {
+		t.Fatalf("cursor row background = %v, want selection", got)
 	}
 }
 
@@ -908,7 +1121,7 @@ func TestUIDiffViewHorizontalMovementUsesTabStops(t *testing.T) {
 		t.Fatalf("tab cursor first cell background = %v, want cursor", got)
 	}
 	for col := 8; col < 15; col++ {
-		if got := p.Cell(col, 0).Background; got != uiDiffTestTheme().Selection {
+		if got := p.Cell(col, 0).Background; got != uiDiffCursorRowBackground(uiDiffTestTheme()) {
 			t.Fatalf("tab cursor remainder background at col %d = %v, want row selection", col, got)
 		}
 	}
@@ -929,7 +1142,7 @@ func TestUIDiffViewHorizontalMovementUsesTabStops(t *testing.T) {
 		t.Fatalf("tab cursor after h first cell background = %v, want cursor", got)
 	}
 	for col := 8; col < 15; col++ {
-		if got := p.Cell(col, 0).Background; got != uiDiffTestTheme().Selection {
+		if got := p.Cell(col, 0).Background; got != uiDiffCursorRowBackground(uiDiffTestTheme()) {
 			t.Fatalf("tab cursor after h remainder background at col %d = %v, want row selection", col, got)
 		}
 	}
@@ -977,7 +1190,7 @@ func TestUIDiffViewJumpCommitScrollsTargetToTop(t *testing.T) {
 	if got := uiDiffPainterText(p, 0); got != "commit two" {
 		t.Fatalf("top row after J = %q, want commit two", got)
 	}
-	if got := uiDiffHighlightedScreenRow(p, uiDiffTestTheme().Selection); got != 0 {
+	if got := uiDiffHighlightedScreenRow(p, uiDiffCursorRowBackground(uiDiffTestTheme())); got != 0 {
 		t.Fatalf("highlight row after J = %d, want 0", got)
 	}
 
@@ -989,7 +1202,7 @@ func TestUIDiffViewJumpCommitScrollsTargetToTop(t *testing.T) {
 	if got := uiDiffPainterText(p, 2); got != "commit three" {
 		t.Fatalf("visible row after final J = %q, want commit three", got)
 	}
-	if got := uiDiffHighlightedScreenRow(p, uiDiffTestTheme().Selection); got != 2 {
+	if got := uiDiffHighlightedScreenRow(p, uiDiffCursorRowBackground(uiDiffTestTheme())); got != 2 {
 		t.Fatalf("highlight row after final J = %d, want 2", got)
 	}
 
