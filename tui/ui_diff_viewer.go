@@ -47,6 +47,7 @@ func (w uiDiffView) CreateState() vui.State {
 
 type uiDiffViewState struct {
 	vui.StateBase
+	scroll            vui.ScrollController
 	list              vui.SliverListController
 	cursor            selectionPoint
 	cursorCol         int
@@ -85,6 +86,7 @@ func (s *uiDiffViewState) Build(ctx vui.BuildContext) vui.Widget {
 	theme := vui.MustDepend[vui.Theme](ctx)
 	highlightedRows := s.highlightedCodeRows(w.Rows, theme)
 	scrollView := vui.CustomScrollView{
+		Controller: &s.scroll,
 		Slivers: []vui.Widget{
 			vui.SliverListBuilder{
 				Controller:          &s.list,
@@ -692,7 +694,7 @@ func (s *uiDiffViewState) handleMouse(_ vui.EventContext, mouse vaxis.Mouse) vui
 		return vui.EventIgnored
 	}
 	if mouseWheelButton(mouse.Button) {
-		return vui.EventIgnored
+		return s.handleMouseWheel(mouse)
 	}
 	switch mouse.EventType {
 	case vaxis.EventPress:
@@ -768,6 +770,31 @@ func (s *uiDiffViewState) handleMouse(_ vui.EventContext, mouse vaxis.Mouse) vui
 	default:
 		return vui.EventIgnored
 	}
+}
+
+func (s *uiDiffViewState) handleMouseWheel(mouse vaxis.Mouse) vui.EventResult {
+	if !s.mouseSelecting || !s.selectionActive {
+		return vui.EventIgnored
+	}
+	var lines int
+	switch mouse.Button {
+	case vaxis.MouseWheelDown:
+		lines = mouseWheelScrollLines
+	case vaxis.MouseWheelUp:
+		lines = -mouseWheelScrollLines
+	default:
+		return vui.EventIgnored
+	}
+	if lines == 0 {
+		return vui.EventIgnored
+	}
+	s.scroll.ScrollByLines(lines)
+	w := s.Widget().(uiDiffView)
+	if point, ok := s.selectionPointForMouse(w.Rows, mouse); ok {
+		s.setCursorPointWithoutReveal(w.Rows, point)
+	}
+	s.SetState(func() {})
+	return vui.EventHandled
 }
 
 func (s *uiDiffViewState) dragAnchor(rows []diff.Row, point selectionPoint) selectionPoint {
@@ -846,6 +873,13 @@ func (s *uiDiffViewState) selectionPointForMouse(rows []diff.Row, mouse vaxis.Mo
 }
 
 func (s *uiDiffViewState) rowForMouse(mouse vaxis.Mouse) (int, bool) {
+	if s.scroll.Attached() {
+		metrics := s.scroll.Metrics()
+		if mouse.Row < 0 || mouse.Row >= metrics.ViewportHeight {
+			return 0, false
+		}
+		return metrics.ScrollOffset + mouse.Row, true
+	}
 	first, last, ok := s.list.VisibleRange()
 	if !ok || mouse.Row < 0 {
 		return 0, false

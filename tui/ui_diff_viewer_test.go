@@ -1143,6 +1143,57 @@ func TestUIDiffViewDragFromHunkUpIntoCodeStartsAtLineEnd(t *testing.T) {
 	}
 }
 
+func TestUIDiffViewMouseWheelExtendsDraggingSelection(t *testing.T) {
+	rows := make([]diff.Row, 12)
+	for i := range rows {
+		rows[i] = diff.Row{Kind: diff.RowContext, Gutter: "1 1   ", Code: "abcdef"}
+	}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	app.Pump(vui.Size{Width: 30, Height: 4})
+	app.Pump(vui.Size{Width: 30, Height: 4})
+	codeOffset := uiDiffCodeOffset(rows)
+
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventPress, Row: 0, Col: codeOffset})
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventMotion, Row: 1, Col: codeOffset})
+	app.Send(vaxis.Mouse{Button: vaxis.MouseWheelDown, EventType: vaxis.EventPress, Row: 1, Col: codeOffset + 2})
+	app.Pump(vui.Size{Width: 30, Height: 4})
+	app.Pump(vui.Size{Width: 30, Height: 4})
+
+	p := vui.NewPainter(vui.Size{Width: 30, Height: 4})
+	app.Paint(p)
+	theme := uiDiffTestTheme()
+	if got := p.Cell(codeOffset+2, 1).Background; got != uiDiffCursorBackground(theme) {
+		t.Fatalf("cursor after wheel drag background = %v, want cursor", got)
+	}
+	if got := p.Cell(codeOffset, 0).Background; got != theme.Selection {
+		t.Fatalf("scrolled selection background = %v, want selection", got)
+	}
+}
+
+func TestUIDiffViewMouseWheelDoesNotExtendFinishedSelection(t *testing.T) {
+	rows := make([]diff.Row, 12)
+	for i := range rows {
+		rows[i] = diff.Row{Kind: diff.RowContext, Gutter: "1 1   ", Code: "abcdef"}
+	}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	app.Pump(vui.Size{Width: 30, Height: 4})
+	app.Pump(vui.Size{Width: 30, Height: 4})
+	codeOffset := uiDiffCodeOffset(rows)
+
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventPress, Row: 0, Col: codeOffset})
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventMotion, Row: 1, Col: codeOffset})
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventRelease, Row: 1, Col: codeOffset})
+	app.Send(vaxis.Mouse{Button: vaxis.MouseWheelDown, EventType: vaxis.EventPress, Row: 1, Col: codeOffset + 2})
+	app.Pump(vui.Size{Width: 30, Height: 4})
+	app.Pump(vui.Size{Width: 30, Height: 4})
+
+	p := vui.NewPainter(vui.Size{Width: 30, Height: 4})
+	app.Paint(p)
+	if got := p.Cell(codeOffset+2, 1).Background; got == uiDiffCursorBackground(uiDiffTestTheme()) {
+		t.Fatal("finished selection cursor moved to mouse position after wheel")
+	}
+}
+
 func TestUIDiffViewSelectionTextPreservesTabs(t *testing.T) {
 	row := diff.Row{Kind: diff.RowContext, Code: "a\tb", Text: "a\tb"}
 	state := &uiDiffViewState{
