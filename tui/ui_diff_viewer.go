@@ -61,6 +61,7 @@ type uiDiffViewState struct {
 	commentEditorInsert     bool
 	commentEditorRow        int
 	commentEditorBody       string
+	commentEditorBodies     map[int]string
 	reviewDrafts            []review.CommentDraft
 	selectionAnchor         selectionPoint
 	selectionActive         bool
@@ -986,6 +987,7 @@ func (s *uiDiffViewState) openCommentEditor(rows []diff.Row) {
 	if s.cursor.Row < 0 || s.cursor.Row >= len(rows) || !reviewAnchorValid(rows[s.cursor.Row].Review) {
 		return
 	}
+	s.storeCommentEditorBody()
 	if s.commentEditorActive && s.commentEditorRow == s.cursor.Row {
 		s.commentEditorFocused = true
 		s.commentEditorInsert = true
@@ -997,7 +999,7 @@ func (s *uiDiffViewState) openCommentEditor(rows []diff.Row) {
 	s.commentEditorFocused = true
 	s.commentEditorInsert = true
 	s.commentEditorRow = s.cursor.Row
-	s.commentEditorBody = ""
+	s.commentEditorBody = s.commentEditorBodies[s.cursor.Row]
 	s.clearLineSelection()
 	s.SetState(func() {})
 }
@@ -1066,36 +1068,88 @@ func (s *uiDiffViewState) submitCommentEditor(rows []diff.Row) {
 			Body:             s.commentEditorBody,
 		})
 	}
+	delete(s.commentEditorBodies, s.commentEditorRow)
 	s.commentEditorActive = false
 	s.closeCommentEditor()
 }
 
 func (s *uiDiffViewState) closeCommentEditor() {
+	delete(s.commentEditorBodies, s.commentEditorRow)
 	s.commentEditorActive = false
 	s.commentEditorFocused = false
 	s.commentEditorInsert = false
 	s.commentEditorBody = ""
 }
 
+func (s *uiDiffViewState) storeCommentEditorBody() {
+	if !s.commentEditorActive || s.commentEditorRow < 0 {
+		return
+	}
+	if strings.TrimSpace(s.commentEditorBody) == "" {
+		delete(s.commentEditorBodies, s.commentEditorRow)
+		return
+	}
+	if s.commentEditorBodies == nil {
+		s.commentEditorBodies = make(map[int]string)
+	}
+	s.commentEditorBodies[s.commentEditorRow] = s.commentEditorBody
+}
+
 func (s *uiDiffViewState) moveIntoCommentEditor(rows []diff.Row, delta int) bool {
-	if !s.commentEditorActive || s.commentEditorInsert || s.commentEditorFocused {
+	if s.commentEditorInsert || s.commentEditorFocused {
 		return false
 	}
-	if delta > 0 && s.cursor.Row == s.commentEditorRow {
-		s.commentEditorFocused = true
-		s.SetState(func() {})
+	if delta > 0 && s.commentEditorBodyForRow(rows, s.cursor.Row) != "" {
+		s.focusCommentEditorRow(rows, s.cursor.Row)
 		return true
 	}
-	if delta < 0 && s.cursor.Row == uiDiffCursorTargetRow(rows, s.commentEditorRow+1, 1) {
-		s.cursor.Row = s.commentEditorRow
-		s.cursor.Col = s.clampCursorCol(rows, s.cursor.Row, s.cursorCol)
-		s.cursorCol = s.cursor.Col
-		s.commentEditorFocused = true
-		s.revealCursorRow()
-		s.SetState(func() {})
-		return true
+	if delta < 0 {
+		start := s.cursor.Row - 1
+		for row := start; row >= 0; row-- {
+			if !uiDiffCursorableRow(rows[row]) {
+				continue
+			}
+			if s.commentEditorBodyForRow(rows, row) == "" {
+				return false
+			}
+			s.cursor.Row = row
+			s.cursor.Col = s.clampCursorCol(rows, s.cursor.Row, s.cursorCol)
+			s.cursorCol = s.cursor.Col
+			s.focusCommentEditorRow(rows, row)
+			return true
+		}
 	}
 	return false
+}
+
+func (s *uiDiffViewState) commentEditorBodyForRow(rows []diff.Row, row int) string {
+	if s.commentEditorActive && s.commentEditorRow == row && strings.TrimSpace(s.commentEditorBody) != "" {
+		return s.commentEditorBody
+	}
+	if body := s.commentEditorBodies[row]; strings.TrimSpace(body) != "" {
+		return body
+	}
+	if row < 0 || row >= len(rows) {
+		return ""
+	}
+	w := s.Widget().(uiDiffView)
+	drafts := reviewDraftsForRow(rows[row], s.allReviewDrafts(w.ReviewDrafts))
+	if len(drafts) == 0 {
+		return ""
+	}
+	return drafts[0].Body
+}
+
+func (s *uiDiffViewState) focusCommentEditorRow(rows []diff.Row, row int) {
+	s.storeCommentEditorBody()
+	body := s.commentEditorBodyForRow(rows, row)
+	s.commentEditorActive = true
+	s.commentEditorFocused = true
+	s.commentEditorInsert = false
+	s.commentEditorRow = row
+	s.commentEditorBody = body
+	s.revealCursorRow()
+	s.SetState(func() {})
 }
 
 func (s *uiDiffViewState) startTextObject(kind textObjectKind) {
@@ -1507,11 +1561,17 @@ func (s *uiDiffViewState) buildItem(rows []diff.Row, rowIndex int, theme vui.The
 		item = s.buildRow(rows, row, rowIndex, active, selected, yanked, s.cursor.Col, theme, highlightedRows, s.searchMatches, wrap)
 	}
 	children := []vui.Widget{item}
+	showDrafts := true
 	if s.commentEditorActive && s.commentEditorRow == rowIndex {
 		children = append(children, s.buildCommentEditor(theme))
+		showDrafts = false
+	} else if body := s.commentEditorBodies[rowIndex]; strings.TrimSpace(body) != "" {
+		children = append(children, uiDiffCommentEditorBox(body, false, false, nil, theme))
 	}
-	for _, draft := range reviewDraftsForRow(row, drafts) {
-		children = append(children, uiDiffReviewDraft(draft, theme))
+	if showDrafts {
+		for _, draft := range reviewDraftsForRow(row, drafts) {
+			children = append(children, uiDiffReviewDraft(draft, theme))
+		}
 	}
 	if len(children) == 1 {
 		return item
@@ -1520,13 +1580,20 @@ func (s *uiDiffViewState) buildItem(rows []diff.Row, rowIndex int, theme vui.The
 }
 
 func (s *uiDiffViewState) buildCommentEditor(theme vui.Theme) vui.Widget {
+	return uiDiffCommentEditorBox(s.commentEditorBody, s.commentEditorFocused, s.commentEditorInsert, func(_ vui.EventContext, value string) {
+		s.commentEditorBody = value
+		s.storeCommentEditorBody()
+		s.SetState(func() {})
+	}, theme)
+}
+
+func uiDiffCommentEditorBox(body string, focused bool, insert bool, onChanged func(vui.EventContext, string), theme vui.Theme) vui.Widget {
 	background := theme.Surface
-	if s.commentEditorFocused || s.commentEditorInsert {
+	if focused || insert {
 		background = theme.SurfaceHovered
 	}
 	boxStyle := vaxis.Style{Foreground: theme.Foreground, Background: background}
-	if !s.commentEditorInsert {
-		body := s.commentEditorBody
+	if !insert {
 		if body == "" {
 			body = "Add comment…"
 		}
@@ -1544,15 +1611,12 @@ func (s *uiDiffViewState) buildCommentEditor(theme vui.Theme) vui.Widget {
 		vui.DecoratedBox(
 			vui.Decoration{Style: boxStyle},
 			vui.FocusScope{AutoFocus: true, Child: vui.TextArea{
-				Value:       s.commentEditorBody,
+				Value:       body,
 				Placeholder: "Add comment…",
 				MinHeight:   1,
 				SoftWrap:    true,
 				Padding:     vui.Symmetric(2, 0),
-				OnChanged: func(_ vui.EventContext, value string) {
-					s.commentEditorBody = value
-					s.SetState(func() {})
-				},
+				OnChanged:   onChanged,
 			}},
 		),
 		uiDiffCommentHalfBlock("▀", background, theme),

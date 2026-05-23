@@ -1613,6 +1613,170 @@ func TestUIDiffViewCommentEditorSubmitCreatesDraft(t *testing.T) {
 	}
 }
 
+func TestUIDiffViewOpeningSecondCommentKeepsFirstDraft(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowAdd, Gutter: "1 1 + ", Code: "one", Review: review.Anchor{Path: "main.go", Line: 1, Side: review.SideRight}},
+		{Kind: diff.RowAdd, Gutter: "2 2 + ", Code: "two", Review: review.Anchor{Path: "main.go", Line: 2, Side: review.SideRight}},
+	}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	app.Pump(vui.Size{Width: 80, Height: 12})
+	app.Pump(vui.Size{Width: 80, Height: 12})
+
+	app.Send(vaxis.Key{Text: "i", Keycode: 'i'})
+	app.Pump(vui.Size{Width: 80, Height: 12})
+	app.Send(vaxis.Key{Text: "first"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEsc})
+	app.Pump(vui.Size{Width: 80, Height: 12})
+	app.Send(vaxis.Key{Text: "j", Keycode: 'j'})
+	app.Send(vaxis.Key{Text: "j", Keycode: 'j'})
+	app.Send(vaxis.Key{Text: "i", Keycode: 'i'})
+	app.Pump(vui.Size{Width: 80, Height: 12})
+	p := vui.NewPainter(vui.Size{Width: 80, Height: 12})
+	app.Paint(p)
+	if uiDiffPainterRowContaining(p, "first") == -1 {
+		t.Fatal("first draft disappeared after opening second comment editor")
+	}
+	if uiDiffPainterRowContaining(p, "Add comment") == -1 {
+		t.Fatal("second comment editor was not opened")
+	}
+}
+
+func TestUIDiffViewCursorUpStopsAtAdjacentStoredComments(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowContext, Gutter: "1 1   ", Code: "one", Review: review.Anchor{Path: "main.go", Line: 1, Side: review.SideRight}},
+		{Kind: diff.RowAdd, Gutter: "2 2 + ", Code: "two", Review: review.Anchor{Path: "main.go", Line: 2, Side: review.SideRight}},
+		{Kind: diff.RowAdd, Gutter: "3 3 + ", Code: "three", Review: review.Anchor{Path: "main.go", Line: 3, Side: review.SideRight}},
+	}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, false)
+	size := vui.Size{Width: 80, Height: 12}
+	app.Pump(size)
+	app.Pump(size)
+
+	app.Send(vaxis.Key{Text: "i", Keycode: 'i'})
+	app.Pump(size)
+	app.Send(vaxis.Key{Text: "comment 1"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEsc})
+	app.Pump(size)
+	app.Send(vaxis.Key{Text: "j", Keycode: 'j'})
+	app.Send(vaxis.Key{Text: "j", Keycode: 'j'})
+	app.Pump(size)
+	app.Send(vaxis.Key{Text: "i", Keycode: 'i'})
+	app.Pump(size)
+	app.Send(vaxis.Key{Text: "comment 2"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEsc})
+	app.Pump(size)
+	app.Send(vaxis.Key{Text: "j", Keycode: 'j'})
+	app.Send(vaxis.Key{Text: "j", Keycode: 'j'})
+	app.Pump(size)
+
+	for range 3 {
+		app.Send(vaxis.Key{Text: "k", Keycode: 'k'})
+		app.Pump(size)
+	}
+	app.Send(vaxis.Key{Text: "i", Keycode: 'i'})
+	app.Pump(size)
+	app.Send(vaxis.Key{Text: "!"})
+	app.Pump(size)
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	if uiDiffPainterRowContaining(p, "!comment 1") == -1 {
+		t.Fatal("cursor skipped first adjacent comment while moving up")
+	}
+}
+
+func TestUIDiffViewCursorStopsAtSubmittedDraftComments(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowAdd, Gutter: "1 1 + ", Code: "one", Review: review.Anchor{Path: "main.go", Line: 1, Side: review.SideRight}},
+		{Kind: diff.RowAdd, Gutter: "2 2 + ", Code: "two", Review: review.Anchor{Path: "main.go", Line: 2, Side: review.SideRight}},
+		{Kind: diff.RowAdd, Gutter: "3 3 + ", Code: "three", Review: review.Anchor{Path: "main.go", Line: 3, Side: review.SideRight}},
+	}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	app.Pump(vui.Size{Width: 80, Height: 14})
+	app.Pump(vui.Size{Width: 80, Height: 14})
+
+	app.Send(vaxis.Key{Text: "i", Keycode: 'i'})
+	app.Pump(vui.Size{Width: 80, Height: 14})
+	app.Send(vaxis.Key{Text: "submitted 1"})
+	app.Send(vaxis.Key{Text: "s", Keycode: 's', Modifiers: vaxis.ModCtrl})
+	app.Pump(vui.Size{Width: 80, Height: 14})
+	app.Send(vaxis.Key{Text: "j", Keycode: 'j'})
+	app.Send(vaxis.Key{Text: "i", Keycode: 'i'})
+	app.Pump(vui.Size{Width: 80, Height: 14})
+	app.Send(vaxis.Key{Text: "submitted 2"})
+	app.Send(vaxis.Key{Text: "s", Keycode: 's', Modifiers: vaxis.ModCtrl})
+	app.Pump(vui.Size{Width: 80, Height: 14})
+	app.Send(vaxis.Key{Text: "j", Keycode: 'j'})
+	app.Pump(vui.Size{Width: 80, Height: 14})
+
+	app.Send(vaxis.Key{Text: "k", Keycode: 'k'})
+	app.Send(vaxis.Key{Text: "k", Keycode: 'k'})
+	app.Send(vaxis.Key{Text: "k", Keycode: 'k'})
+	app.Send(vaxis.Key{Text: "i", Keycode: 'i'})
+	app.Pump(vui.Size{Width: 80, Height: 14})
+	app.Send(vaxis.Key{Text: "!"})
+	app.Pump(vui.Size{Width: 80, Height: 14})
+	p := vui.NewPainter(vui.Size{Width: 80, Height: 14})
+	app.Paint(p)
+	if uiDiffPainterRowContaining(p, "!submitted 1") == -1 {
+		t.Fatal("moving up through submitted draft comments skipped the first draft")
+	}
+}
+
+func TestUIDiffViewCursorStopsAtProvidedDraftComments(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowAdd, Gutter: "1 1 + ", Code: "one", Review: review.Anchor{Path: "main.go", Line: 1, Side: review.SideRight}},
+		{Kind: diff.RowAdd, Gutter: "2 2 + ", Code: "two", Review: review.Anchor{Path: "main.go", Line: 2, Side: review.SideRight}},
+		{Kind: diff.RowAdd, Gutter: "3 3 + ", Code: "three", Review: review.Anchor{Path: "main.go", Line: 3, Side: review.SideRight}},
+	}
+	drafts := []review.CommentDraft{
+		{Path: "main.go", Line: 1, Side: review.SideRight, Body: "provided 1"},
+		{Path: "main.go", Line: 2, Side: review.SideRight, Body: "provided 2"},
+	}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, drafts, true)
+	app.Pump(vui.Size{Width: 80, Height: 14})
+	app.Pump(vui.Size{Width: 80, Height: 14})
+
+	app.Send(vaxis.Key{Text: "j", Keycode: 'j'})
+	app.Pump(vui.Size{Width: 80, Height: 14})
+	app.Send(vaxis.Key{Text: "j", Keycode: 'j'})
+	app.Pump(vui.Size{Width: 80, Height: 14})
+	app.Send(vaxis.Key{Text: "j", Keycode: 'j'})
+	app.Pump(vui.Size{Width: 80, Height: 14})
+	app.Send(vaxis.Key{Text: "j", Keycode: 'j'})
+	app.Pump(vui.Size{Width: 80, Height: 14})
+	app.Send(vaxis.Key{Text: "k", Keycode: 'k'})
+	app.Pump(vui.Size{Width: 80, Height: 14})
+	p := vui.NewPainter(vui.Size{Width: 80, Height: 14})
+	app.Paint(p)
+	if uiDiffPainterRowContaining(p, "provided 2") == -1 {
+		t.Fatal("first k from code 3 did not show provided draft 2")
+	}
+	app.Send(vaxis.Key{Text: "k", Keycode: 'k'})
+	app.Pump(vui.Size{Width: 80, Height: 14})
+	p = vui.NewPainter(vui.Size{Width: 80, Height: 14})
+	app.Paint(p)
+	code2Row := uiDiffPainterRowContaining(p, "2 2 + two")
+	if code2Row == -1 || p.Cell(79, code2Row).Background != uiDiffCursorRowBackground(uiDiffTestTheme()) {
+		t.Fatal("second k from code 3 did not hover code 2")
+	}
+	app.Send(vaxis.Key{Text: "k", Keycode: 'k'})
+	app.Pump(vui.Size{Width: 80, Height: 14})
+	p = vui.NewPainter(vui.Size{Width: 80, Height: 14})
+	app.Paint(p)
+	if uiDiffPainterRowContaining(p, "provided 1") == -1 {
+		t.Fatal("third k from code 3 did not show provided draft 1")
+	}
+	app.Send(vaxis.Key{Text: "i", Keycode: 'i'})
+	app.Pump(vui.Size{Width: 80, Height: 14})
+	app.Send(vaxis.Key{Text: "!"})
+	app.Pump(vui.Size{Width: 80, Height: 14})
+	p = vui.NewPainter(vui.Size{Width: 80, Height: 14})
+	app.Paint(p)
+	if uiDiffPainterRowContaining(p, "!provided 1") == -1 {
+		t.Fatal("moving up through provided draft comments skipped the first draft")
+	}
+}
+
 func TestUIDiffViewMouseSelectionAccountsForCommentRows(t *testing.T) {
 	rows := []diff.Row{
 		{Kind: diff.RowAdd, Gutter: "1 1 + ", Code: "one", Review: review.Anchor{Path: "main.go", Line: 1, Side: review.SideRight}},
