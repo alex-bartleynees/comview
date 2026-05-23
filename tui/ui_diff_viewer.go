@@ -56,6 +56,12 @@ type uiDiffViewState struct {
 	pendingSpace            bool
 	fileFinder              bool
 	textObject              textObjectState
+	commentEditorActive     bool
+	commentEditorFocused    bool
+	commentEditorInsert     bool
+	commentEditorRow        int
+	commentEditorBody       string
+	reviewDrafts            []review.CommentDraft
 	selectionAnchor         selectionPoint
 	selectionActive         bool
 	selectionLinewise       bool
@@ -90,17 +96,18 @@ func (s *uiDiffViewState) Build(ctx vui.BuildContext) vui.Widget {
 	s.clampCursor(w.Rows)
 	theme := vui.MustDepend[vui.Theme](ctx)
 	highlightedRows := s.highlightedCodeRows(w.Rows, theme)
+	drafts := s.allReviewDrafts(w.ReviewDrafts)
 	scrollView := vui.CustomScrollView{
 		Controller: &s.scroll,
 		Slivers: []vui.Widget{
 			vui.SliverListBuilder{
 				Controller:          &s.list,
 				Count:               len(w.Rows),
-				ItemExtent:          uiDiffItemExtent(w.Wrap),
+				ItemExtent:          uiDiffItemExtent(w.Wrap || s.commentEditorActive || len(s.reviewDrafts) > 0),
 				EstimatedItemExtent: 1,
 				Overscan:            8,
 				Builder: func(ctx vui.BuildContext, row int) vui.Widget {
-					return s.buildItem(w.Rows, row, theme, highlightedRows, w.Wrap)
+					return s.buildItem(w.Rows, row, theme, highlightedRows, drafts, w.Wrap)
 				},
 			},
 		},
@@ -121,6 +128,16 @@ func (s *uiDiffViewState) Build(ctx vui.BuildContext) vui.Widget {
 		entries = append(entries, vui.OverlayEntry{Modal: true, Child: s.buildFileFinder(w.Rows, theme)})
 	}
 	return vui.Overlay{Child: content, Entries: entries}
+}
+
+func (s *uiDiffViewState) allReviewDrafts(base []review.CommentDraft) []review.CommentDraft {
+	if len(s.reviewDrafts) == 0 {
+		return base
+	}
+	drafts := make([]review.CommentDraft, 0, len(base)+len(s.reviewDrafts))
+	drafts = append(drafts, base...)
+	drafts = append(drafts, s.reviewDrafts...)
+	return drafts
 }
 
 type uiDiffFileItem struct {
@@ -227,6 +244,12 @@ func (s *uiDiffViewState) statusSegments(rows []diff.Row, theme vui.Theme) []vax
 }
 
 func (s *uiDiffViewState) statusModeLabel() string {
+	if s.commentEditorActive {
+		if s.commentEditorInsert {
+			return "INSERT"
+		}
+		return "NORMAL"
+	}
 	if !s.selectionActive {
 		return "NORMAL"
 	}
@@ -543,6 +566,9 @@ func (s *uiDiffViewState) HandleEvent(ctx vui.EventContext, ev vui.Event) vui.Ev
 		ctx.Quit()
 		return vui.EventHandled
 	}
+	if s.commentEditorActive && (s.commentEditorFocused || s.commentEditorInsert) {
+		return s.handleCommentEditorKey(rows, key)
+	}
 	if s.searchMode {
 		return s.handleSearchKey(rows, key)
 	}
@@ -592,6 +618,10 @@ func (s *uiDiffViewState) HandleEvent(ctx vui.EventContext, ev vui.Event) vui.Ev
 	case key.Matches('i') && s.selectionActive && !s.selectionLinewise:
 		s.clearPendingKeys()
 		s.startTextObject(textObjectInner)
+		return vui.EventHandled
+	case key.Matches('i'):
+		s.clearPendingKeys()
+		s.openCommentEditor(rows)
 		return vui.EventHandled
 	case key.Matches('y'):
 		s.clearPendingKeys()
@@ -673,10 +703,16 @@ func (s *uiDiffViewState) HandleEvent(ctx vui.EventContext, ev vui.Event) vui.Ev
 		return vui.EventHandled
 	case key.Matches('j'), key.Matches(vaxis.KeyDown), key.MatchString("Down"):
 		s.clearPendingKeys()
+		if s.moveIntoCommentEditor(rows, 1) {
+			return vui.EventHandled
+		}
 		s.moveCursorRows(rows, 1)
 		return vui.EventHandled
 	case key.Matches('k'), key.Matches(vaxis.KeyUp), key.MatchString("Up"):
 		s.clearPendingKeys()
+		if s.moveIntoCommentEditor(rows, -1) {
+			return vui.EventHandled
+		}
 		s.moveCursorRows(rows, -1)
 		return vui.EventHandled
 	case key.Matches('h'), key.Matches(vaxis.KeyLeft), key.MatchString("Left"):
@@ -890,15 +926,31 @@ func (s *uiDiffViewState) selectionPointForMouse(rows []diff.Row, mouse vaxis.Mo
 }
 
 func (s *uiDiffViewState) rowForMouse(mouse vaxis.Mouse) (int, bool) {
-	if s.scroll.Attached() {
-		metrics := s.scroll.Metrics()
-		if mouse.Row < 0 || mouse.Row >= metrics.ViewportHeight {
-			return 0, false
-		}
-		return metrics.ScrollOffset + mouse.Row, true
-	}
 	first, last, ok := s.list.VisibleRange()
 	if !ok || mouse.Row < 0 {
+		return 0, false
+	}
+	if s.scroll.Attached() {
+		metrics := s.scroll.Metrics()
+		if mouse.Row >= metrics.ViewportHeight {
+			return 0, false
+		}
+		logicalY := metrics.ScrollOffset + mouse.Row
+		for row := first; row < last; row++ {
+			offset, ok := s.list.OffsetForIndex(row)
+			if !ok {
+				continue
+			}
+			nextOffset := offset + 1
+			if row+1 < last {
+				if next, ok := s.list.OffsetForIndex(row + 1); ok {
+					nextOffset = next
+				}
+			}
+			if logicalY >= offset && logicalY < nextOffset {
+				return row, true
+			}
+		}
 		return 0, false
 	}
 	row := first + mouse.Row
@@ -909,11 +961,11 @@ func (s *uiDiffViewState) rowForMouse(mouse vaxis.Mouse) (int, bool) {
 }
 
 func (s *uiDiffViewState) documentRowForMouse(mouse vaxis.Mouse) int {
-	first, _, ok := s.list.VisibleRange()
+	row, ok := s.rowForMouse(mouse)
 	if !ok {
 		return -1
 	}
-	return first + mouse.Row
+	return row
 }
 
 func uiDiffCodeOffset(rows []diff.Row) int {
@@ -928,6 +980,122 @@ func (s *uiDiffViewState) clearPendingKeys() {
 	s.pendingG = false
 	s.pendingBracket = 0
 	s.pendingSpace = false
+}
+
+func (s *uiDiffViewState) openCommentEditor(rows []diff.Row) {
+	if s.cursor.Row < 0 || s.cursor.Row >= len(rows) || !reviewAnchorValid(rows[s.cursor.Row].Review) {
+		return
+	}
+	if s.commentEditorActive && s.commentEditorRow == s.cursor.Row {
+		s.commentEditorFocused = true
+		s.commentEditorInsert = true
+		s.clearLineSelection()
+		s.SetState(func() {})
+		return
+	}
+	s.commentEditorActive = true
+	s.commentEditorFocused = true
+	s.commentEditorInsert = true
+	s.commentEditorRow = s.cursor.Row
+	s.commentEditorBody = ""
+	s.clearLineSelection()
+	s.SetState(func() {})
+}
+
+func (s *uiDiffViewState) handleCommentEditorKey(rows []diff.Row, key vaxis.Key) vui.EventResult {
+	if !s.commentEditorInsert {
+		switch {
+		case key.Matches(vaxis.KeyEsc):
+			if strings.TrimSpace(s.commentEditorBody) == "" {
+				s.closeCommentEditor()
+				s.SetState(func() {})
+				return vui.EventHandled
+			}
+			s.commentEditorFocused = false
+			s.SetState(func() {})
+			return vui.EventHandled
+		case key.Matches('i'):
+			s.commentEditorInsert = true
+			s.SetState(func() {})
+			return vui.EventHandled
+		case key.Matches('j'), key.Matches(vaxis.KeyDown), key.MatchString("Down"):
+			s.commentEditorFocused = false
+			s.setCursorRow(rows, s.commentEditorRow+1)
+			return vui.EventHandled
+		case key.Matches('k'), key.Matches(vaxis.KeyUp), key.MatchString("Up"):
+			s.commentEditorFocused = false
+			s.setCursorRow(rows, s.commentEditorRow)
+			return vui.EventHandled
+		default:
+			return vui.EventIgnored
+		}
+	}
+	switch {
+	case key.Matches(vaxis.KeyEsc):
+		if strings.TrimSpace(s.commentEditorBody) == "" {
+			s.closeCommentEditor()
+			s.SetState(func() {})
+			return vui.EventHandled
+		}
+		s.commentEditorFocused = false
+		s.commentEditorInsert = false
+		s.SetState(func() {})
+		return vui.EventHandled
+	case key.MatchString("Ctrl+s"):
+		s.submitCommentEditor(rows)
+		s.SetState(func() {})
+		return vui.EventHandled
+	default:
+		return vui.EventIgnored
+	}
+}
+
+func (s *uiDiffViewState) submitCommentEditor(rows []diff.Row) {
+	if !s.commentEditorActive || s.commentEditorRow < 0 || s.commentEditorRow >= len(rows) {
+		return
+	}
+	body := strings.TrimSpace(s.commentEditorBody)
+	if body != "" {
+		anchor := rows[s.commentEditorRow].Review
+		s.reviewDrafts = append(s.reviewDrafts, review.CommentDraft{
+			Path:             anchor.Path,
+			Line:             anchor.Line,
+			Side:             anchor.Side,
+			CommitID:         anchor.CommitID,
+			OriginalCommitID: anchor.OriginalCommitID,
+			Body:             s.commentEditorBody,
+		})
+	}
+	s.commentEditorActive = false
+	s.closeCommentEditor()
+}
+
+func (s *uiDiffViewState) closeCommentEditor() {
+	s.commentEditorActive = false
+	s.commentEditorFocused = false
+	s.commentEditorInsert = false
+	s.commentEditorBody = ""
+}
+
+func (s *uiDiffViewState) moveIntoCommentEditor(rows []diff.Row, delta int) bool {
+	if !s.commentEditorActive || s.commentEditorInsert || s.commentEditorFocused {
+		return false
+	}
+	if delta > 0 && s.cursor.Row == s.commentEditorRow {
+		s.commentEditorFocused = true
+		s.SetState(func() {})
+		return true
+	}
+	if delta < 0 && s.cursor.Row == uiDiffCursorTargetRow(rows, s.commentEditorRow+1, 1) {
+		s.cursor.Row = s.commentEditorRow
+		s.cursor.Col = s.clampCursorCol(rows, s.cursor.Row, s.cursorCol)
+		s.cursorCol = s.cursor.Col
+		s.commentEditorFocused = true
+		s.revealCursorRow()
+		s.SetState(func() {})
+		return true
+	}
+	return false
 }
 
 func (s *uiDiffViewState) startTextObject(kind textObjectKind) {
@@ -1327,15 +1495,102 @@ func (s *uiDiffViewState) clearSearch() {
 	s.searchIndex = -1
 }
 
-func (s *uiDiffViewState) buildItem(rows []diff.Row, rowIndex int, theme vui.Theme, highlightedRows map[int][]vaxis.Segment, wrap bool) vui.Widget {
+func (s *uiDiffViewState) buildItem(rows []diff.Row, rowIndex int, theme vui.Theme, highlightedRows map[int][]vaxis.Segment, drafts []review.CommentDraft, wrap bool) vui.Widget {
 	row := rows[rowIndex]
-	active := rowIndex == s.cursor.Row
+	active := rowIndex == s.cursor.Row && !s.commentEditorInsert && !s.commentEditorFocused
 	selected := s.lineSelected(rowIndex)
 	yanked := s.lineYanked(rowIndex)
+	var item vui.Widget
 	if !uiDiffRowUsesGrid(row) {
-		return uiDiffFullWidthRow(row, rowIndex, uiDiffRowBackground(active, selected, yanked, theme), theme, s.searchMatches, wrap)
+		item = uiDiffFullWidthRow(row, rowIndex, uiDiffRowBackground(active, selected, yanked, theme), theme, s.searchMatches, wrap)
+	} else {
+		item = s.buildRow(rows, row, rowIndex, active, selected, yanked, s.cursor.Col, theme, highlightedRows, s.searchMatches, wrap)
 	}
-	return s.buildRow(rows, row, rowIndex, active, selected, yanked, s.cursor.Col, theme, highlightedRows, s.searchMatches, wrap)
+	children := []vui.Widget{item}
+	if s.commentEditorActive && s.commentEditorRow == rowIndex {
+		children = append(children, s.buildCommentEditor(theme))
+	}
+	for _, draft := range reviewDraftsForRow(row, drafts) {
+		children = append(children, uiDiffReviewDraft(draft, theme))
+	}
+	if len(children) == 1 {
+		return item
+	}
+	return vui.Column(children...)
+}
+
+func (s *uiDiffViewState) buildCommentEditor(theme vui.Theme) vui.Widget {
+	background := theme.Surface
+	if s.commentEditorFocused || s.commentEditorInsert {
+		background = theme.SurfaceHovered
+	}
+	boxStyle := vaxis.Style{Foreground: theme.Foreground, Background: background}
+	if !s.commentEditorInsert {
+		body := s.commentEditorBody
+		if body == "" {
+			body = "Add comment…"
+		}
+		return uiDiffCommentBox(uiDiffCommentColumn(
+			uiDiffCommentHalfBlock("▄", background, theme),
+			vui.DecoratedBox(
+				vui.Decoration{Style: boxStyle},
+				vui.Padding(vui.Symmetric(2, 0), vui.RichText{Spans: []vui.TextSpan{{Text: body, Style: boxStyle}}, SoftWrap: true}),
+			),
+			uiDiffCommentHalfBlock("▀", background, theme),
+		))
+	}
+	return uiDiffCommentBox(uiDiffCommentColumn(
+		uiDiffCommentHalfBlock("▄", background, theme),
+		vui.DecoratedBox(
+			vui.Decoration{Style: boxStyle},
+			vui.FocusScope{AutoFocus: true, Child: vui.TextArea{
+				Value:       s.commentEditorBody,
+				Placeholder: "Add comment…",
+				MinHeight:   1,
+				SoftWrap:    true,
+				Padding:     vui.Symmetric(2, 0),
+				OnChanged: func(_ vui.EventContext, value string) {
+					s.commentEditorBody = value
+					s.SetState(func() {})
+				},
+			}},
+		),
+		uiDiffCommentHalfBlock("▀", background, theme),
+	))
+}
+
+func uiDiffCommentColumn(children ...vui.Widget) vui.Widget {
+	return vui.Flex{Axis: vui.Vertical, CrossAxisAlignment: vui.CrossAxisStretch, Children: children}
+}
+
+func uiDiffCommentHalfBlock(block string, foreground vaxis.Color, theme vui.Theme) vui.Widget {
+	style := vaxis.Style{Foreground: foreground, Background: theme.Background}
+	return vui.Text{Value: strings.Repeat(block, 72), Style: style, Overflow: vui.TextOverflowClip}
+}
+
+func uiDiffReviewDraft(draft review.CommentDraft, theme vui.Theme) vui.Widget {
+	style := vaxis.Style{Foreground: theme.Foreground, Background: theme.Surface}
+	return uiDiffCommentBox(vui.DecoratedBox(
+		vui.Decoration{Style: style, Border: vui.BorderLine(theme.Primary)},
+		vui.Padding(vui.All(1), vui.RichText{Spans: []vui.TextSpan{{Text: draft.Body, Style: style}}, SoftWrap: true}),
+	))
+}
+
+func uiDiffCommentBox(child vui.Widget) vui.Widget {
+	return vui.ConstrainedBox{Constraints: vui.Constraints{MinWidth: 72, MaxWidth: 72}, Child: child}
+}
+
+func reviewDraftsForRow(row diff.Row, drafts []review.CommentDraft) []review.CommentDraft {
+	if !reviewAnchorValid(row.Review) {
+		return nil
+	}
+	matches := make([]review.CommentDraft, 0, 1)
+	for _, draft := range drafts {
+		if reviewDraftEndsAt(draft, row.Review) {
+			matches = append(matches, draft)
+		}
+	}
+	return matches
 }
 
 func uiDiffRowBackground(active bool, selected bool, yanked bool, theme vui.Theme) vaxis.Color {

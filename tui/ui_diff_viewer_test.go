@@ -1410,6 +1410,240 @@ func TestUIDiffViewTextObjectSkipsOppositeSideRows(t *testing.T) {
 	}
 }
 
+func TestUIDiffViewOpensCommentEditor(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowAdd, Gutter: "1 1 + ", Code: "new", Review: review.Anchor{Path: "main.go", Line: 12, Side: review.SideRight}}}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	app.Pump(vui.Size{Width: 40, Height: 6})
+	app.Pump(vui.Size{Width: 40, Height: 6})
+
+	app.Send(vaxis.Key{Text: "i", Keycode: 'i'})
+	app.Pump(vui.Size{Width: 40, Height: 6})
+	app.Pump(vui.Size{Width: 40, Height: 6})
+	p := vui.NewPainter(vui.Size{Width: 40, Height: 6})
+	app.Paint(p)
+	if got := uiDiffPainterText(p, 1); !strings.Contains(got, "▄") {
+		t.Fatalf("editor row = %q, want top half-block padding", got)
+	}
+	if cursor, ok := p.Cursor(); !ok || cursor.Col != 2 || cursor.Row != 2 || cursor.Shape != vui.CursorBeam {
+		t.Fatalf("cursor = %+v, want editor row beam cursor after two left padding cells", cursor)
+	}
+	if got := p.Cell(0, 0).Background; got == uiDiffCursorRowBackground(uiDiffTestTheme()) {
+		t.Fatal("diff cursor row is highlighted while textarea is focused")
+	}
+	if got := uiDiffPainterText(p, 5); !strings.HasPrefix(got, " INSERT ") {
+		t.Fatalf("status bar = %q, want INSERT", got)
+	}
+}
+
+func TestUIDiffViewCommentEditorEscapeReturnsToNormal(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowAdd, Gutter: "1 1 + ", Code: "new", Review: review.Anchor{Path: "main.go", Line: 12, Side: review.SideRight}}}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	app.Pump(vui.Size{Width: 40, Height: 6})
+	app.Pump(vui.Size{Width: 40, Height: 6})
+
+	app.Send(vaxis.Key{Text: "i", Keycode: 'i'})
+	app.Pump(vui.Size{Width: 40, Height: 6})
+	app.Send(vaxis.Key{Text: "draft"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEsc})
+	app.Pump(vui.Size{Width: 40, Height: 6})
+	p := vui.NewPainter(vui.Size{Width: 40, Height: 6})
+	app.Paint(p)
+	if got := uiDiffPainterText(p, 2); !strings.Contains(got, "draft") {
+		t.Fatalf("editor body after escape = %q, want draft", got)
+	}
+	if got := uiDiffPainterText(p, 5); !strings.HasPrefix(got, " NORMAL ") {
+		t.Fatalf("status bar = %q, want NORMAL", got)
+	}
+	if _, ok := p.Cursor(); ok {
+		t.Fatal("textarea cursor is still visible after escape returned focus to diff")
+	}
+	if got := p.Cell(0, 0).Background; got != uiDiffCursorRowBackground(uiDiffTestTheme()) {
+		t.Fatalf("diff cursor row background = %v, want cursor row", got)
+	}
+}
+
+func TestUIDiffViewCommentEditorEscapeClosesEmptyEditor(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowAdd, Gutter: "1 1 + ", Code: "new", Review: review.Anchor{Path: "main.go", Line: 12, Side: review.SideRight}}}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	app.Pump(vui.Size{Width: 40, Height: 6})
+	app.Pump(vui.Size{Width: 40, Height: 6})
+
+	app.Send(vaxis.Key{Text: "i", Keycode: 'i'})
+	app.Pump(vui.Size{Width: 40, Height: 6})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEsc})
+	app.Pump(vui.Size{Width: 40, Height: 6})
+	p := vui.NewPainter(vui.Size{Width: 40, Height: 6})
+	app.Paint(p)
+	if got := uiDiffPainterText(p, 1); strings.Contains(got, "▄") || strings.Contains(got, "Add comment") {
+		t.Fatalf("editor row = %q, want empty editor closed", got)
+	}
+	if _, ok := p.Cursor(); ok {
+		t.Fatal("textarea cursor is still visible after empty editor closed")
+	}
+	if got := p.Cell(0, 0).Background; got != uiDiffCursorRowBackground(uiDiffTestTheme()) {
+		t.Fatalf("diff cursor row background = %v, want cursor row", got)
+	}
+}
+
+func TestUIDiffViewCommentEditorCanCursorInAndOut(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowAdd, Gutter: "1 1 + ", Code: "one", Review: review.Anchor{Path: "main.go", Line: 1, Side: review.SideRight}},
+		{Kind: diff.RowAdd, Gutter: "2 2 + ", Code: "two", Review: review.Anchor{Path: "main.go", Line: 2, Side: review.SideRight}},
+	}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	app.Pump(vui.Size{Width: 40, Height: 8})
+	app.Pump(vui.Size{Width: 40, Height: 8})
+
+	app.Send(vaxis.Key{Text: "i", Keycode: 'i'})
+	app.Pump(vui.Size{Width: 40, Height: 8})
+	app.Send(vaxis.Key{Text: "draft"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEsc})
+	app.Pump(vui.Size{Width: 40, Height: 8})
+
+	app.Send(vaxis.Key{Text: "j", Keycode: 'j'})
+	app.Pump(vui.Size{Width: 40, Height: 8})
+	p := vui.NewPainter(vui.Size{Width: 40, Height: 8})
+	app.Paint(p)
+	if got := p.Cell(39, 0).Background; got == uiDiffCursorRowBackground(uiDiffTestTheme()) {
+		t.Fatal("diff row stayed highlighted after cursoring into comment box")
+	}
+	if got := p.Cell(0, 2).Background; got != uiDiffTestTheme().SurfaceHovered {
+		t.Fatalf("focused comment body background = %v, want hovered surface", got)
+	}
+
+	app.Send(vaxis.Key{Text: "j", Keycode: 'j'})
+	app.Pump(vui.Size{Width: 40, Height: 8})
+	p = vui.NewPainter(vui.Size{Width: 40, Height: 8})
+	app.Paint(p)
+	secondRow := uiDiffPainterRowContaining(p, "two")
+	if secondRow == -1 {
+		t.Fatal("second diff row was not rendered")
+	}
+	if got := p.Cell(39, secondRow).Background; got != uiDiffCursorRowBackground(uiDiffTestTheme()) {
+		t.Fatalf("second diff row background = %v, want cursor row after moving out of comment", got)
+	}
+
+	app.Send(vaxis.Key{Text: "k", Keycode: 'k'})
+	app.Send(vaxis.Key{Text: "k", Keycode: 'k'})
+	app.Pump(vui.Size{Width: 40, Height: 8})
+	p = vui.NewPainter(vui.Size{Width: 40, Height: 8})
+	app.Paint(p)
+	if got := p.Cell(39, 0).Background; got != uiDiffCursorRowBackground(uiDiffTestTheme()) {
+		t.Fatalf("first diff row background = %v, want cursor row after moving back out of comment", got)
+	}
+}
+
+func uiDiffPainterRowContaining(p *vui.Painter, text string) int {
+	for row := 0; row < p.Size().Height; row++ {
+		if strings.Contains(uiDiffPainterText(p, row), text) {
+			return row
+		}
+	}
+	return -1
+}
+
+func TestUIDiffViewCommentEditorEscapeKeepsEditorOpen(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowAdd, Gutter: "1 1 + ", Code: "new", Review: review.Anchor{Path: "main.go", Line: 12, Side: review.SideRight}}}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	app.Pump(vui.Size{Width: 40, Height: 6})
+	app.Pump(vui.Size{Width: 40, Height: 6})
+
+	app.Send(vaxis.Key{Text: "i", Keycode: 'i'})
+	app.Pump(vui.Size{Width: 40, Height: 6})
+	app.Send(vaxis.Key{Text: "draft"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEsc})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEsc})
+	app.Pump(vui.Size{Width: 40, Height: 6})
+	p := vui.NewPainter(vui.Size{Width: 40, Height: 6})
+	app.Paint(p)
+	if got := uiDiffPainterText(p, 1); !strings.Contains(got, "▄") {
+		t.Fatalf("editor row = %q, want editor to remain open", got)
+	}
+	if got := uiDiffPainterText(p, 2); !strings.Contains(got, "draft") {
+		t.Fatalf("editor body = %q, want draft", got)
+	}
+	if got := p.Cell(0, 2).Background; got != uiDiffTestTheme().Surface {
+		t.Fatalf("editor body left edge background = %v, want full-width comment surface", got)
+	}
+	if got := p.Cell(1, 2).Background; got != uiDiffTestTheme().Surface {
+		t.Fatalf("editor body second padding background = %v, want full-width comment surface", got)
+	}
+}
+
+func TestUIDiffViewCommentEditorNormalIReentersInsert(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowAdd, Gutter: "1 1 + ", Code: "new", Review: review.Anchor{Path: "main.go", Line: 12, Side: review.SideRight}}}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	app.Pump(vui.Size{Width: 40, Height: 6})
+	app.Pump(vui.Size{Width: 40, Height: 6})
+
+	app.Send(vaxis.Key{Text: "i", Keycode: 'i'})
+	app.Pump(vui.Size{Width: 40, Height: 6})
+	app.Send(vaxis.Key{Text: "a"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEsc})
+	app.Send(vaxis.Key{Text: "i", Keycode: 'i'})
+	app.Pump(vui.Size{Width: 40, Height: 6})
+	app.Send(vaxis.Key{Text: "b"})
+	app.Send(vaxis.Key{Text: "s", Keycode: 's', Modifiers: vaxis.ModCtrl})
+	app.Pump(vui.Size{Width: 40, Height: 6})
+	p := vui.NewPainter(vui.Size{Width: 40, Height: 6})
+	app.Paint(p)
+	if got := uiDiffPainterText(p, 2); !strings.Contains(got, "ab") {
+		t.Fatalf("draft row = %q, want edited body", got)
+	}
+}
+
+func TestUIDiffViewCommentEditorSubmitCreatesDraft(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowAdd, Gutter: "1 1 + ", Code: "new", Review: review.Anchor{Path: "main.go", Line: 12, Side: review.SideRight}}}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	app.Pump(vui.Size{Width: 40, Height: 6})
+	app.Pump(vui.Size{Width: 40, Height: 6})
+
+	app.Send(vaxis.Key{Text: "i", Keycode: 'i'})
+	app.Pump(vui.Size{Width: 40, Height: 6})
+	app.Send(vaxis.Key{Text: "looks good"})
+	app.Send(vaxis.Key{Text: "s", Keycode: 's', Modifiers: vaxis.ModCtrl})
+	app.Pump(vui.Size{Width: 40, Height: 6})
+	p := vui.NewPainter(vui.Size{Width: 40, Height: 6})
+	app.Paint(p)
+	if got := uiDiffPainterText(p, 2); !strings.Contains(got, "looks good") {
+		t.Fatalf("draft row = %q, want submitted body", got)
+	}
+	if got := uiDiffPainterText(p, 5); !strings.HasPrefix(got, " NORMAL ") {
+		t.Fatalf("status bar = %q, want NORMAL", got)
+	}
+}
+
+func TestUIDiffViewMouseSelectionAccountsForCommentRows(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowAdd, Gutter: "1 1 + ", Code: "one", Review: review.Anchor{Path: "main.go", Line: 1, Side: review.SideRight}},
+		{Kind: diff.RowAdd, Gutter: "2 2 + ", Code: "two", Review: review.Anchor{Path: "main.go", Line: 2, Side: review.SideRight}},
+	}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	app.Pump(vui.Size{Width: 40, Height: 8})
+	app.Pump(vui.Size{Width: 40, Height: 8})
+	codeOffset := uiDiffCodeOffset(rows)
+
+	app.Send(vaxis.Key{Text: "i", Keycode: 'i'})
+	app.Pump(vui.Size{Width: 40, Height: 8})
+	app.Send(vaxis.Key{Text: "draft"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEsc})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEsc})
+	app.Pump(vui.Size{Width: 40, Height: 8})
+	app.Pump(vui.Size{Width: 40, Height: 8})
+
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventPress, Row: 4, Col: codeOffset})
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventMotion, Row: 4, Col: codeOffset + 1})
+	app.Pump(vui.Size{Width: 40, Height: 8})
+	p := vui.NewPainter(vui.Size{Width: 40, Height: 8})
+	app.Paint(p)
+	if got := p.Cell(codeOffset, 4).Background; got != uiDiffTestTheme().Selection {
+		t.Fatalf("second diff row selected background = %v, want selection", got)
+	}
+	if got := p.Cell(codeOffset, 0).Background; got == uiDiffTestTheme().Selection {
+		t.Fatal("mouse selection hit first row instead of row after comment box")
+	}
+}
+
 func TestUIDiffViewSelectionTextSkipsCommitRows(t *testing.T) {
 	rows := []diff.Row{
 		{Kind: diff.RowContext, Code: "selectable", Text: "selectable"},
