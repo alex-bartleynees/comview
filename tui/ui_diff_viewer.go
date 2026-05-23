@@ -59,6 +59,8 @@ type uiDiffViewState struct {
 	selectionLinewise bool
 	mouseSelecting    bool
 	mouseAnchor       selectionPoint
+	mouseHasAnchor    bool
+	mouseStartRow     int
 	clicks            clickState
 	yankAnchor        selectionPoint
 	yankCursor        selectionPoint
@@ -699,8 +701,13 @@ func (s *uiDiffViewState) handleMouse(_ vui.EventContext, mouse vaxis.Mouse) vui
 		}
 		point, ok := s.selectionPointForMouse(rows, mouse)
 		if !ok {
-			s.mouseSelecting = false
-			return vui.EventIgnored
+			s.mouseSelecting = true
+			s.mouseHasAnchor = false
+			s.mouseStartRow = s.documentRowForMouse(mouse)
+			s.clearLineSelection()
+			s.clearPendingKeys()
+			s.SetState(func() {})
+			return vui.EventHandled
 		}
 		s.setCursorPointWithoutReveal(rows, point)
 		s.clearLineSelection()
@@ -720,6 +727,8 @@ func (s *uiDiffViewState) handleMouse(_ vui.EventContext, mouse vaxis.Mouse) vui
 		}
 		s.mouseSelecting = true
 		s.mouseAnchor = point
+		s.mouseHasAnchor = true
+		s.mouseStartRow = point.Row
 		s.SetState(func() {})
 		return vui.EventHandled
 	case vaxis.EventMotion:
@@ -729,6 +738,10 @@ func (s *uiDiffViewState) handleMouse(_ vui.EventContext, mouse vaxis.Mouse) vui
 		point, ok := s.selectionPointForMouse(rows, mouse)
 		if !ok {
 			return vui.EventIgnored
+		}
+		if !s.mouseHasAnchor {
+			s.mouseAnchor = s.dragAnchor(rows, point)
+			s.mouseHasAnchor = true
 		}
 		if !s.selectionActive && point == s.mouseAnchor {
 			return vui.EventIgnored
@@ -746,6 +759,7 @@ func (s *uiDiffViewState) handleMouse(_ vui.EventContext, mouse vaxis.Mouse) vui
 			return vui.EventIgnored
 		}
 		s.mouseSelecting = false
+		s.mouseHasAnchor = false
 		if point, ok := s.selectionPointForMouse(rows, mouse); ok {
 			s.setCursorPointWithoutReveal(rows, point)
 		}
@@ -753,6 +767,21 @@ func (s *uiDiffViewState) handleMouse(_ vui.EventContext, mouse vaxis.Mouse) vui
 		return vui.EventHandled
 	default:
 		return vui.EventIgnored
+	}
+}
+
+func (s *uiDiffViewState) dragAnchor(rows []diff.Row, point selectionPoint) selectionPoint {
+	_, end, ok := uiDiffCodeRange(rows, point.Row)
+	if !ok {
+		return point
+	}
+	switch {
+	case point.Row > s.mouseStartRow:
+		return selectionPoint{Row: point.Row, Col: 0}
+	case point.Row < s.mouseStartRow:
+		return selectionPoint{Row: point.Row, Col: maxInt(0, end-1)}
+	default:
+		return point
 	}
 }
 
@@ -826,6 +855,14 @@ func (s *uiDiffViewState) rowForMouse(mouse vaxis.Mouse) (int, bool) {
 		return 0, false
 	}
 	return row, true
+}
+
+func (s *uiDiffViewState) documentRowForMouse(mouse vaxis.Mouse) int {
+	first, _, ok := s.list.VisibleRange()
+	if !ok {
+		return -1
+	}
+	return first + mouse.Row
 }
 
 func uiDiffCodeOffset(rows []diff.Row) int {

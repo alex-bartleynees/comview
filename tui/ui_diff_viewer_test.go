@@ -1087,6 +1087,62 @@ func TestUIDiffViewMouseSelectionSkipsHunkRows(t *testing.T) {
 	}
 }
 
+func TestUIDiffViewDragFromHunkIntoCodeStartsAtLineStart(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowHunk, Text: "@@ -1 +1 @@", Prefix: "@@ -1 +1 @@"},
+		{Kind: diff.RowContext, Gutter: "1 1   ", Code: "abcdef"},
+	}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	app.Pump(vui.Size{Width: 30, Height: 4})
+	app.Pump(vui.Size{Width: 30, Height: 4})
+	codeOffset := uiDiffCodeOffset(rows)
+
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventPress, Row: 0, Col: 2})
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventMotion, Row: 1, Col: codeOffset + 1})
+	app.Pump(vui.Size{Width: 30, Height: 4})
+
+	p := vui.NewPainter(vui.Size{Width: 30, Height: 4})
+	app.Paint(p)
+	theme := uiDiffTestTheme()
+	if got := p.Cell(codeOffset, 1).Background; got != theme.Selection {
+		t.Fatalf("line-start selected background = %v, want selection", got)
+	}
+	if got := p.Cell(codeOffset+1, 1).Background; got != uiDiffCursorBackground(theme) {
+		t.Fatalf("drag cursor background = %v, want cursor", got)
+	}
+	if got := p.Cell(0, 0).Background; got == theme.Selection {
+		t.Fatal("hunk row was selected")
+	}
+}
+
+func TestUIDiffViewDragFromHunkUpIntoCodeStartsAtLineEnd(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowContext, Gutter: "1 1   ", Code: "abcdef"},
+		{Kind: diff.RowHunk, Text: "@@ -1 +1 @@", Prefix: "@@ -1 +1 @@"},
+	}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	app.Pump(vui.Size{Width: 30, Height: 4})
+	app.Pump(vui.Size{Width: 30, Height: 4})
+	codeOffset := uiDiffCodeOffset(rows)
+
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventPress, Row: 1, Col: 2})
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventMotion, Row: 0, Col: codeOffset + 4})
+	app.Pump(vui.Size{Width: 30, Height: 4})
+
+	p := vui.NewPainter(vui.Size{Width: 30, Height: 4})
+	app.Paint(p)
+	theme := uiDiffTestTheme()
+	if got := p.Cell(codeOffset+4, 0).Background; got != uiDiffCursorBackground(theme) {
+		t.Fatalf("drag cursor background = %v, want cursor", got)
+	}
+	if got := p.Cell(codeOffset+5, 0).Background; got != theme.Selection {
+		t.Fatalf("line-end selected background = %v, want selection", got)
+	}
+	if got := p.Cell(codeOffset+3, 0).Background; got == theme.Selection {
+		t.Fatal("drag selection started before target cell")
+	}
+}
+
 func TestUIDiffViewSelectionTextPreservesTabs(t *testing.T) {
 	row := diff.Row{Kind: diff.RowContext, Code: "a\tb", Text: "a\tb"}
 	state := &uiDiffViewState{
