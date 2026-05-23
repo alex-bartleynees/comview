@@ -696,12 +696,12 @@ func TestUIDiffViewIncrementalSearchHighlightsMatches(t *testing.T) {
 	app.Pump(vui.Size{Width: 24, Height: 2})
 	p = vui.NewPainter(vui.Size{Width: 24, Height: 2})
 	app.Paint(p)
-	if got := p.Cell(3, 1).Background; got != uiDiffSearchHighlightStyle(theme).Background {
-		t.Fatalf("structured search highlight background = %v, want warning", got)
+	if got := p.Cell(3, 1).Background; got == uiDiffSearchHighlightStyle(theme).Background {
+		t.Fatalf("hunk metadata was highlighted by search")
 	}
 }
 
-func TestUIDiffViewSearchesStructuredRows(t *testing.T) {
+func TestUIDiffViewSearchesStructuredRowsExceptHunks(t *testing.T) {
 	rows := []diff.Row{
 		{Kind: diff.RowContext, Gutter: "1 1   ", Code: "alpha"},
 		{Kind: diff.RowHunk, Prefix: "@@ -10 +10 @@", Code: " func"},
@@ -717,8 +717,8 @@ func TestUIDiffViewSearchesStructuredRows(t *testing.T) {
 	app.Pump(vui.Size{Width: 24, Height: 3})
 	p := vui.NewPainter(vui.Size{Width: 24, Height: 3})
 	app.Paint(p)
-	if got := uiDiffHighlightedScreenRow(p, uiDiffCursorRowBackground(uiDiffTestTheme())); got != 1 {
-		t.Fatalf("structured hunk search highlight row = %d, want 1", got)
+	if got := uiDiffHighlightedScreenRow(p, uiDiffCursorRowBackground(uiDiffTestTheme())); got != 0 {
+		t.Fatalf("hunk search highlight row = %d, want unchanged cursor row 0", got)
 	}
 
 	app.Send(vaxis.Key{Text: "/", Keycode: '/'})

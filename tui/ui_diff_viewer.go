@@ -2261,6 +2261,9 @@ func (s *uiDiffViewState) updateSearchMatches(rows []diff.Row) {
 }
 
 func uiDiffSearchableText(row diff.Row) (string, int) {
+	if row.Kind == diff.RowHunk {
+		return "", 0
+	}
 	if uiDiffRowUsesGrid(row) && row.Code != "" {
 		return row.Code, 0
 	}
