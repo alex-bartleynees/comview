@@ -59,6 +59,8 @@ type uiDiffViewState struct {
 	pendingSpace            bool
 	pendingD                bool
 	fileFinder              bool
+	themeFinder             bool
+	themeName               string
 	helpVisible             bool
 	textObject              textObjectState
 	commentEditorActive     bool
@@ -115,6 +117,11 @@ func (s *uiDiffViewState) Build(ctx vui.BuildContext) vui.Widget {
 	s.clearExpiredStatusMessage(time.Now())
 	s.clampCursor(w.Rows)
 	theme := vui.MustDepend[vui.Theme](ctx)
+	if s.themeName != "" {
+		if selected, ok := ThemeByName(s.themeName); ok {
+			theme = uiThemeFromBaseColors(selected.Colors)
+		}
+	}
 	highlightedRows := s.highlightedCodeRows(w.Rows, theme)
 	drafts := s.allReviewDrafts(w.ReviewDrafts)
 	scrollView := vui.CustomScrollView{
@@ -132,20 +139,27 @@ func (s *uiDiffViewState) Build(ctx vui.BuildContext) vui.Widget {
 			},
 		},
 	}
-	if !w.ShowStatus {
-		return scrollView
+	content := vui.Widget(scrollView)
+	if w.ShowStatus {
+		content = vui.Flex{
+			Axis:               vui.Vertical,
+			CrossAxisAlignment: vui.CrossAxisStretch,
+			Children: []vui.Widget{
+				vui.Expanded(scrollView),
+				s.buildStatusBar(w.Rows, theme),
+			},
+		}
 	}
-	content := vui.Flex{
-		Axis:               vui.Vertical,
-		CrossAxisAlignment: vui.CrossAxisStretch,
-		Children: []vui.Widget{
-			vui.Expanded(scrollView),
-			s.buildStatusBar(w.Rows, theme),
-		},
-	}
+	content = vui.DecoratedBox(
+		vui.Decoration{Style: vui.Style{Background: theme.Background}},
+		vui.SizedBox{Width: 10000, Height: 10000, Child: content},
+	)
 	entries := []vui.OverlayEntry{}
 	if s.fileFinder {
 		entries = append(entries, vui.OverlayEntry{Modal: true, Child: s.buildFileFinder(w.Rows, theme)})
+	}
+	if s.themeFinder {
+		entries = append(entries, vui.OverlayEntry{Modal: true, Child: s.buildThemeFinder()})
 	}
 	if s.helpVisible {
 		entries = append(entries, vui.OverlayEntry{Modal: true, Child: s.buildHelpOverlay(theme)})
@@ -153,7 +167,11 @@ func (s *uiDiffViewState) Build(ctx vui.BuildContext) vui.Widget {
 	if s.editorCommand != nil {
 		entries = append(entries, vui.OverlayEntry{Modal: true, Child: s.buildEditorTerminal(theme)})
 	}
-	return vui.Overlay{Child: content, Entries: entries}
+	root := vui.Widget(vui.Overlay{Child: content, Entries: entries})
+	if s.themeName != "" {
+		root = vui.Provider[vui.Theme]{Value: theme, Child: root}
+	}
+	return root
 }
 
 func (s *uiDiffViewState) buildHelpOverlay(theme vui.Theme) vui.Widget {
@@ -192,6 +210,30 @@ func uiDiffHelpOverlayWidth() int {
 		innerWidth = maxInt(innerWidth, keyWidth+2+textCellWidth(binding.Action))
 	}
 	return innerWidth + 4
+}
+
+func (s *uiDiffViewState) buildThemeFinder() vui.Widget {
+	return vui.FuzzySelect[Theme]{
+		Items:          Themes,
+		Item:           uiThemeSelectItem,
+		Placeholder:    "Choose theme…",
+		EmptyText:      "No matching themes",
+		MaxVisibleRows: 8,
+		RowStyle:       vui.FuzzySelectOneLine,
+		OnDismiss: func(vui.EventContext) {
+			s.themeFinder = false
+			s.SetState(func() {})
+		},
+		OnSelected: func(_ vui.EventContext, theme Theme) {
+			s.themeFinder = false
+			s.themeName = theme.Name
+			s.setStatusMessage("Theme: " + theme.Name)
+		},
+	}
+}
+
+func uiThemeSelectItem(theme Theme) vui.FuzzySelectItem {
+	return vui.FuzzySelectItem{Title: theme.Name, Aliases: []string{theme.Name}}
 }
 
 func (s *uiDiffViewState) buildEditorTerminal(theme vui.Theme) vui.Widget {
@@ -689,6 +731,9 @@ func (s *uiDiffViewState) HandleEvent(ctx vui.EventContext, ev vui.Event) vui.Ev
 	if s.fileFinder {
 		return vui.EventIgnored
 	}
+	if s.themeFinder {
+		return vui.EventIgnored
+	}
 	if s.helpVisible {
 		if keyQuestionMark(key) || key.Matches('q') || keyEscape(key) {
 			s.helpVisible = false
@@ -730,6 +775,13 @@ func (s *uiDiffViewState) HandleEvent(ctx vui.EventContext, ev vui.Event) vui.Ev
 	case keyQuestionMark(key):
 		s.clearPendingKeys()
 		s.helpVisible = true
+		s.SetState(func() {})
+		return vui.EventHandled
+	case key.Matches('t'):
+		s.clearPendingKeys()
+		s.themeFinder = true
+		s.statusMessage = ""
+		s.statusMessageUntil = time.Time{}
 		s.SetState(func() {})
 		return vui.EventHandled
 	case key.Matches(':'):

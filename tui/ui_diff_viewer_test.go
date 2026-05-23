@@ -229,6 +229,66 @@ func TestUIDiffViewHelpOverlayClosesWithEscapeAndQ(t *testing.T) {
 	}
 }
 
+func TestUIDiffViewThemePickerSelectsTheme(t *testing.T) {
+	app := newUIDiffTestAppWithBaseDraftsAndStatus([]diff.Row{{Kind: diff.RowContext, Code: "line"}}, DefaultBaseColors(), false, nil, true)
+	size := vui.Size{Width: 80, Height: 12}
+	app.Pump(size)
+	app.Pump(size)
+
+	app.Send(vaxis.Key{Text: "t", Keycode: 't'})
+	app.Pump(size)
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	if _, _, ok := uiDiffFindText(p, "Choose theme"); !ok {
+		t.Fatal("theme picker did not render")
+	}
+
+	app.Send(vaxis.Key{Text: "latte"})
+	app.Pump(size)
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEnter})
+	app.Pump(size)
+	app.Pump(size)
+	p = vui.NewPainter(size)
+	app.Paint(p)
+	if got := uiDiffPainterText(p, size.Height-1); !strings.Contains(got, "Theme: Catppuccin Latte") {
+		t.Fatalf("status = %q, want selected theme", got)
+	}
+	selected := uiThemeFromBaseColors(Themes[2].Colors)
+	if got := p.Cell(0, 0).Background; got != uiDiffCursorRowBackground(selected) {
+		t.Fatalf("cursor row background = %v, want selected theme cursor background %v", got, uiDiffCursorRowBackground(selected))
+	}
+	if got := p.Cell(size.Width-1, size.Height-2).Background; got != selected.Background {
+		t.Fatalf("blank area background = %v, want selected theme background %v", got, selected.Background)
+	}
+	for _, pt := range []vui.Point{{X: size.Width - 1, Y: 0}, {X: size.Width - 1, Y: size.Height - 2}} {
+		if got := p.Cell(pt.X, pt.Y).Background; got != selected.Background {
+			t.Fatalf("root background at %#v = %v, want selected theme background %v", pt, got, selected.Background)
+		}
+	}
+}
+
+func TestUIDiffViewThemePickerEscapeKeepsTheme(t *testing.T) {
+	app := newUIDiffTestAppWithBaseDraftsAndStatus([]diff.Row{{Kind: diff.RowContext, Code: "line"}}, DefaultBaseColors(), false, nil, true)
+	size := vui.Size{Width: 80, Height: 12}
+	app.Pump(size)
+	app.Pump(size)
+
+	app.Send(vaxis.Key{Text: "t", Keycode: 't'})
+	app.Pump(size)
+	app.Send(vaxis.Key{Text: "latte"})
+	app.Pump(size)
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEsc})
+	app.Pump(size)
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	if _, _, ok := uiDiffFindText(p, "Choose theme"); ok {
+		t.Fatal("theme picker stayed visible after escape")
+	}
+	if got := p.Cell(0, 0).Background; got != uiDiffCursorRowBackground(uiDiffTestTheme()) {
+		t.Fatalf("cursor row background = %v, want original theme", got)
+	}
+}
+
 func TestUIDiffViewMovesCursorAndRevealsRows(t *testing.T) {
 	rows := make([]diff.Row, 20)
 	for i := range rows {
