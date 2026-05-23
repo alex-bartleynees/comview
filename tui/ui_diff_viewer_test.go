@@ -3,6 +3,7 @@ package tui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"git.sr.ht/~rockorager/vaxis"
 	vui "git.sr.ht/~rockorager/vaxis/ui"
@@ -864,6 +865,105 @@ func TestUIDiffViewLinewiseSelectionExtendsWithCursor(t *testing.T) {
 	}
 	if got := p.Cell(29, 2).Background; got == theme.Selection {
 		t.Fatal("unselected row has selection background")
+	}
+}
+
+func TestUIDiffViewVisualLineSkipsHunkRows(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowContext, Gutter: "1 1   ", Code: "one"},
+		{Kind: diff.RowHunk, Text: "@@ -2 +2 @@"},
+		{Kind: diff.RowContext, Gutter: "2 2   ", Code: "two"},
+	}
+	app := newUIDiffTestApp(rows, false)
+	app.Pump(vui.Size{Width: 30, Height: 3})
+	app.Pump(vui.Size{Width: 30, Height: 3})
+
+	app.Send(vaxis.Key{Text: "V", Keycode: 'V'})
+	app.Send(vaxis.Key{Text: "j", Keycode: 'j'})
+	app.Pump(vui.Size{Width: 30, Height: 3})
+	p := vui.NewPainter(vui.Size{Width: 30, Height: 3})
+	app.Paint(p)
+	theme := uiDiffTestTheme()
+	if got := p.Cell(6, 0).Background; got != theme.Selection {
+		t.Fatalf("first code row background = %v, want selection", got)
+	}
+	if got := p.Cell(0, 1).Background; got == theme.Selection {
+		t.Fatal("hunk row was selected")
+	}
+	if got := p.Cell(7, 2).Background; got != theme.Selection {
+		t.Fatalf("second code row background = %v, want selection", got)
+	}
+}
+
+func TestUIDiffViewSelectionTextLinewiseSkipsHunkRows(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowContext, Gutter: "1 1   ", Code: "one"},
+		{Kind: diff.RowHunk, Text: "@@ -2 +2 @@"},
+		{Kind: diff.RowContext, Gutter: "2 2   ", Code: "two"},
+	}
+	state := &uiDiffViewState{
+		selectionActive:   true,
+		selectionLinewise: true,
+		selectionAnchor:   selectionPoint{Row: 0},
+		cursor:            selectionPoint{Row: 2},
+	}
+	if got, want := state.selectionText(rows), "one\ntwo"; got != want {
+		t.Fatalf("selection text = %q, want %q", got, want)
+	}
+}
+
+func TestUIDiffViewSelectionTextCharacterwise(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowContext, Gutter: "1 1   ", Code: "abcd"},
+		{Kind: diff.RowContext, Gutter: "2 2   ", Code: "wxyz"},
+	}
+	state := &uiDiffViewState{
+		selectionActive: true,
+		selectionAnchor: selectionPoint{Row: 0, Col: 1},
+		cursor:          selectionPoint{Row: 1, Col: 2},
+	}
+	if got, want := state.selectionText(rows), "bcd\nwxy"; got != want {
+		t.Fatalf("selection text = %q, want %q", got, want)
+	}
+}
+
+func TestUIDiffViewYankClearsSelectionAndHighlightsText(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowContext, Gutter: "1 1   ", Code: "one"}}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	app.Pump(vui.Size{Width: 30, Height: 3})
+	app.Pump(vui.Size{Width: 30, Height: 3})
+
+	app.Send(vaxis.Key{Text: "V", Keycode: 'V'})
+	app.Send(vaxis.Key{Text: "y", Keycode: 'y'})
+	app.Pump(vui.Size{Width: 30, Height: 3})
+	p := vui.NewPainter(vui.Size{Width: 30, Height: 3})
+	app.Paint(p)
+	if got := uiDiffPainterText(p, 2); !strings.HasPrefix(got, " NORMAL ") {
+		t.Fatalf("status bar = %q, want NORMAL after yank", got)
+	}
+	if got := p.Cell(7, 0).Background; got != uiDiffYankBackground(uiDiffTestTheme()) {
+		t.Fatalf("yank background = %v, want yank", got)
+	}
+	if got := p.Cell(29, 0).Background; got == uiDiffYankBackground(uiDiffTestTheme()) {
+		t.Fatal("yank highlight extends past text")
+	}
+}
+
+func TestUIDiffViewYankHighlightExpires(t *testing.T) {
+	state := &uiDiffViewState{
+		yankActive:   true,
+		yankLinewise: true,
+		yankAnchor:   selectionPoint{Row: 0},
+		yankCursor:   selectionPoint{Row: 1},
+		yankUntil:    time.Unix(10, 0),
+	}
+	state.clearExpiredYank(time.Unix(9, 0))
+	if !state.yankActive {
+		t.Fatal("yank highlight expired early")
+	}
+	state.clearExpiredYank(time.Unix(10, 0))
+	if state.yankActive || state.yankLinewise || !state.yankUntil.IsZero() {
+		t.Fatalf("yank highlight still active: active=%v linewise=%v until=%v", state.yankActive, state.yankLinewise, state.yankUntil)
 	}
 }
 

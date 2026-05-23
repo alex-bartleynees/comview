@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"git.sr.ht/~rockorager/vaxis"
 	vui "git.sr.ht/~rockorager/vaxis/ui"
@@ -56,6 +57,11 @@ type uiDiffViewState struct {
 	selectionAnchor   selectionPoint
 	selectionActive   bool
 	selectionLinewise bool
+	yankAnchor        selectionPoint
+	yankCursor        selectionPoint
+	yankActive        bool
+	yankLinewise      bool
+	yankUntil         time.Time
 	searchMode        bool
 	searchQuery       string
 	searchMatches     []searchMatch
@@ -69,6 +75,7 @@ type uiDiffViewState struct {
 
 func (s *uiDiffViewState) Build(ctx vui.BuildContext) vui.Widget {
 	w := s.Widget().(uiDiffView)
+	s.clearExpiredYank(time.Now())
 	s.clampCursor(w.Rows)
 	theme := vui.MustDepend[vui.Theme](ctx)
 	highlightedRows := s.highlightedCodeRows(w.Rows, theme)
@@ -559,6 +566,10 @@ func (s *uiDiffViewState) HandleEvent(ctx vui.EventContext, ev vui.Event) vui.Ev
 		s.clearPendingKeys()
 		s.toggleSelection(true)
 		return vui.EventHandled
+	case key.Matches('y'):
+		s.clearPendingKeys()
+		s.yankSelection(ctx, rows)
+		return vui.EventHandled
 	case key.Matches(vaxis.KeySpace):
 		s.pendingG = false
 		s.pendingBracket = 0
@@ -673,9 +684,14 @@ func (s *uiDiffViewState) toggleSelection(linewise bool) {
 	if s.selectionActive {
 		s.clearLineSelection()
 	} else {
+		w := s.Widget().(uiDiffView)
+		if s.cursor.Row < 0 || s.cursor.Row >= len(w.Rows) || !selectableDiffRow(w.Rows[s.cursor.Row].Kind) {
+			return
+		}
 		s.selectionActive = true
 		s.selectionLinewise = linewise
 		s.selectionAnchor = s.cursor
+		s.yankActive = false
 	}
 	s.SetState(func() {})
 }
@@ -686,11 +702,98 @@ func (s *uiDiffViewState) clearLineSelection() {
 	s.selectionAnchor = selectionPoint{}
 }
 
+func (s *uiDiffViewState) yankSelection(ctx vui.EventContext, rows []diff.Row) {
+	if !s.selectionActive {
+		return
+	}
+	text := s.selectionText(rows)
+	if text == "" {
+		return
+	}
+	ctx.Copy(text)
+	s.yankActive = true
+	s.yankLinewise = s.selectionLinewise
+	s.yankAnchor = s.selectionAnchor
+	s.yankCursor = s.cursor
+	s.yankUntil = time.Now().Add(yankHighlightDuration)
+	s.clearLineSelection()
+	s.SetState(func() {})
+	runtime := ctx.Runtime()
+	time.AfterFunc(yankHighlightDuration, func() {
+		runtime.Dispatch(func() {
+			s.SetState(func() { s.clearExpiredYank(time.Now()) })
+		})
+	})
+}
+
+func (s *uiDiffViewState) clearExpiredYank(now time.Time) {
+	if s.yankActive && !s.yankUntil.IsZero() && !now.Before(s.yankUntil) {
+		s.yankActive = false
+		s.yankLinewise = false
+		s.yankAnchor = selectionPoint{}
+		s.yankCursor = selectionPoint{}
+		s.yankUntil = time.Time{}
+	}
+}
+
+func (s *uiDiffViewState) selectionText(rows []diff.Row) string {
+	if !s.selectionActive {
+		return ""
+	}
+	start := s.selectionAnchor
+	end := s.cursor
+	if selectionPointLess(end, start) {
+		start, end = end, start
+	}
+	var text strings.Builder
+	wroteRow := false
+	for rowIndex := start.Row; rowIndex <= end.Row && rowIndex < len(rows); rowIndex++ {
+		if rowIndex < 0 || !selectableDiffRow(rows[rowIndex].Kind) {
+			continue
+		}
+		row := rows[rowIndex]
+		rowStart, rowEnd := 0, codeCellWidth(row)
+		if !s.selectionLinewise {
+			if rowIndex == start.Row {
+				rowStart = maxInt(rowStart, start.Col)
+			}
+			if rowIndex == end.Row {
+				rowEnd = minInt(rowEnd, end.Col+1)
+			}
+		}
+		rowText := cellTextRangeWithTabWidth(row.Code, rowStart, rowEnd, tabWidthForFile(row.FileName))
+		if rowText == "" {
+			continue
+		}
+		if wroteRow {
+			text.WriteByte('\n')
+		}
+		text.WriteString(rowText)
+		wroteRow = true
+	}
+	return text.String()
+}
+
 func (s *uiDiffViewState) lineSelected(row int) bool {
 	if !s.selectionActive || !s.selectionLinewise {
 		return false
 	}
-	start, end := orderedUIDiffInts(s.selectionAnchor.Row, s.cursor.Row)
+	return s.lineInRange(row, s.selectionAnchor, s.cursor)
+}
+
+func (s *uiDiffViewState) lineYanked(row int) bool {
+	if !s.yankActive || !s.yankLinewise {
+		return false
+	}
+	return s.lineInRange(row, s.yankAnchor, s.yankCursor)
+}
+
+func (s *uiDiffViewState) lineInRange(row int, anchor selectionPoint, cursor selectionPoint) bool {
+	w := s.Widget().(uiDiffView)
+	if row < 0 || row >= len(w.Rows) || !selectableDiffRow(w.Rows[row].Kind) {
+		return false
+	}
+	start, end := orderedUIDiffInts(anchor.Row, cursor.Row)
 	return row >= start && row <= end
 }
 
@@ -698,8 +801,15 @@ func (s *uiDiffViewState) charSelectionRange(rowIndex int, row diff.Row) (int, i
 	if !s.selectionActive || s.selectionLinewise {
 		return 0, 0, false
 	}
-	start := s.selectionAnchor
-	end := s.cursor
+	return uiDiffSelectionRange(rowIndex, row, s.selectionAnchor, s.cursor)
+}
+
+func uiDiffSelectionRange(rowIndex int, row diff.Row, anchor selectionPoint, cursor selectionPoint) (int, int, bool) {
+	if !selectableDiffRow(row.Kind) {
+		return 0, 0, false
+	}
+	start := anchor
+	end := cursor
 	if selectionPointLess(end, start) {
 		start, end = end, start
 	}
@@ -723,6 +833,13 @@ func (s *uiDiffViewState) charSelectionRange(rowIndex int, row diff.Row) (int, i
 		return 0, 0, false
 	}
 	return from, to + 1, true
+}
+
+func (s *uiDiffViewState) charYankRange(rowIndex int, row diff.Row) (int, int, bool) {
+	if !s.yankActive || s.yankLinewise {
+		return 0, 0, false
+	}
+	return uiDiffSelectionRange(rowIndex, row, s.yankAnchor, s.yankCursor)
 }
 
 func (s *uiDiffViewState) enterSearchMode() {
@@ -784,15 +901,19 @@ func (s *uiDiffViewState) buildItem(rows []diff.Row, rowIndex int, theme vui.The
 	row := rows[rowIndex]
 	active := rowIndex == s.cursor.Row
 	selected := s.lineSelected(rowIndex)
+	yanked := s.lineYanked(rowIndex)
 	if !uiDiffRowUsesGrid(row) {
-		return uiDiffFullWidthRow(row, rowIndex, uiDiffRowBackground(active, selected, theme), theme, s.searchMatches, wrap)
+		return uiDiffFullWidthRow(row, rowIndex, uiDiffRowBackground(active, selected, yanked, theme), theme, s.searchMatches, wrap)
 	}
-	return s.buildRow(rows, row, rowIndex, active, selected, s.cursor.Col, theme, highlightedRows, s.searchMatches, wrap)
+	return s.buildRow(rows, row, rowIndex, active, selected, yanked, s.cursor.Col, theme, highlightedRows, s.searchMatches, wrap)
 }
 
-func uiDiffRowBackground(active bool, selected bool, theme vui.Theme) vaxis.Color {
+func uiDiffRowBackground(active bool, selected bool, yanked bool, theme vui.Theme) vaxis.Color {
 	if selected {
 		return theme.Selection
+	}
+	if yanked {
+		return uiDiffYankBackground(theme)
 	}
 	if active {
 		return uiDiffCursorRowBackground(theme)
@@ -897,6 +1018,10 @@ func uiDiffCursorRowBackground(theme vui.Theme) vaxis.Color {
 	return theme.SurfaceHovered
 }
 
+func uiDiffYankBackground(theme vui.Theme) vaxis.Color {
+	return theme.Warning
+}
+
 func uiDiffLineBackground(theme vui.Theme, scale vui.ColorScale) vaxis.Color {
 	if theme.Mode == vui.LightTheme {
 		return scale.Tone50
@@ -987,7 +1112,7 @@ func uiCommitTrailerValueStyle(theme vui.Theme) vaxis.Style {
 	return vaxis.Style{Foreground: theme.DisabledForeground, Background: theme.Background}
 }
 
-func (s *uiDiffViewState) buildRow(rows []diff.Row, row diff.Row, rowIndex int, active bool, selected bool, cursorCol int, theme vui.Theme, highlightedRows map[int][]vaxis.Segment, searchMatches []searchMatch, wrap bool) vui.Widget {
+func (s *uiDiffViewState) buildRow(rows []diff.Row, row diff.Row, rowIndex int, active bool, selected bool, yanked bool, cursorCol int, theme vui.Theme, highlightedRows map[int][]vaxis.Segment, searchMatches []searchMatch, wrap bool) vui.Widget {
 	style := uiStyleForDiffRow(row.Kind, theme)
 	rowBackground := vaxis.Color(0)
 	if active {
@@ -1000,6 +1125,8 @@ func (s *uiDiffViewState) buildRow(rows []diff.Row, row diff.Row, rowIndex int, 
 	textBackground := rowBackground
 	if selected {
 		textBackground = theme.Selection
+	} else if yanked {
+		textBackground = uiDiffYankBackground(theme)
 	}
 	if textBackground != 0 {
 		style.Background = textBackground
@@ -1015,6 +1142,9 @@ func (s *uiDiffViewState) buildRow(rows []diff.Row, row diff.Row, rowIndex int, 
 	}
 	if start, end, ok := s.charSelectionRange(rowIndex, row); ok {
 		codeSegments = uiDiffApplySegmentBackgroundRange(codeSegments, start, end, theme.Selection, tabWidthForFile(row.FileName))
+	}
+	if start, end, ok := s.charYankRange(rowIndex, row); ok {
+		codeSegments = uiDiffApplySegmentBackgroundRange(codeSegments, start, end, uiDiffYankBackground(theme), tabWidthForFile(row.FileName))
 	}
 	codeSegments = uiDiffSearchSegments(rowIndex, row, codeSegments, searchMatches, theme)
 	oldLine, newLine, marker := splitDiffGutter(row)
@@ -1211,7 +1341,11 @@ func (s *uiDiffViewState) setCursorRow(rows []diff.Row, row int) {
 		s.cursor = selectionPoint{}
 		return
 	}
-	s.cursor.Row = uiDiffCursorTargetRow(rows, row, signUIDiffInt(row-s.cursor.Row))
+	if s.selectionActive {
+		s.cursor.Row = uiDiffSelectableTargetRow(rows, row, signUIDiffInt(row-s.cursor.Row))
+	} else {
+		s.cursor.Row = uiDiffCursorTargetRow(rows, row, signUIDiffInt(row-s.cursor.Row))
+	}
 	s.cursor.Col = s.clampCursorCol(rows, s.cursor.Row, s.cursorCol)
 	s.cursorCol = s.cursor.Col
 	s.revealCursorRow()
@@ -1244,6 +1378,31 @@ func uiDiffCursorTargetRow(rows []diff.Row, row int, direction int) int {
 	for next := row - direction; next >= 0 && next < len(rows); next -= direction {
 		if uiDiffCursorableRow(rows[next]) {
 			return next
+		}
+	}
+	return row
+}
+
+func uiDiffSelectableTargetRow(rows []diff.Row, row int, direction int) int {
+	if len(rows) == 0 {
+		return 0
+	}
+	row = clampUIDiffInt(row, 0, len(rows)-1)
+	if selectableDiffRow(rows[row].Kind) {
+		return row
+	}
+	if direction >= 0 {
+		for next := row + 1; next < len(rows); next++ {
+			if selectableDiffRow(rows[next].Kind) {
+				return next
+			}
+		}
+	}
+	if direction <= 0 {
+		for next := row - 1; next >= 0; next-- {
+			if selectableDiffRow(rows[next].Kind) {
+				return next
+			}
 		}
 	}
 	return row
