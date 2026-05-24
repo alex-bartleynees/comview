@@ -342,6 +342,325 @@ func TestUIDiffViewHorizontalScrollKeepsGuttersFixed(t *testing.T) {
 	}
 }
 
+func TestUIDiffViewSideBySideToggleRendersDeleteAddPair(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowDelete, Gutter: "1     - ", Marker: "-", Code: "old"},
+		{Kind: diff.RowAdd, Gutter: "    1 + ", Marker: "+", Code: "new"},
+	}
+	app := newUIDiffTestApp(rows, false)
+	size := vui.Size{Width: 30, Height: 2}
+	app.Pump(size)
+	app.Pump(size)
+
+	app.Send(vaxis.Key{Text: "s", Keycode: 's'})
+	app.Pump(size)
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	row := uiDiffPainterText(p, 0)
+	if !strings.Contains(row, "1 - old") {
+		t.Fatalf("side-by-side row = %q, want left delete", row)
+	}
+	if !strings.Contains(row, "1 + new") {
+		t.Fatalf("side-by-side row = %q, want right add", row)
+	}
+}
+
+func TestUIDiffViewSideBySideRowsPairReplacementBlocks(t *testing.T) {
+	rows := uiDiffSideBySideRows([]diff.Row{
+		{Kind: diff.RowFile, Text: "main.go"},
+		{Kind: diff.RowContext, Gutter: "1 1   ", Code: "same"},
+		{Kind: diff.RowDelete, Gutter: "2     - ", Code: "old one"},
+		{Kind: diff.RowDelete, Gutter: "3     - ", Code: "old two"},
+		{Kind: diff.RowAdd, Gutter: "    2 + ", Code: "new one"},
+		{Kind: diff.RowContext, Gutter: "4 3   ", Code: "after"},
+	})
+
+	if len(rows) != 5 {
+		t.Fatalf("side rows = %+v, want 5 rows", rows)
+	}
+	if rows[0].Full != 0 {
+		t.Fatalf("file row = %+v, want full row 0", rows[0])
+	}
+	if rows[1].Left != 1 || rows[1].Right != 1 {
+		t.Fatalf("context row = %+v, want row 1 on both sides", rows[1])
+	}
+	if rows[2].Left != 2 || rows[2].Right != 4 {
+		t.Fatalf("paired replacement row = %+v, want delete 2 add 4", rows[2])
+	}
+	if rows[3].Left != 3 || rows[3].Right != -1 {
+		t.Fatalf("unpaired delete row = %+v, want delete 3 only", rows[3])
+	}
+	if rows[4].Left != 5 || rows[4].Right != 5 {
+		t.Fatalf("final context row = %+v, want row 5 on both sides", rows[4])
+	}
+}
+
+func TestUIDiffViewSideBySideRowsUseSimilarityPairing(t *testing.T) {
+	rows := uiDiffSideBySideRows([]diff.Row{
+		{Kind: diff.RowDelete, Gutter: "1     - ", Code: "foo := oldValue + 1"},
+		{Kind: diff.RowDelete, Gutter: "2     - ", Code: "keep()"},
+		{Kind: diff.RowAdd, Gutter: "    1 + ", Code: "inserted()"},
+		{Kind: diff.RowAdd, Gutter: "    2 + ", Code: "foo := newValue + 1"},
+		{Kind: diff.RowAdd, Gutter: "    3 + ", Code: "keep()"},
+	})
+
+	if len(rows) != 3 {
+		t.Fatalf("side rows = %+v, want 3 rows", rows)
+	}
+	if rows[0].Left != 0 || rows[0].Right != 2 {
+		t.Fatalf("first compact row = %+v, want delete 0 add 2", rows[0])
+	}
+	if rows[1].Left != 1 || rows[1].Right != 3 {
+		t.Fatalf("second compact row = %+v, want delete 1 add 3", rows[1])
+	}
+	if rows[2].Left != -1 || rows[2].Right != 4 {
+		t.Fatalf("extra add row = %+v, want add-only row 4", rows[2])
+	}
+}
+
+func TestUIDiffViewSideBySideRowsPutAddOnlyHunkContextOnRight(t *testing.T) {
+	rows := uiDiffSideBySideRows([]diff.Row{
+		{Kind: diff.RowHunk, Text: "@@ -1,2 +1,3 @@"},
+		{Kind: diff.RowContext, Gutter: "1 1   ", Code: "before"},
+		{Kind: diff.RowAdd, Gutter: "    2 + ", Code: "added"},
+		{Kind: diff.RowContext, Gutter: "2 3   ", Code: "after"},
+	})
+
+	if len(rows) != 4 {
+		t.Fatalf("side rows = %+v, want 4 rows", rows)
+	}
+	if rows[0].Full != 0 {
+		t.Fatalf("hunk row = %+v, want full row 0", rows[0])
+	}
+	for index, row := range rows[1:] {
+		if row.Left != -1 || row.Right != index+1 {
+			t.Fatalf("row %d = %+v, want right-only doc row %d", index+1, row, index+1)
+		}
+	}
+}
+
+func TestUIDiffViewSideBySideRowsPutDeleteOnlyHunkContextOnLeft(t *testing.T) {
+	rows := uiDiffSideBySideRows([]diff.Row{
+		{Kind: diff.RowHunk, Text: "@@ -1,3 +1,2 @@"},
+		{Kind: diff.RowContext, Gutter: "1 1   ", Code: "before"},
+		{Kind: diff.RowDelete, Gutter: "2     - ", Code: "deleted"},
+		{Kind: diff.RowContext, Gutter: "3 2   ", Code: "after"},
+	})
+
+	if len(rows) != 4 {
+		t.Fatalf("side rows = %+v, want 4 rows", rows)
+	}
+	if rows[0].Full != 0 {
+		t.Fatalf("hunk row = %+v, want full row 0", rows[0])
+	}
+	for index, row := range rows[1:] {
+		if row.Left != index+1 || row.Right != -1 {
+			t.Fatalf("row %d = %+v, want left-only doc row %d", index+1, row, index+1)
+		}
+	}
+}
+
+func TestUIDiffViewSideBySideGutterUsesOneSideLineNumbers(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowDelete, Gutter: "10     - ", Code: "old"},
+		{Kind: diff.RowAdd, Gutter: "    11 + ", Code: "new"},
+		{Kind: diff.RowContext, Gutter: "12 13   ", Code: "same"},
+	}
+
+	if got, want := uiDiffSideBySideGutter(rows, rows[0], sideLeft), "10 - "; got != want {
+		t.Fatalf("delete left gutter = %q, want %q", got, want)
+	}
+	if got, want := uiDiffSideBySideGutter(rows, rows[1], sideRight), "11 + "; got != want {
+		t.Fatalf("add right gutter = %q, want %q", got, want)
+	}
+	if got, want := uiDiffSideBySideGutter(rows, rows[2], sideLeft), "12   "; got != want {
+		t.Fatalf("context left gutter = %q, want %q", got, want)
+	}
+	if got, want := uiDiffSideBySideGutter(rows, rows[2], sideRight), "13   "; got != want {
+		t.Fatalf("context right gutter = %q, want %q", got, want)
+	}
+}
+
+func TestUIDiffViewSideBySideRendersAddOnlyHunkOnRight(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowHunk, Text: "@@ -1,2 +1,3 @@"},
+		{Kind: diff.RowContext, Gutter: "1 1   ", Code: "before"},
+		{Kind: diff.RowAdd, Gutter: "    2 + ", Code: "added"},
+	}
+	app := newUIDiffTestApp(rows, false)
+	size := vui.Size{Width: 40, Height: 4}
+	app.Pump(size)
+	app.Pump(size)
+
+	app.Send(vaxis.Key{Text: "s", Keycode: 's'})
+	app.Pump(size)
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	col, ok := uiDiffFindTextOnRow(p, 1, "1   before")
+	if !ok || col < 20 {
+		t.Fatalf("add-only context row = %q, want context on right", uiDiffPainterText(p, 1))
+	}
+}
+
+func TestUIDiffViewSideBySideRendersDeleteOnlyHunkOnLeft(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowHunk, Text: "@@ -1,3 +1,2 @@"},
+		{Kind: diff.RowContext, Gutter: "1 1   ", Code: "before"},
+		{Kind: diff.RowDelete, Gutter: "2     - ", Code: "deleted"},
+	}
+	app := newUIDiffTestApp(rows, false)
+	size := vui.Size{Width: 40, Height: 4}
+	app.Pump(size)
+	app.Pump(size)
+
+	app.Send(vaxis.Key{Text: "s", Keycode: 's'})
+	app.Pump(size)
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	col, ok := uiDiffFindTextOnRow(p, 1, "1   before")
+	if !ok || col >= 20 {
+		t.Fatalf("delete-only context row = %q, want context on left", uiDiffPainterText(p, 1))
+	}
+}
+
+func TestUIDiffViewSideBySideHonorsCustomToggleBinding(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowDelete, Gutter: "1     - ", Marker: "-", Code: "old"},
+		{Kind: diff.RowAdd, Gutter: "    1 + ", Marker: "+", Code: "new"},
+	}
+	app := newUIDiffTestAppWithBindings(rows, map[string][]string{
+		"toggle_layout": {"z"},
+	})
+	size := vui.Size{Width: 30, Height: 3}
+	app.Pump(size)
+	app.Pump(size)
+
+	app.Send(vaxis.Key{Text: "s", Keycode: 's'})
+	app.Pump(size)
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	if row := uiDiffPainterText(p, 0); strings.Contains(row, "new") {
+		t.Fatalf("default toggle key switched layout: row = %q", row)
+	}
+
+	app.Send(vaxis.Key{Text: "z", Keycode: 'z'})
+	app.Pump(size)
+	p = vui.NewPainter(size)
+	app.Paint(p)
+	if row := uiDiffPainterText(p, 0); !strings.Contains(row, "old") || !strings.Contains(row, "new") {
+		t.Fatalf("custom toggle key did not switch layout: row = %q", row)
+	}
+}
+
+func TestUIDiffViewSideBySideHighlightsCursorOnOneSide(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowContext, Gutter: "1 1   ", Code: "same"}}
+	app := newUIDiffTestApp(rows, false)
+	size := vui.Size{Width: 30, Height: 2}
+	app.Pump(size)
+	app.Pump(size)
+
+	app.Send(vaxis.Key{Text: "s", Keycode: 's'})
+	app.Pump(size)
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	cursorBackground := uiDiffCursorBackground(uiDiffTestTheme())
+	if got := p.Cell(4, 0).Background; got == cursorBackground {
+		t.Fatalf("left context cell background = cursor, want inactive side")
+	}
+	if got := p.Cell(19, 0).Background; got != cursorBackground {
+		t.Fatalf("right context cell background = %v, want cursor", got)
+	}
+}
+
+func TestUIDiffViewSideBySideShowsCommentEditor(t *testing.T) {
+	rows, err := rowsForInput(`diff --git a/main.go b/main.go
+--- a/main.go
++++ b/main.go
+@@ -1 +1 @@
+-old
++new
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := newUIDiffTestApp(rows, false)
+	size := vui.Size{Width: 50, Height: 6}
+	app.Pump(size)
+	app.Pump(size)
+
+	app.Send(vaxis.Key{Text: "s", Keycode: 's'})
+	app.Pump(size)
+	for rowIndex, row := range rows {
+		if row.Kind == diff.RowAdd {
+			for range rowIndex {
+				app.Send(vaxis.Key{Text: "j", Keycode: 'j'})
+			}
+			break
+		}
+	}
+	app.Pump(size)
+	app.Send(vaxis.Key{Text: "i", Keycode: 'i'})
+	app.Pump(size)
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	if uiDiffPainterRowContaining(p, "Add comment") == -1 {
+		t.Fatal("side-by-side comment editor not rendered")
+	}
+}
+
+func TestUIDiffViewSideBySideHorizontalScrollUsesPaneWidth(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowDelete, Gutter: "1     - ", Code: "old"},
+		{Kind: diff.RowAdd, Gutter: "    1 + ", Code: "abcdefghijklmnop"},
+	}
+	app := newUIDiffTestApp(rows, false)
+	size := vui.Size{Width: 30, Height: 3}
+	app.Pump(size)
+	app.Pump(size)
+
+	app.Send(vaxis.Key{Text: "s", Keycode: 's'})
+	app.Pump(size)
+	app.Send(vaxis.Key{Text: "j", Keycode: 'j'})
+	app.Send(vaxis.Key{Text: "$", Keycode: '$'})
+	app.Pump(size)
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	row := uiDiffPainterText(p, 0)
+	if strings.Contains(row, "abcdefghijklmnop") {
+		t.Fatalf("side-by-side row = %q, want horizontally clipped code", row)
+	}
+	if !strings.Contains(row, "ghijklmnop") {
+		t.Fatalf("side-by-side row = %q, want line end visible", row)
+	}
+}
+
+func TestUIDiffViewSideBySideRevealUsesVisualRow(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowDelete, Gutter: "1     - ", Code: "old one"},
+		{Kind: diff.RowAdd, Gutter: "    1 + ", Code: "new one"},
+		{Kind: diff.RowDelete, Gutter: "2     - ", Code: "old two"},
+		{Kind: diff.RowAdd, Gutter: "    2 + ", Code: "new two"},
+		{Kind: diff.RowDelete, Gutter: "3     - ", Code: "old three"},
+		{Kind: diff.RowAdd, Gutter: "    3 + ", Code: "new three"},
+	}
+	app := newUIDiffTestApp(rows, false)
+	size := vui.Size{Width: 40, Height: 2}
+	app.Pump(size)
+	app.Pump(size)
+
+	app.Send(vaxis.Key{Text: "s", Keycode: 's'})
+	app.Pump(size)
+	for range 4 {
+		app.Send(vaxis.Key{Text: "j", Keycode: 'j'})
+	}
+	app.Pump(size)
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	if row := uiDiffPainterText(p, 1); !strings.Contains(row, "old three") || !strings.Contains(row, "new three") {
+		t.Fatalf("bottom visible side-by-side row = %q, want cursor visual row", row)
+	}
+}
+
 func TestUIDiffViewDollarAndZeroAdjustHorizontalScroll(t *testing.T) {
 	rows := []diff.Row{{Kind: diff.RowContext, Gutter: "1 1   ", Code: "abcdefghijklmnop"}}
 	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)

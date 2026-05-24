@@ -67,6 +67,7 @@ type uiDiffViewState struct {
 	themeFinder             bool
 	themeName               string
 	helpVisible             bool
+	sideBySide              bool
 	xScroll                 int
 	textObject              textObjectState
 	commentEditorActive     bool
@@ -130,20 +131,32 @@ func (s *uiDiffViewState) Build(ctx vui.BuildContext) vui.Widget {
 	}
 	highlightedRows := s.highlightedCodeRows(w.Rows, theme)
 	drafts := s.allReviewDrafts(w.ReviewDrafts)
+	sliver := vui.Widget(vui.SliverListBuilder{
+		Controller:          &s.list,
+		Count:               len(w.Rows),
+		ItemExtent:          uiDiffItemExtent(w.Wrap || s.commentEditorActive || len(s.reviewDrafts) > 0),
+		EstimatedItemExtent: 1,
+		Overscan:            8,
+		Builder: func(ctx vui.BuildContext, row int) vui.Widget {
+			return s.buildItem(w.Rows, row, theme, highlightedRows, drafts, w.Wrap)
+		},
+	})
+	if s.sideBySide {
+		sideRows := uiDiffSideBySideRows(w.Rows)
+		sliver = vui.SliverListBuilder{
+			Controller:          &s.list,
+			Count:               len(sideRows),
+			ItemExtent:          uiDiffItemExtent(s.commentEditorActive || len(s.commentEditorBodies) > 0 || len(drafts) > 0),
+			EstimatedItemExtent: 1,
+			Overscan:            8,
+			Builder: func(ctx vui.BuildContext, row int) vui.Widget {
+				return s.buildSideBySideItem(w.Rows, sideRows[row], theme, highlightedRows, drafts, w.Wrap)
+			},
+		}
+	}
 	scrollView := vui.CustomScrollView{
 		Controller: &s.scroll,
-		Slivers: []vui.Widget{
-			vui.SliverListBuilder{
-				Controller:          &s.list,
-				Count:               len(w.Rows),
-				ItemExtent:          uiDiffItemExtent(w.Wrap || s.commentEditorActive || len(s.reviewDrafts) > 0),
-				EstimatedItemExtent: 1,
-				Overscan:            8,
-				Builder: func(ctx vui.BuildContext, row int) vui.Widget {
-					return s.buildItem(w.Rows, row, theme, highlightedRows, drafts, w.Wrap)
-				},
-			},
-		},
+		Slivers:    []vui.Widget{sliver},
 	}
 	content := vui.Widget(scrollView)
 	if w.ShowStatus {
@@ -831,6 +844,11 @@ func (s *uiDiffViewState) HandleEvent(ctx vui.EventContext, ev vui.Event) vui.Ev
 	case w.Binds.Matches(key, "search"):
 		s.clearPendingKeys()
 		s.enterSearchMode()
+		return vui.EventHandled
+	case w.Binds.Matches(key, "toggle_layout"):
+		s.clearPendingKeys()
+		s.sideBySide = !s.sideBySide
+		s.SetState(func() {})
 		return vui.EventHandled
 	case key.Matches('v'):
 		s.clearPendingKeys()
@@ -2178,6 +2196,140 @@ func (s *uiDiffViewState) buildItem(rows []diff.Row, rowIndex int, theme vui.The
 	return vui.Column(children...)
 }
 
+func (s *uiDiffViewState) buildSideBySideItem(rows []diff.Row, sideRow sideBySideRow, theme vui.Theme, highlightedRows map[int][]vaxis.Segment, drafts []review.CommentDraft, wrap bool) vui.Widget {
+	if sideRow.Full >= 0 {
+		return s.buildItem(rows, sideRow.Full, theme, highlightedRows, drafts, wrap)
+	}
+	separatorStyle := vaxis.Style{Foreground: theme.MutedForeground, Background: theme.Background}
+	row := vui.Row(
+		vui.Expanded(s.buildSideBySideCell(rows, sideRow.Left, sideLeft, theme, highlightedRows, wrap)),
+		uiDiffFixedCell(1, separatorStyle, vui.Text{Value: " ", Style: separatorStyle}),
+		vui.Expanded(s.buildSideBySideCell(rows, sideRow.Right, sideRight, theme, highlightedRows, wrap)),
+	)
+	children := []vui.Widget{row}
+	for _, docRow := range sideBySideRowCommentDocRows(sideRow) {
+		children = append(children, s.buildSideBySideCommentRows(rows, docRow, drafts, theme)...)
+	}
+	if len(children) == 1 {
+		return row
+	}
+	return vui.Column(children...)
+}
+
+func (s *uiDiffViewState) buildSideBySideCell(rows []diff.Row, rowIndex int, side diffSide, theme vui.Theme, highlightedRows map[int][]vaxis.Segment, wrap bool) vui.Widget {
+	if rowIndex < 0 || rowIndex >= len(rows) {
+		return vui.DecoratedBox(vui.Decoration{Style: vaxis.Style{Background: theme.Background}}, vui.SizedBox{Height: 1})
+	}
+	row := rows[rowIndex]
+	active := rowIndex == s.cursor.Row && side == sideForRow(row) && !s.commentEditorInsert && !s.commentEditorFocused
+	selected := s.lineSelected(rowIndex)
+	yanked := s.lineYanked(rowIndex)
+	style := uiStyleForDiffRow(row.Kind, theme)
+	rowBackground := vaxis.Color(0)
+	if active {
+		rowBackground = uiDiffCursorRowBackground(theme)
+	}
+	fillBackground := style.Background
+	if rowBackground != 0 {
+		fillBackground = rowBackground
+	}
+	textBackground := rowBackground
+	if selected {
+		textBackground = theme.Selection
+	} else if yanked {
+		textBackground = uiDiffYankBackground(theme)
+	}
+	if textBackground != 0 {
+		style.Background = textBackground
+	}
+	codeSegments := highlightedRows[rowIndex]
+	if len(codeSegments) == 0 {
+		codeSegments = []vaxis.Segment{{Text: row.Code, Style: style}}
+	}
+	codeSegments = uiDiffToneCodeSegments(row.Kind, codeSegments, theme)
+	if textBackground != 0 {
+		codeSegments = uiDiffApplyBackground(codeSegments, textBackground)
+	}
+	codeSegments = uiDiffSearchSegments(rowIndex, row, codeSegments, s.searchMatches, theme)
+	gutterStyle := uiGutterStyle(row.Kind, rowBackground, theme)
+	lineNumberStyle := uiLineNumberGutterStyle(row.Kind, rowBackground, theme)
+	gutter := uiDiffSideBySideGutter(rows, row, side)
+	lineNumber, marker := uiDiffSplitSideBySideGutter(gutter)
+	return vui.Row(
+		uiDiffFixedCell(len(lineNumber), lineNumberStyle, vui.Text{Value: lineNumber, Style: lineNumberStyle, Align: vui.TextAlignRight}),
+		uiDiffFixedCell(3, gutterStyle, vui.Text{Value: marker, Style: gutterStyle}),
+		vui.Expanded(uiDiffCodeWidget(row, row.Code, codeSegments, active, s.selectionActive && !s.selectionLinewise, s.cursor.Col, theme, fillBackground, wrap, s.xScroll)),
+	)
+}
+
+func uiDiffSideBySideRows(rows []diff.Row) []sideBySideRow {
+	viewer := diffViewer{rows: rows}
+	return viewer.sideBySideRows()
+}
+
+func uiDiffSideBySideGutter(rows []diff.Row, row diff.Row, side diffSide) string {
+	viewer := diffViewer{rows: rows}
+	return viewer.sideBySideGutter(row, side)
+}
+
+func uiDiffSplitSideBySideGutter(gutter string) (string, string) {
+	if len(gutter) < 3 {
+		return gutter, ""
+	}
+	return gutter[:len(gutter)-3], gutter[len(gutter)-3:]
+}
+
+func (s *uiDiffViewState) buildSideBySideCommentRows(rows []diff.Row, rowIndex int, drafts []review.CommentDraft, theme vui.Theme) []vui.Widget {
+	if rowIndex < 0 || rowIndex >= len(rows) {
+		return nil
+	}
+	side := uiDiffCommentSideForRow(rows[rowIndex])
+	widgets := make([]vui.Widget, 0, 1)
+	addCommentWidget := func(widget vui.Widget) {
+		widgets = append(widgets, uiDiffSideBySideCommentRow(widget, side, theme))
+	}
+	showDrafts := true
+	if s.commentEditorActive && s.commentEditorRow == rowIndex {
+		addCommentWidget(s.buildCommentEditor(theme))
+		showDrafts = false
+	} else if body := s.commentEditorBodies[rowIndex]; strings.TrimSpace(body) != "" {
+		addCommentWidget(uiDiffCommentEditorBox(body, false, false, nil, theme))
+	}
+	if showDrafts {
+		for _, draft := range reviewDraftsForRow(rows[rowIndex], drafts) {
+			addCommentWidget(uiDiffReviewDraft(draft, theme))
+		}
+	}
+	return widgets
+}
+
+func uiDiffSideBySideCommentRow(comment vui.Widget, side diffSide, theme vui.Theme) vui.Widget {
+	spacer := vui.DecoratedBox(vui.Decoration{Style: vaxis.Style{Background: theme.Background}}, vui.SizedBox{Height: 1})
+	separatorStyle := vaxis.Style{Foreground: theme.MutedForeground, Background: theme.Background}
+	left := spacer
+	right := spacer
+	if side == sideLeft {
+		left = comment
+	} else {
+		right = comment
+	}
+	return vui.Row(
+		vui.Expanded(left),
+		uiDiffFixedCell(1, separatorStyle, vui.Text{Value: " ", Style: separatorStyle}),
+		vui.Expanded(right),
+	)
+}
+
+func uiDiffCommentSideForRow(row diff.Row) diffSide {
+	if row.Review.Side == review.SideLeft {
+		return sideLeft
+	}
+	if row.Review.Side == review.SideRight {
+		return sideRight
+	}
+	return sideForRow(row)
+}
+
 func (s *uiDiffViewState) buildCommentEditor(theme vui.Theme) vui.Widget {
 	return uiDiffCommentEditorBox(s.commentEditorBody, s.commentEditorFocused, s.commentEditorInsert, func(_ vui.EventContext, value string) {
 		s.commentEditorBody = value
@@ -3019,13 +3171,29 @@ func (s *uiDiffViewState) revealCursorRow() {
 	if !ok {
 		return
 	}
-	if s.cursor.Row < first {
-		s.list.ScrollToIndex(s.cursor.Row, vui.ScrollAlignStart)
+	cursorRow := s.cursor.Row
+	if s.sideBySide {
+		w := s.Widget().(uiDiffView)
+		if visualRow, ok := uiDiffSideBySideVisualIndex(w.Rows, s.cursor.Row); ok {
+			cursorRow = visualRow
+		}
+	}
+	if cursorRow < first {
+		s.list.ScrollToIndex(cursorRow, vui.ScrollAlignStart)
 		return
 	}
-	if s.cursor.Row >= last {
-		s.list.ScrollToIndex(s.cursor.Row, vui.ScrollAlignEnd)
+	if cursorRow >= last {
+		s.list.ScrollToIndex(cursorRow, vui.ScrollAlignEnd)
 	}
+}
+
+func uiDiffSideBySideVisualIndex(rows []diff.Row, docRow int) (int, bool) {
+	for index, row := range uiDiffSideBySideRows(rows) {
+		if rowContainsDocRow(row, docRow) {
+			return index, true
+		}
+	}
+	return 0, false
 }
 
 func (s *uiDiffViewState) moveCursorCols(rows []diff.Row, delta int) {
@@ -3154,7 +3322,23 @@ func (s *uiDiffViewState) codeViewportWidth(rows []diff.Row) int {
 	if !s.scroll.Attached() {
 		return 0
 	}
-	return maxInt(0, s.scroll.Metrics().ViewportWidth-uiDiffCodeOffset(rows))
+	viewportWidth := s.scroll.Metrics().ViewportWidth
+	if s.sideBySide && s.cursor.Row >= 0 && s.cursor.Row < len(rows) {
+		leftWidth := viewportWidth / 2
+		if viewportWidth > 1 {
+			leftWidth = (viewportWidth - 1) / 2
+		}
+		rightStart := leftWidth
+		if viewportWidth > 1 {
+			rightStart++
+		}
+		paneWidth := leftWidth
+		if sideForRow(rows[s.cursor.Row]) == sideRight {
+			paneWidth = viewportWidth - rightStart
+		}
+		return maxInt(0, paneWidth-textCellWidth(uiDiffSideBySideGutter(rows, rows[s.cursor.Row], sideForRow(rows[s.cursor.Row]))))
+	}
+	return maxInt(0, viewportWidth-uiDiffCodeOffset(rows))
 }
 
 func (s *uiDiffViewState) clampCursor(rows []diff.Row) {
