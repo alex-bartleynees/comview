@@ -661,6 +661,32 @@ func TestUIDiffViewSideBySideRevealUsesVisualRow(t *testing.T) {
 	}
 }
 
+func TestUIDiffViewSideBySideMouseSelectionUsesPaneCoordinates(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowDelete, Gutter: "1     - ", Code: "old value"},
+		{Kind: diff.RowAdd, Gutter: "    1 + ", Code: "new value"},
+	}
+	app := newUIDiffTestApp(rows, false)
+	size := vui.Size{Width: 40, Height: 3}
+	app.Pump(size)
+	app.Pump(size)
+
+	app.Send(vaxis.Key{Text: "s", Keycode: 's'})
+	app.Pump(size)
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventPress, Row: 0, Col: 26})
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventMotion, Row: 0, Col: 28})
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventRelease, Row: 0, Col: 28})
+	app.Pump(size)
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	if got := p.Cell(26, 0).Background; got != uiDiffTestTheme().Selection {
+		t.Fatalf("right pane selected cell background = %v, want selection", got)
+	}
+	if got := p.Cell(6, 0).Background; got == uiDiffTestTheme().Selection {
+		t.Fatalf("left pane cell background = selection, want unselected")
+	}
+}
+
 func TestUIDiffViewDollarAndZeroAdjustHorizontalScroll(t *testing.T) {
 	rows := []diff.Row{{Kind: diff.RowContext, Gutter: "1 1   ", Code: "abcdefghijklmnop"}}
 	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)

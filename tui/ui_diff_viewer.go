@@ -1185,6 +1185,9 @@ func (s *uiDiffViewState) selectRowAt(rows []diff.Row, point selectionPoint) {
 }
 
 func (s *uiDiffViewState) selectionPointForMouse(rows []diff.Row, mouse vaxis.Mouse) (selectionPoint, bool) {
+	if s.sideBySide {
+		return s.sideBySideSelectionPointForMouse(rows, mouse)
+	}
 	rowIndex, ok := s.rowForMouse(mouse)
 	if !ok || rowIndex < 0 || rowIndex >= len(rows) || !selectableDiffRow(rows[rowIndex].Kind) {
 		return selectionPoint{}, false
@@ -1196,6 +1199,70 @@ func (s *uiDiffViewState) selectionPointForMouse(rows []diff.Row, mouse vaxis.Mo
 	}
 	col = clampUIDiffInt(col, 0, maxInt(0, end-1))
 	return selectionPoint{Row: rowIndex, Col: col}, true
+}
+
+func (s *uiDiffViewState) sideBySideSelectionPointForMouse(rows []diff.Row, mouse vaxis.Mouse) (selectionPoint, bool) {
+	visualRow, ok := s.rowForMouse(mouse)
+	if !ok {
+		return selectionPoint{}, false
+	}
+	sideRows := uiDiffSideBySideRows(rows)
+	if visualRow < 0 || visualRow >= len(sideRows) {
+		return selectionPoint{}, false
+	}
+	viewportWidth := 0
+	if s.scroll.Attached() {
+		viewportWidth = s.scroll.Metrics().ViewportWidth
+	}
+	if viewportWidth <= 0 {
+		viewportWidth = mouse.Col + 1
+	}
+	leftWidth, rightStart, rightWidth := uiDiffSideBySidePaneGeometry(viewportWidth)
+	side := sideLeft
+	localCol := mouse.Col
+	if mouse.Col >= rightStart {
+		side = sideRight
+		localCol = mouse.Col - rightStart
+	} else if mouse.Col >= leftWidth {
+		return selectionPoint{}, false
+	}
+	if localCol < 0 {
+		return selectionPoint{}, false
+	}
+	if side == sideLeft && localCol >= leftWidth {
+		return selectionPoint{}, false
+	}
+	if side == sideRight && localCol >= rightWidth {
+		return selectionPoint{}, false
+	}
+	rowIndex := sideBySideDocRowForSide(sideRows[visualRow], side)
+	if rowIndex < 0 || rowIndex >= len(rows) || !selectableDiffRow(rows[rowIndex].Kind) {
+		return selectionPoint{}, false
+	}
+	gutterWidth := textCellWidth(uiDiffSideBySideGutter(rows, rows[rowIndex], side))
+	col := localCol - gutterWidth + s.xScroll
+	_, end, ok := uiDiffCodeRange(rows, rowIndex)
+	if !ok {
+		return selectionPoint{}, false
+	}
+	col = clampUIDiffInt(col, 0, maxInt(0, end-1))
+	return selectionPoint{Row: rowIndex, Col: col}, true
+}
+
+func uiDiffSideBySidePaneGeometry(width int) (leftWidth int, rightStart int, rightWidth int) {
+	leftWidth = width / 2
+	if width > 1 {
+		leftWidth = (width - 1) / 2
+	}
+	rightStart = leftWidth
+	if width > 1 {
+		rightStart++
+	}
+	rightWidth = width - rightStart
+	if rightWidth < 0 {
+		rightWidth = 0
+	}
+	return leftWidth, rightStart, rightWidth
 }
 
 func (s *uiDiffViewState) rowForMouse(mouse vaxis.Mouse) (int, bool) {
@@ -2249,6 +2316,12 @@ func (s *uiDiffViewState) buildSideBySideCell(rows []diff.Row, rowIndex int, sid
 	codeSegments = uiDiffToneCodeSegments(row.Kind, codeSegments, theme)
 	if textBackground != 0 {
 		codeSegments = uiDiffApplyBackground(codeSegments, textBackground)
+	}
+	if start, end, ok := s.charSelectionRange(rowIndex, row); ok {
+		codeSegments = uiDiffApplySegmentBackgroundRange(codeSegments, start, end, theme.Selection, tabWidthForFile(row.FileName))
+	}
+	if start, end, ok := s.charYankRange(rowIndex, row); ok {
+		codeSegments = uiDiffApplySegmentBackgroundRange(codeSegments, start, end, uiDiffYankBackground(theme), tabWidthForFile(row.FileName))
 	}
 	codeSegments = uiDiffSearchSegments(rowIndex, row, codeSegments, s.searchMatches, theme)
 	gutterStyle := uiGutterStyle(row.Kind, rowBackground, theme)
@@ -3324,14 +3397,7 @@ func (s *uiDiffViewState) codeViewportWidth(rows []diff.Row) int {
 	}
 	viewportWidth := s.scroll.Metrics().ViewportWidth
 	if s.sideBySide && s.cursor.Row >= 0 && s.cursor.Row < len(rows) {
-		leftWidth := viewportWidth / 2
-		if viewportWidth > 1 {
-			leftWidth = (viewportWidth - 1) / 2
-		}
-		rightStart := leftWidth
-		if viewportWidth > 1 {
-			rightStart++
-		}
+		leftWidth, rightStart, _ := uiDiffSideBySidePaneGeometry(viewportWidth)
 		paneWidth := leftWidth
 		if sideForRow(rows[s.cursor.Row]) == sideRight {
 			paneWidth = viewportWidth - rightStart
