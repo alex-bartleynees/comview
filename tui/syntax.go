@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"strings"
 
-	"go.rockorager.dev/vaxis"
 	"github.com/alecthomas/chroma/v2"
 	"github.com/alecthomas/chroma/v2/lexers"
+	"go.rockorager.dev/vaxis"
 
-	"github.com/rockorager/comview/diff"
+	"go.rockorager.dev/comview/diff"
 )
 
 type SyntaxHighlighter struct {

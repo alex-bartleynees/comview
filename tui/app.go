@@ -13,8 +13,8 @@ import (
 	"github.com/rockorager/go-uucode"
 	"go.rockorager.dev/vaxis"
 
-	"github.com/rockorager/comview/diff"
-	"github.com/rockorager/comview/review"
+	"go.rockorager.dev/comview/diff"
+	"go.rockorager.dev/comview/review"
 )
 
 const (

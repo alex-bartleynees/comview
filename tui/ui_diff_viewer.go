@@ -11,8 +11,8 @@ import (
 	vui "go.rockorager.dev/vaxis/ui"
 	"go.rockorager.dev/vaxis/widgets/term"
 
-	"github.com/rockorager/comview/diff"
-	"github.com/rockorager/comview/review"
+	"go.rockorager.dev/comview/diff"
+	"go.rockorager.dev/comview/review"
 )
 
 type uiDiffView struct {

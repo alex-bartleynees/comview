@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rockorager/comview/review"
+	"go.rockorager.dev/comview/review"
 )
 
 func TestRowsWithOptionsCanHideMetadataAndContext(t *testing.T) {

@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/rockorager/comview/review"
+	"go.rockorager.dev/comview/review"
 )
 
 type Document struct {

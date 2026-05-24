@@ -3,10 +3,10 @@ package tui
 import (
 	"testing"
 
-	"go.rockorager.dev/vaxis"
 	"github.com/alecthomas/chroma/v2"
+	"go.rockorager.dev/vaxis"
 
-	"github.com/rockorager/comview/diff"
+	"go.rockorager.dev/comview/diff"
 )
 
 func TestSyntaxHighlighterHighlightsKnownFileType(t *testing.T) {

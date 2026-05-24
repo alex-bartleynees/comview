@@ -12,8 +12,8 @@ import (
 
 	"go.rockorager.dev/vaxis"
 
-	"github.com/rockorager/comview/diff"
-	"github.com/rockorager/comview/internal/terminal"
+	"go.rockorager.dev/comview/diff"
+	"go.rockorager.dev/comview/internal/terminal"
 )
 
 const defaultWatchInterval = 750 * time.Millisecond

@@ -11,8 +11,8 @@ import (
 
 	"go.rockorager.dev/vaxis"
 
-	"github.com/rockorager/comview/diff"
-	"github.com/rockorager/comview/review"
+	"go.rockorager.dev/comview/diff"
+	"go.rockorager.dev/comview/review"
 )
 
 func TestDiffViewerUsesQueriedDiffColors(t *testing.T) {

@@ -1,4 +1,4 @@
-module github.com/rockorager/comview
+module go.rockorager.dev/comview
 
 go 1.26.1
 

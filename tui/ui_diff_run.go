@@ -3,8 +3,8 @@ package tui
 import (
 	vui "go.rockorager.dev/vaxis/ui"
 
-	"github.com/rockorager/comview/diff"
-	"github.com/rockorager/comview/review"
+	"go.rockorager.dev/comview/diff"
+	"go.rockorager.dev/comview/review"
 )
 
 func runUIDiff(rows []diff.Row) error {
