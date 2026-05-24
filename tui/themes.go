@@ -1,6 +1,6 @@
 package tui
 
-import "git.sr.ht/~rockorager/vaxis"
+import "go.rockorager.dev/vaxis"
 
 type Theme struct {
 	Name   string

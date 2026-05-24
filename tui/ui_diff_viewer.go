@@ -6,9 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"git.sr.ht/~rockorager/vaxis"
-	vui "git.sr.ht/~rockorager/vaxis/ui"
-	"git.sr.ht/~rockorager/vaxis/widgets/term"
+	"go.rockorager.dev/vaxis"
+	vui "go.rockorager.dev/vaxis/ui"
+	"go.rockorager.dev/vaxis/widgets/term"
 	"github.com/rockorager/go-uucode"
 
 	"github.com/rockorager/comview/diff"

@@ -9,8 +9,8 @@ import (
 	"time"
 	"unicode"
 
-	"git.sr.ht/~rockorager/vaxis"
-	"git.sr.ht/~rockorager/vaxis/widgets/term"
+	"go.rockorager.dev/vaxis"
+	"go.rockorager.dev/vaxis/widgets/term"
 )
 
 const (

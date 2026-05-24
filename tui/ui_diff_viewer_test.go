@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"git.sr.ht/~rockorager/vaxis"
-	vui "git.sr.ht/~rockorager/vaxis/ui"
+	"go.rockorager.dev/vaxis"
+	vui "go.rockorager.dev/vaxis/ui"
 
 	"github.com/rockorager/comview/diff"
 	"github.com/rockorager/comview/review"

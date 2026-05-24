@@ -1,7 +1,7 @@
 package tui
 
 import (
-	vui "git.sr.ht/~rockorager/vaxis/ui"
+	vui "go.rockorager.dev/vaxis/ui"
 
 	"github.com/rockorager/comview/diff"
 	"github.com/rockorager/comview/review"

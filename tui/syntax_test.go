@@ -3,7 +3,7 @@ package tui
 import (
 	"testing"
 
-	"git.sr.ht/~rockorager/vaxis"
+	"go.rockorager.dev/vaxis"
 	"github.com/alecthomas/chroma/v2"
 
 	"github.com/rockorager/comview/diff"

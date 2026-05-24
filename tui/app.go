@@ -10,7 +10,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"git.sr.ht/~rockorager/vaxis"
+	"go.rockorager.dev/vaxis"
 	"github.com/rockorager/go-uucode"
 
 	"github.com/rockorager/comview/diff"
