@@ -6,10 +6,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rockorager/go-uucode"
 	"go.rockorager.dev/vaxis"
 	vui "go.rockorager.dev/vaxis/ui"
 	"go.rockorager.dev/vaxis/widgets/term"
-	"github.com/rockorager/go-uucode"
 
 	"github.com/rockorager/comview/diff"
 	"github.com/rockorager/comview/review"
@@ -21,6 +21,7 @@ type uiDiffView struct {
 	ReviewDrafts []review.CommentDraft
 	ReviewFile   string
 	ShowStatus   bool
+	Binds        Bindings
 }
 
 func uiDiffRootWithStatus(rows []diff.Row, wrap bool, drafts []review.CommentDraft, showStatus bool) vui.Widget {
@@ -28,7 +29,11 @@ func uiDiffRootWithStatus(rows []diff.Row, wrap bool, drafts []review.CommentDra
 }
 
 func uiDiffRootWithReviewFile(rows []diff.Row, wrap bool, drafts []review.CommentDraft, reviewFile string, showStatus bool) vui.Widget {
-	return uiDiffView{Rows: rows, Wrap: wrap, ReviewDrafts: drafts, ReviewFile: reviewFile, ShowStatus: showStatus}
+	return uiDiffRootWithReviewFileAndBindings(rows, wrap, drafts, reviewFile, showStatus, Bindings{})
+}
+
+func uiDiffRootWithReviewFileAndBindings(rows []diff.Row, wrap bool, drafts []review.CommentDraft, reviewFile string, showStatus bool, binds Bindings) vui.Widget {
+	return uiDiffView{Rows: rows, Wrap: wrap, ReviewDrafts: drafts, ReviewFile: reviewFile, ShowStatus: showStatus, Binds: binds}
 }
 
 func uiThemeFromBaseColors(base BaseColors) vui.Theme {
@@ -803,7 +808,7 @@ func (s *uiDiffViewState) HandleEvent(ctx vui.EventContext, ev vui.Event) vui.Ev
 		s.pendingSpace = false
 		s.pendingD = true
 		return vui.EventHandled
-	case key.Matches('o'):
+	case w.Binds.Matches(key, "open_editor"):
 		s.clearPendingKeys()
 		s.openEditor()
 		return vui.EventHandled
@@ -823,7 +828,7 @@ func (s *uiDiffViewState) HandleEvent(ctx vui.EventContext, ev vui.Event) vui.Ev
 		s.clearPendingKeys()
 		s.jumpNote(w.Rows, w.ReviewDrafts, -1)
 		return vui.EventHandled
-	case key.Matches('/'):
+	case w.Binds.Matches(key, "search"):
 		s.clearPendingKeys()
 		s.enterSearchMode()
 		return vui.EventHandled
@@ -851,7 +856,7 @@ func (s *uiDiffViewState) HandleEvent(ctx vui.EventContext, ev vui.Event) vui.Ev
 		s.clearPendingKeys()
 		s.openCommentEditor(rows)
 		return vui.EventHandled
-	case key.Matches('y'):
+	case w.Binds.Matches(key, "yank"):
 		s.clearPendingKeys()
 		s.yankSelection(ctx, rows)
 		return vui.EventHandled
@@ -868,11 +873,11 @@ func (s *uiDiffViewState) HandleEvent(ctx vui.EventContext, ev vui.Event) vui.Ev
 		s.fileFinder = true
 		s.SetState(func() {})
 		return vui.EventHandled
-	case key.Matches('n'):
+	case w.Binds.Matches(key, "next_result"):
 		s.clearPendingKeys()
 		s.moveSearchMatch(rows, 1)
 		return vui.EventHandled
-	case key.Matches('N'):
+	case w.Binds.Matches(key, "prev_result"):
 		s.clearPendingKeys()
 		s.moveSearchMatch(rows, -1)
 		return vui.EventHandled
@@ -909,45 +914,45 @@ func (s *uiDiffViewState) HandleEvent(ctx vui.EventContext, ev vui.Event) vui.Ev
 		s.clearPendingKeys()
 		s.setCursorRow(rows, 0)
 		return vui.EventHandled
-	case key.Matches('G'), key.Matches(vaxis.KeyEnd):
+	case w.Binds.Matches(key, "cursor_bottom"):
 		s.clearPendingKeys()
 		s.setCursorRow(rows, len(rows)-1)
 		return vui.EventHandled
-	case key.MatchString("Ctrl+d"), key.Matches(vaxis.KeyPgDown):
+	case w.Binds.Matches(key, "half_page_down"):
 		s.clearPendingKeys()
 		s.moveCursorRows(rows, s.halfPageRows())
 		return vui.EventHandled
-	case key.MatchString("Ctrl+u"), key.Matches(vaxis.KeyPgUp):
+	case w.Binds.Matches(key, "half_page_up"):
 		s.clearPendingKeys()
 		s.moveCursorRows(rows, -s.halfPageRows())
 		return vui.EventHandled
-	case key.Matches('J'):
+	case w.Binds.Matches(key, "next_commit"):
 		s.clearPendingKeys()
 		s.jumpCommit(rows, 1)
 		return vui.EventHandled
-	case key.Matches('K'):
+	case w.Binds.Matches(key, "prev_commit"):
 		s.clearPendingKeys()
 		s.jumpCommit(rows, -1)
 		return vui.EventHandled
-	case key.Matches('j'), key.Matches(vaxis.KeyDown), key.MatchString("Down"):
+	case w.Binds.Matches(key, "cursor_down"):
 		s.clearPendingKeys()
 		if s.moveIntoCommentEditor(rows, 1) {
 			return vui.EventHandled
 		}
 		s.moveCursorRows(rows, 1)
 		return vui.EventHandled
-	case key.Matches('k'), key.Matches(vaxis.KeyUp), key.MatchString("Up"):
+	case w.Binds.Matches(key, "cursor_up"):
 		s.clearPendingKeys()
 		if s.moveIntoCommentEditor(rows, -1) {
 			return vui.EventHandled
 		}
 		s.moveCursorRows(rows, -1)
 		return vui.EventHandled
-	case key.Matches('h'), key.Matches(vaxis.KeyLeft), key.MatchString("Left"):
+	case w.Binds.Matches(key, "cursor_left"):
 		s.clearPendingKeys()
 		s.moveCursorCols(rows, -1)
 		return vui.EventHandled
-	case key.Matches('l'), key.Matches(vaxis.KeyRight), key.MatchString("Right"):
+	case w.Binds.Matches(key, "cursor_right"):
 		s.clearPendingKeys()
 		s.moveCursorCols(rows, 1)
 		return vui.EventHandled
@@ -2513,23 +2518,42 @@ func uiDiffFixedCell(width int, style vaxis.Style, child vui.Widget) vui.Widget 
 }
 
 func uiDiffCodeWidget(row diff.Row, code string, segments []vaxis.Segment, active bool, cursorTabEnd bool, cursorCol int, theme vui.Theme, background vaxis.Color, wrap bool, xScroll int) vui.Widget {
+	tabWidth := tabWidthForFile(row.FileName)
 	if wrap {
 		xScroll = 0
 	}
 	if !active || code == "" {
-		segments = uiDiffClipSegments(segments, xScroll, tabWidthForFile(row.FileName))
+		segments = uiDiffClipSegments(segments, xScroll, tabWidth)
+		segments = uiDiffExpandTabs(segments, tabWidth)
 		return vui.DecoratedBox(
 			vui.Decoration{Style: vaxis.Style{Background: background}},
 			vui.RichText{Spans: uiTextSpans(segments), SoftWrap: wrap, Overflow: vui.TextOverflowClip},
 		)
 	}
 	cursorStyle := vaxis.Style{Foreground: uiDiffCursorForeground(theme), Background: uiDiffCursorBackground(theme)}
-	segments = uiDiffCursorSegments(segments, cursorCol, cursorStyle, tabWidthForFile(row.FileName), cursorTabEnd)
-	segments = uiDiffClipSegments(segments, xScroll, tabWidthForFile(row.FileName))
+	segments = uiDiffCursorSegments(segments, cursorCol, cursorStyle, tabWidth, cursorTabEnd)
+	segments = uiDiffClipSegments(segments, xScroll, tabWidth)
+	segments = uiDiffExpandTabs(segments, tabWidth)
 	return vui.DecoratedBox(
 		vui.Decoration{Style: vaxis.Style{Background: background}},
 		vui.RichText{Spans: uiTextSpans(segments), SoftWrap: wrap, Overflow: vui.TextOverflowClip},
 	)
+}
+
+func uiDiffExpandTabs(segments []vaxis.Segment, tabWidth int) []vaxis.Segment {
+	if tabWidth <= 0 {
+		tabWidth = defaultTabWidth
+	}
+	expanded := make([]vaxis.Segment, 0, len(segments))
+	for _, segment := range segments {
+		if !strings.Contains(segment.Text, "\t") {
+			expanded = appendSegment(expanded, segment)
+			continue
+		}
+		segment.Text = strings.ReplaceAll(segment.Text, "\t", strings.Repeat(" ", tabWidth))
+		expanded = appendSegment(expanded, segment)
+	}
+	return expanded
 }
 
 func uiDiffCursorSegments(segments []vaxis.Segment, cursorCol int, cursorStyle vaxis.Style, tabWidth int, cursorTabEnd bool) []vaxis.Segment {

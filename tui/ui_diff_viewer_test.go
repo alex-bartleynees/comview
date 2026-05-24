@@ -41,6 +41,10 @@ func newUIDiffTestAppWithReviewFile(rows []diff.Row, drafts []review.CommentDraf
 	return vui.NewApp(uiDiffRootWithReviewFile(rows, false, drafts, reviewFile, true), vui.WithTheme(uiDiffTestTheme()))
 }
 
+func newUIDiffTestAppWithBindings(rows []diff.Row, bindings map[string][]string) *vui.App {
+	return vui.NewApp(uiDiffRootWithReviewFileAndBindings(rows, false, nil, "", true, newBindings(bindings)), vui.WithTheme(uiDiffTestTheme()))
+}
+
 func TestUIDiffViewRendersRowsAsSliverTable(t *testing.T) {
 	rows := []diff.Row{
 		{Kind: diff.RowContext, Gutter: "1 1   ", Code: "same"},
@@ -385,6 +389,22 @@ func TestUIDiffViewHorizontalMouseWheelScrollsCode(t *testing.T) {
 	app.Paint(p)
 	if got := uiDiffPainterText(p, 0); !strings.Contains(got, "abcdefgh") {
 		t.Fatalf("row after left wheel = %q, want line start visible", got)
+	}
+}
+
+func TestUIDiffViewExpandsGoModTabsToFourCells(t *testing.T) {
+	segments := uiDiffExpandTabs([]vaxis.Segment{{Text: "\trequire", Style: vaxis.Style{}}}, tabWidthForFile("go.mod"))
+
+	if got := segmentsText(segments); got != "    require" {
+		t.Fatalf("expanded go.mod tab = %q, want four spaces", got)
+	}
+}
+
+func TestUIDiffViewExpandsGoTabsToEightCells(t *testing.T) {
+	segments := uiDiffExpandTabs([]vaxis.Segment{{Text: "\treturn", Style: vaxis.Style{}}}, tabWidthForFile("main.go"))
+
+	if got := segmentsText(segments); got != "        return" {
+		t.Fatalf("expanded go tab = %q, want eight spaces", got)
 	}
 }
 
@@ -945,6 +965,60 @@ func TestUIDiffViewSlashSearchMovesToMatch(t *testing.T) {
 	}
 	if got := uiDiffHighlightedScreenRow(p, uiDiffCursorRowBackground(uiDiffTestTheme())); got != 1 {
 		t.Fatalf("search highlight row = %d, want 1", got)
+	}
+}
+
+func TestUIDiffViewUsesCustomNavigationKeybindings(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowContext, Gutter: "1 1   ", Code: "one"},
+		{Kind: diff.RowContext, Gutter: "2 2   ", Code: "two"},
+	}
+	app := newUIDiffTestAppWithBindings(rows, map[string][]string{
+		"cursor_down": {"ctrl+n"},
+	})
+	size := vui.Size{Width: 20, Height: 3}
+	app.Pump(size)
+	app.Pump(size)
+
+	app.Send(vaxis.Key{Text: "j", Keycode: 'j'})
+	app.Pump(size)
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	if got := uiDiffHighlightedScreenRow(p, uiDiffCursorRowBackground(uiDiffTestTheme())); got != 0 {
+		t.Fatalf("default cursor_down key moved to row %d, want 0", got)
+	}
+
+	app.Send(vaxis.Key{Keycode: 'n', Modifiers: vaxis.ModCtrl})
+	app.Pump(size)
+	p = vui.NewPainter(size)
+	app.Paint(p)
+	if got := uiDiffHighlightedScreenRow(p, uiDiffCursorRowBackground(uiDiffTestTheme())); got != 1 {
+		t.Fatalf("custom cursor_down key moved to row %d, want 1", got)
+	}
+}
+
+func TestUIDiffViewUsesCustomSearchKeybinding(t *testing.T) {
+	app := newUIDiffTestAppWithBindings([]diff.Row{{Kind: diff.RowContext, Text: "needle"}}, map[string][]string{
+		"search": {"f"},
+	})
+	size := vui.Size{Width: 20, Height: 2}
+	app.Pump(size)
+	app.Pump(size)
+
+	app.Send(vaxis.Key{Text: "/", Keycode: '/'})
+	app.Pump(size)
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	if got := uiDiffPainterText(p, 1); strings.HasPrefix(got, "/") {
+		t.Fatalf("default search key entered search mode: status = %q", got)
+	}
+
+	app.Send(vaxis.Key{Text: "f", Keycode: 'f'})
+	app.Pump(size)
+	p = vui.NewPainter(size)
+	app.Paint(p)
+	if got := uiDiffPainterText(p, 1); got != "/" {
+		t.Fatalf("custom search status = %q, want /", got)
 	}
 }
 
