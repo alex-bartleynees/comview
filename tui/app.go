@@ -10,8 +10,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"go.rockorager.dev/vaxis"
 	"github.com/rockorager/go-uucode"
+	"go.rockorager.dev/vaxis"
 
 	"github.com/rockorager/comview/diff"
 	"github.com/rockorager/comview/review"
@@ -7582,7 +7582,7 @@ func tabWidthForFile(fileName string) int {
 	if fileName == "" {
 		return defaultTabWidth
 	}
-	if strings.HasSuffix(fileName, ".go") {
+	if strings.HasSuffix(fileName, ".go") || fileName == "go.mod" {
 		return defaultTabWidth
 	}
 	return 4

@@ -392,11 +392,11 @@ func TestUIDiffViewHorizontalMouseWheelScrollsCode(t *testing.T) {
 	}
 }
 
-func TestUIDiffViewExpandsGoModTabsToFourCells(t *testing.T) {
+func TestUIDiffViewExpandsGoModTabsToEightCells(t *testing.T) {
 	segments := uiDiffExpandTabs([]vaxis.Segment{{Text: "\trequire", Style: vaxis.Style{}}}, tabWidthForFile("go.mod"))
 
-	if got := segmentsText(segments); got != "    require" {
-		t.Fatalf("expanded go.mod tab = %q, want four spaces", got)
+	if got := segmentsText(segments); got != "        require" {
+		t.Fatalf("expanded go.mod tab = %q, want eight spaces", got)
 	}
 }
 
