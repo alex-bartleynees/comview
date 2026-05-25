@@ -1681,6 +1681,39 @@ func TestUIDiffViewCommandWWithoutCommentsShowsNoopStatus(t *testing.T) {
 	}
 }
 
+func TestUIDiffViewCommandWSavesAfterDeletingAllComments(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".comview", "comments.json")
+	draft := review.CommentDraft{Path: "main.go", Line: 1, Side: review.SideRight, Body: "delete me"}
+	if err := review.SaveFile(path, review.CommentFile{Version: 1, Comments: []review.CommentDraft{draft}}); err != nil {
+		t.Fatal(err)
+	}
+	rows := []diff.Row{{Kind: diff.RowAdd, Gutter: "1 1 + ", Code: "line", Review: review.Anchor{Path: "main.go", Line: 1, Side: review.SideRight}}}
+	app := newUIDiffTestAppWithReviewFile(rows, []review.CommentDraft{draft}, path)
+	size := vui.Size{Width: 60, Height: 5}
+	app.Pump(size)
+	app.Pump(size)
+
+	app.Send(vaxis.Key{Text: "x", Keycode: 'x'})
+	app.Pump(size)
+	app.Send(vaxis.Key{Text: ":", Keycode: ':'})
+	app.Send(vaxis.Key{Text: "w"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEnter})
+	app.Pump(size)
+
+	file, err := review.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(file.Comments) != 0 {
+		t.Fatalf("comments = %+v, want empty after deleting all", file.Comments)
+	}
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	if got := uiDiffPainterText(p, size.Height-1); !strings.Contains(got, "Comments saved.") {
+		t.Fatalf("status message = %q, want save confirmation", got)
+	}
+}
+
 func TestUIDiffViewCommandWQWritesAndQuits(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".comview", "comments.json")
 	rows := []diff.Row{{Kind: diff.RowAdd, Gutter: "1 1 + ", Code: "line", Review: review.Anchor{Path: "main.go", Line: 1, Side: review.SideRight}}}

@@ -1785,6 +1785,17 @@ func (s *uiDiffViewState) writeReviewCommand(rows []diff.Row) {
 	w := s.Widget().(uiDiffView)
 	drafts := s.allReviewDrafts(w.ReviewDrafts)
 	if len(drafts) == 0 {
+		if s.reviewDirty {
+			if w.ReviewFile != "" {
+				if err := review.SaveFile(w.ReviewFile, review.CommentFile{Version: 1}); err != nil {
+					s.setStatusMessage(fmt.Sprintf("Could not save comments: %v", err))
+					return
+				}
+			}
+			s.reviewDirty = false
+			s.setStatusMessage("Comments saved.")
+			return
+		}
 		s.reviewDirty = false
 		s.setStatusMessage("No comments to save.")
 		return
