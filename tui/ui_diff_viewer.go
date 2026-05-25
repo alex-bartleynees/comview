@@ -1695,7 +1695,7 @@ func uiDiffSideBySidePaneGeometry(width int) (leftWidth int, rightStart int, rig
 }
 
 func (s *uiDiffViewState) rowForMouse(mouse vaxis.Mouse) (int, bool) {
-	first, last, ok := s.list.VisibleRange()
+	first, _, ok := s.list.VisibleRange()
 	if !ok || mouse.Row < 0 {
 		return 0, false
 	}
@@ -1715,7 +1715,7 @@ func (s *uiDiffViewState) rowForMouse(mouse vaxis.Mouse) (int, bool) {
 		}
 		logicalY = metrics.ScrollOffset + mouse.Row
 	}
-	last = count
+	last := count
 	for row := first; row < last; row++ {
 		offset, ok := s.list.OffsetForIndex(row)
 		if !ok {

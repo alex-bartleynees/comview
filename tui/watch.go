@@ -19,11 +19,6 @@ import (
 
 const defaultWatchInterval = 750 * time.Millisecond
 
-type watchUpdateEvent struct {
-	Rows    []diff.Row
-	Message string
-}
-
 // RunWatch starts comview in watch mode. The command is rerun periodically and
 // the displayed diff is refreshed whenever the command output changes.
 func RunWatch(command []string) error {

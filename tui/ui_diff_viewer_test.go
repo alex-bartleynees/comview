@@ -338,7 +338,7 @@ func TestUIDiffViewThemePickerSelectsTheme(t *testing.T) {
 		t.Fatalf("status = %q, want selected theme", got)
 	}
 	selected := uiThemeFromBaseColors(Themes[2].Colors)
-	if got := p.Cell(0, 0).Background; got != uiDiffCursorRowBackground(selected) {
+	if got := p.Cell(1, 0).Background; got != uiDiffCursorRowBackground(selected) {
 		t.Fatalf("cursor row background = %v, want selected theme cursor background %v", got, uiDiffCursorRowBackground(selected))
 	}
 	if got := p.Cell(size.Width-1, size.Height-2).Background; got != selected.Background {
@@ -415,7 +415,7 @@ func TestUIDiffViewThemePickerEscapeKeepsTheme(t *testing.T) {
 	if _, _, ok := uiDiffFindText(p, "Choose theme"); ok {
 		t.Fatal("theme picker stayed visible after escape")
 	}
-	if got := p.Cell(0, 0).Background; got != uiDiffCursorRowBackground(uiDiffTestTheme()) {
+	if got := p.Cell(1, 0).Background; got != uiDiffCursorRowBackground(uiDiffTestTheme()) {
 		t.Fatalf("cursor row background = %v, want original theme", got)
 	}
 }
@@ -1202,8 +1202,11 @@ func TestUIDiffViewRendersStructuredFullWidthRows(t *testing.T) {
 
 	p := vui.NewPainter(vui.Size{Width: 24, Height: 3})
 	app.Paint(p)
-	if cell := p.Cell(0, 0); cell.Grapheme != "c" || cell.Foreground != theme.DisabledForeground {
-		t.Fatalf("commit prefix cell = %q/%v, want c/dim", cell.Grapheme, cell.Foreground)
+	if cell := p.Cell(0, 0); cell.Grapheme != "c" || cell.Foreground != uiDiffCursorForeground(theme) {
+		t.Fatalf("commit prefix cursor cell = %q/%v, want c/cursor", cell.Grapheme, cell.Foreground)
+	}
+	if cell := p.Cell(1, 0); cell.Grapheme != "o" || cell.Foreground != theme.DisabledForeground {
+		t.Fatalf("commit prefix cell = %q/%v, want o/dim", cell.Grapheme, cell.Foreground)
 	}
 	if cell := p.Cell(7, 0); cell.Grapheme != "a" || cell.Foreground != theme.Warning {
 		t.Fatalf("commit hash cell = %q/%v, want a/yellow", cell.Grapheme, cell.Foreground)
@@ -2347,8 +2350,8 @@ func TestUIDiffViewEscapeClearsSearch(t *testing.T) {
 	app.Pump(vui.Size{Width: 20, Height: 1})
 	p := vui.NewPainter(vui.Size{Width: 20, Height: 1})
 	app.Paint(p)
-	if cell := p.Cell(0, 0); cell.Background != uiDiffCursorRowBackground(uiDiffTestTheme()) {
-		t.Fatalf("cursor moved after escaped search: first cell bg = %v, want selection", cell.Background)
+	if cell := p.Cell(1, 0); cell.Background != uiDiffCursorRowBackground(uiDiffTestTheme()) {
+		t.Fatalf("cursor moved after escaped search: first row bg = %v, want selection", cell.Background)
 	}
 }
 
