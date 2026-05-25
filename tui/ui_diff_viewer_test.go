@@ -2508,6 +2508,9 @@ func TestUIDiffViewMouseDragSelectsCommitMessage(t *testing.T) {
 	if got := p.Cell(4, 0).Background; got != uiDiffTestTheme().Selection {
 		t.Fatalf("commit message selected background = %v, want selection", got)
 	}
+	if got := p.Cell(8, 0).Background; got != uiDiffCursorBackground(uiDiffTestTheme()) {
+		t.Fatalf("commit message cursor background = %v, want cursor", got)
+	}
 }
 
 func TestUIDiffViewMouseClickDoesNotSelect(t *testing.T) {
@@ -3708,6 +3711,35 @@ func TestUIDiffViewCursorSkipsFileAndHunkRows(t *testing.T) {
 	app.Paint(p)
 	if got := p.Cell(29, 2).Background; got != uiDiffCursorRowBackground(uiDiffTestTheme()) {
 		t.Fatalf("initial cursor background = %v, want code row", got)
+	}
+}
+
+func TestUIDiffViewCanCursorToRenderedCommitMessage(t *testing.T) {
+	doc, err := diff.Parse("commit abc123\nAuthor: Example <example@example.com>\n\n    hello world\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := doc.Rows()
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	size := vui.Size{Width: 40, Height: 6}
+	app.Pump(size)
+	app.Pump(size)
+
+	for range 3 {
+		app.Send(vaxis.Key{Text: "j", Keycode: 'j'})
+	}
+	app.Pump(size)
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	row := uiDiffPainterRowContaining(p, "hello world")
+	if row == -1 {
+		t.Fatal("commit message was not rendered")
+	}
+	if got := p.Cell(size.Width-1, row).Background; got != uiDiffCursorRowBackground(uiDiffTestTheme()) {
+		t.Fatalf("commit message cursor background = %v, want cursor row", got)
+	}
+	if got := p.Cell(0, row).Background; got != uiDiffCursorBackground(uiDiffTestTheme()) {
+		t.Fatalf("commit message cursor cell background = %v, want cursor", got)
 	}
 }
 

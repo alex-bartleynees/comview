@@ -2764,7 +2764,7 @@ func (s *uiDiffViewState) buildItem(rows []diff.Row, rowIndex int, theme vui.The
 	yanked := s.lineYanked(rowIndex)
 	var item vui.Widget
 	if !uiDiffRowUsesGrid(row) {
-		item = s.buildFullWidthRow(row, rowIndex, uiDiffRowBackground(active, selected, yanked, theme), selected, yanked, theme, wrap)
+		item = s.buildFullWidthRow(row, rowIndex, uiDiffRowBackground(active, selected, yanked, theme), active, s.cursor.Col, selected, yanked, theme, wrap)
 	} else {
 		item = s.buildRow(rows, row, rowIndex, active, selected, yanked, s.cursor.Col, theme, highlightedRows, s.searchMatches, wrap)
 	}
@@ -3038,7 +3038,7 @@ func uiDiffRowBackground(active bool, selected bool, yanked bool, theme vui.Them
 	return 0
 }
 
-func (s *uiDiffViewState) buildFullWidthRow(row diff.Row, rowIndex int, background vaxis.Color, selected bool, yanked bool, theme vui.Theme, wrap bool) vui.Widget {
+func (s *uiDiffViewState) buildFullWidthRow(row diff.Row, rowIndex int, background vaxis.Color, active bool, cursorCol int, selected bool, yanked bool, theme vui.Theme, wrap bool) vui.Widget {
 	if segments, ok := uiDiffStructuredSegments(row, theme); ok {
 		if background != 0 {
 			segments = uiDiffApplyBackground(segments, background)
@@ -3067,6 +3067,9 @@ func (s *uiDiffViewState) buildFullWidthRow(row diff.Row, rowIndex int, backgrou
 		segments = uiDiffApplySegmentBackgroundRange(segments, start, end, uiDiffYankBackground(theme), tabWidthForFile(row.FileName))
 	}
 	segments = uiDiffSearchSegments(rowIndex, row, segments, s.searchMatches, theme)
+	if active {
+		segments = uiDiffCursorSegments(segments, cursorCol, vaxis.Style{Foreground: uiDiffCursorForeground(theme), Background: uiDiffCursorBackground(theme)}, tabWidthForFile(row.FileName), false)
+	}
 	return uiDiffFullWidthRowBox(segments, background, wrap, row.Kind == diff.RowCommitMessage)
 }
 
