@@ -3153,6 +3153,9 @@ func TestUIDiffViewCommentEditorSubmitCreatesDraft(t *testing.T) {
 	app.Pump(vui.Size{Width: 40, Height: 6})
 	p := vui.NewPainter(vui.Size{Width: 40, Height: 6})
 	app.Paint(p)
+	if got := uiDiffPainterText(p, 1); !strings.Contains(got, "▄") || strings.ContainsAny(got, "┌╭─") {
+		t.Fatalf("submitted draft top row = %q, want borderless comment chrome", got)
+	}
 	if got := uiDiffPainterText(p, 2); !strings.Contains(got, "looks good") {
 		t.Fatalf("draft row = %q, want submitted body", got)
 	}

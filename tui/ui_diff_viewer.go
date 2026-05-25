@@ -2780,11 +2780,7 @@ func uiDiffCommentHalfBlock(block string, foreground vaxis.Color, theme vui.Them
 }
 
 func uiDiffReviewDraft(draft review.CommentDraft, theme vui.Theme) vui.Widget {
-	style := vaxis.Style{Foreground: theme.Foreground, Background: theme.Surface}
-	return uiDiffCommentBox(vui.DecoratedBox(
-		vui.Decoration{Style: style, Border: vui.BorderLine(theme.Primary)},
-		vui.Padding(vui.All(1), vui.RichText{Spans: []vui.TextSpan{{Text: draft.Body, Style: style}}, SoftWrap: true}),
-	))
+	return uiDiffCommentEditorBox(draft.Body, false, false, nil, theme)
 }
 
 func uiDiffCommentBox(child vui.Widget) vui.Widget {
