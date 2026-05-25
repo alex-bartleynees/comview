@@ -2480,8 +2480,6 @@ func (s *uiDiffViewState) selectDelimitedTextObject(rows []diff.Row, kind textOb
 	if kind == textObjectInner {
 		start = advanceTextObjectPosition(bounds, openPos)
 		end = previousTextObjectPosition(bounds, closePos)
-		includeInitialNewline = openPos.Row != closePos.Row && start.Row > openPos.Row
-		includeFinalNewline = openPos.Row != closePos.Row && end.Row < closePos.Row
 	}
 	if textObjectPositionLess(end, start) {
 		return false

@@ -3065,7 +3065,7 @@ func TestUIDiffViewTextObjectSelectsMultilineBraces(t *testing.T) {
 	}
 }
 
-func TestUIDiffViewInnerTextObjectIncludesBoundaryNewlines(t *testing.T) {
+func TestUIDiffViewInnerTextObjectExcludesBoundaryNewlines(t *testing.T) {
 	rows := []diff.Row{
 		{Kind: diff.RowContext, Code: "foo{", Text: "foo{"},
 		{Kind: diff.RowContext, Code: "  foo,", Text: "  foo,"},
@@ -3079,7 +3079,26 @@ func TestUIDiffViewInnerTextObjectIncludesBoundaryNewlines(t *testing.T) {
 	if !state.selectDelimitedTextObject(rows, textObjectInner, open, close) {
 		t.Fatal("inner brace text object failed")
 	}
-	if got, want := state.selectionText(rows), "\n  foo,\n"; got != want {
+	if got, want := state.selectionText(rows), "  foo,"; got != want {
+		t.Fatalf("selection text = %q, want %q", got, want)
+	}
+}
+
+func TestUIDiffViewInnerBraceTextObjectSelectsOnlyInsideLine(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowContext, Code: "foo() {", Text: "foo() {"},
+		{Kind: diff.RowContext, Code: "  bar()", Text: "  bar()"},
+		{Kind: diff.RowContext, Code: "}", Text: "}"},
+	}
+	state := &uiDiffViewState{cursor: selectionPoint{Row: 1, Col: 2}}
+	open, close, ok := textObjectDelimiters('{')
+	if !ok {
+		t.Fatal("brace delimiter missing")
+	}
+	if !state.selectDelimitedTextObject(rows, textObjectInner, open, close) {
+		t.Fatal("inner brace text object failed")
+	}
+	if got, want := state.selectionText(rows), "  bar()"; got != want {
 		t.Fatalf("selection text = %q, want %q", got, want)
 	}
 }
