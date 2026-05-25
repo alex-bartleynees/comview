@@ -291,6 +291,8 @@ func (s *uiDiffViewState) themePreviewFilter(query string, items []Theme, item v
 	filtered := vui.DefaultFuzzySelectFilter(query, items, item)
 	if len(filtered) > 0 {
 		s.themeName = filtered[0].Name
+	} else {
+		s.themeName = s.themeNameBeforePick
 	}
 	return filtered
 }

@@ -159,6 +159,84 @@ func TestUIDiffViewFileFinderJumpsToSelectedFile(t *testing.T) {
 	}
 }
 
+func TestUIDiffViewFileFinderEscapeKeepsCursor(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowFile, Text: "first.go"},
+		{Kind: diff.RowContext, Gutter: "1 1   ", Code: "first"},
+		{Kind: diff.RowFile, Text: "second.go"},
+		{Kind: diff.RowContext, Gutter: "1 1   ", Code: "second"},
+	}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	size := vui.Size{Width: 60, Height: 10}
+	app.Pump(size)
+	app.Pump(size)
+
+	app.Send(vaxis.Key{Text: " ", Keycode: vaxis.KeySpace})
+	app.Send(vaxis.Key{Text: "e", Keycode: 'e'})
+	app.Pump(size)
+	app.Send(vaxis.Key{Text: "second"})
+	app.Pump(size)
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEsc})
+	app.Pump(size)
+
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	if _, _, ok := uiDiffFindText(p, "Find file…"); ok {
+		t.Fatal("file finder stayed visible after escape")
+	}
+	if got := uiDiffPainterText(p, size.Height-1); got != " NORMAL  1/2 first.go  +0 -0" {
+		t.Fatalf("status row = %q, want first file status", got)
+	}
+}
+
+func TestUIDiffViewFileFinderDoesNotOpenWithoutFiles(t *testing.T) {
+	app := newUIDiffTestAppWithBaseDraftsAndStatus([]diff.Row{{Kind: diff.RowContext, Text: "line"}}, DefaultBaseColors(), false, nil, true)
+	size := vui.Size{Width: 40, Height: 4}
+	app.Pump(size)
+	app.Pump(size)
+
+	app.Send(vaxis.Key{Text: " ", Keycode: vaxis.KeySpace})
+	app.Send(vaxis.Key{Text: "e", Keycode: 'e'})
+	app.Pump(size)
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	if _, _, ok := uiDiffFindText(p, "Find file…"); ok {
+		t.Fatal("file finder opened without file rows")
+	}
+}
+
+func TestUIDiffViewFileFinderConsumesDiffKeys(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowFile, Text: "first.go"},
+		{Kind: diff.RowContext, Gutter: "1 1   ", Code: "first"},
+		{Kind: diff.RowFile, Text: "second.go"},
+	}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	size := vui.Size{Width: 60, Height: 8}
+	app.Pump(size)
+	app.Pump(size)
+
+	app.Send(vaxis.Key{Text: " ", Keycode: vaxis.KeySpace})
+	app.Send(vaxis.Key{Text: "e", Keycode: 'e'})
+	app.Pump(size)
+	app.Send(vaxis.Key{Text: "j", Keycode: 'j'})
+	app.Send(vaxis.Key{Text: ":", Keycode: ':'})
+	app.Send(vaxis.Key{Text: "q"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEnter})
+	app.Pump(size)
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEsc})
+	app.Pump(size)
+
+	if app.ShouldQuit() {
+		t.Fatal("file finder leaked :q to diff view")
+	}
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	if got := uiDiffPainterText(p, size.Height-1); got != " NORMAL  1/2 first.go  +0 -0" {
+		t.Fatalf("status row = %q, want cursor unchanged", got)
+	}
+}
+
 func TestUIDiffViewFileFinderStatsAreColorized(t *testing.T) {
 	theme := uiDiffTestTheme()
 	app := vui.NewApp(vui.Provider[vui.Theme]{Value: theme, Child: uiDiffFileStatWidget("+1 -1", theme)})
@@ -280,6 +358,42 @@ func TestUIDiffViewThemePickerPreviewsTheme(t *testing.T) {
 	}
 	if got, want := state.themeName, "Catppuccin Latte"; got != want {
 		t.Fatalf("preview theme = %q, want %q", got, want)
+	}
+}
+
+func TestUIDiffViewThemePickerNoMatchRestoresPreview(t *testing.T) {
+	state := &uiDiffViewState{themeNameBeforePick: "Default", themeName: "Catppuccin Latte"}
+	items := state.themePreviewFilter("definitely-no-theme", Themes, uiThemeSelectItem)
+	if len(items) != 0 {
+		t.Fatalf("theme filter returned %d matches, want none", len(items))
+	}
+	if got, want := state.themeName, "Default"; got != want {
+		t.Fatalf("preview theme = %q, want restored %q", got, want)
+	}
+}
+
+func TestUIDiffViewThemePickerConsumesDiffKeys(t *testing.T) {
+	app := newUIDiffTestAppWithBaseDraftsAndStatus([]diff.Row{{Kind: diff.RowContext, Code: "line"}}, DefaultBaseColors(), false, nil, true)
+	size := vui.Size{Width: 80, Height: 12}
+	app.Pump(size)
+	app.Pump(size)
+
+	app.Send(vaxis.Key{Text: "t", Keycode: 't'})
+	app.Pump(size)
+	app.Send(vaxis.Key{Text: ":", Keycode: ':'})
+	app.Send(vaxis.Key{Text: "q"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEnter})
+	app.Pump(size)
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEsc})
+	app.Pump(size)
+
+	if app.ShouldQuit() {
+		t.Fatal("theme picker leaked :q to diff view")
+	}
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	if _, _, ok := uiDiffFindText(p, "Choose theme"); ok {
+		t.Fatal("theme picker stayed visible after escape")
 	}
 }
 
