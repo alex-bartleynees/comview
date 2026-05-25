@@ -1719,6 +1719,57 @@ func TestUIDiffViewCommandQQuitsEmptyInput(t *testing.T) {
 	}
 }
 
+func TestUIDiffViewCommandQQuitsWithSavedComments(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowAdd, Gutter: "1 1 + ", Code: "one", Review: review.Anchor{Path: "main.go", Line: 1, Side: review.SideRight}},
+		{Kind: diff.RowAdd, Gutter: "2 2 + ", Code: "two", Review: review.Anchor{Path: "main.go", Line: 2, Side: review.SideRight}},
+	}
+	drafts := []review.CommentDraft{
+		{Path: "main.go", Line: 1, Side: review.SideRight, Body: "saved one"},
+		{Path: "main.go", Line: 2, Side: review.SideRight, Body: "saved two"},
+	}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, drafts, true)
+	size := vui.Size{Width: 80, Height: 10}
+	app.Pump(size)
+	app.Pump(size)
+
+	app.Send(vaxis.Key{Text: ":", Keycode: ':'})
+	app.Send(vaxis.Key{Text: "q"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEnter})
+	if !app.ShouldQuit() {
+		p := vui.NewPainter(size)
+		app.Paint(p)
+		t.Fatalf(":q did not quit with saved comments; status = %q", uiDiffPainterText(p, size.Height-1))
+	}
+}
+
+func TestUIDiffViewCommandQQuitsAfterNavigatingSavedComments(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowAdd, Gutter: "1 1 + ", Code: "one", Review: review.Anchor{Path: "main.go", Line: 1, Side: review.SideRight}},
+		{Kind: diff.RowAdd, Gutter: "2 2 + ", Code: "two", Review: review.Anchor{Path: "main.go", Line: 2, Side: review.SideRight}},
+	}
+	drafts := []review.CommentDraft{
+		{Path: "main.go", Line: 1, Side: review.SideRight, Body: "saved one"},
+		{Path: "main.go", Line: 2, Side: review.SideRight, Body: "saved two"},
+	}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, drafts, true)
+	size := vui.Size{Width: 80, Height: 10}
+	app.Pump(size)
+	app.Pump(size)
+
+	app.Send(vaxis.Key{Text: "j", Keycode: 'j'})
+	app.Send(vaxis.Key{Text: "j", Keycode: 'j'})
+	app.Pump(size)
+	app.Send(vaxis.Key{Text: ":", Keycode: ':'})
+	app.Send(vaxis.Key{Text: "q"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEnter})
+	if !app.ShouldQuit() {
+		p := vui.NewPainter(size)
+		app.Paint(p)
+		t.Fatalf(":q did not quit after navigating saved comments; status = %q", uiDiffPainterText(p, size.Height-1))
+	}
+}
+
 func TestUIDiffViewCommandQWarnsWithUnsavedComments(t *testing.T) {
 	rows := []diff.Row{{Kind: diff.RowAdd, Gutter: "1 1 + ", Code: "line", Review: review.Anchor{Path: "main.go", Line: 1, Side: review.SideRight}}}
 	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)

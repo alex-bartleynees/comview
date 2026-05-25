@@ -2036,7 +2036,7 @@ func (s *uiDiffViewState) executeCommand(ctx vui.EventContext, rows []diff.Row, 
 			ctx.Quit()
 			return
 		case strings.HasPrefix(command, "q"):
-			if s.reviewDirty || s.commentEditorActive || len(s.commentEditorBodies) > 0 {
+			if s.hasUnsavedReviewChanges(rows) {
 				s.setStatusMessage("Unsaved comments. Use :w to save or :q! to quit.")
 				return
 			}
@@ -2051,6 +2051,31 @@ func (s *uiDiffViewState) executeCommand(ctx vui.EventContext, rows []diff.Row, 
 			return
 		}
 	}
+}
+
+func (s *uiDiffViewState) hasUnsavedReviewChanges(rows []diff.Row) bool {
+	if s.reviewDirty {
+		return true
+	}
+	if s.commentEditorActive && strings.TrimSpace(s.commentEditorBody) != "" {
+		if s.commentEditorBody != s.commentEditorTarget.Draft.Body {
+			return true
+		}
+	}
+	for row, body := range s.commentEditorBodies {
+		if strings.TrimSpace(body) == "" {
+			continue
+		}
+		if row < 0 || row >= len(rows) {
+			return true
+		}
+		w := s.Widget().(uiDiffView)
+		drafts := reviewDraftsForRow(rows[row], s.allReviewDrafts(w.ReviewDrafts))
+		if len(drafts) == 0 || body != drafts[0].Body {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *uiDiffViewState) writeReviewCommand(rows []diff.Row) bool {
