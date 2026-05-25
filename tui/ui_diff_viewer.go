@@ -1650,7 +1650,20 @@ func (s *uiDiffViewState) handleCommentEditorKey(rows []diff.Row, key vaxis.Key)
 			s.commentEditorFocused = false
 			s.SetState(func() {})
 			return vui.EventHandled
+		case key.Matches('x'):
+			s.clearPendingKeys()
+			s.deleteReviewDraftCommand(rows, s.Widget().(uiDiffView).ReviewDrafts)
+			return vui.EventHandled
+		case key.Matches('d') && s.pendingD:
+			s.clearPendingKeys()
+			s.deleteReviewDraftCommand(rows, s.Widget().(uiDiffView).ReviewDrafts)
+			return vui.EventHandled
+		case key.Matches('d'):
+			s.pendingD = true
+			s.SetState(func() {})
+			return vui.EventHandled
 		case key.Matches('i'):
+			s.clearPendingKeys()
 			s.commentEditorInsert = true
 			s.SetState(func() {})
 			return vui.EventHandled
@@ -1888,6 +1901,7 @@ func (s *uiDiffViewState) deleteReviewDraftAtTarget(rows []diff.Row, base []revi
 			s.reviewDrafts = append(s.reviewDrafts[:index], s.reviewDrafts[index+1:]...)
 			s.reviewDirty = true
 			s.clearLineSelection()
+			s.closeCommentEditorForDraft(rows, draft)
 			s.setStatusMessage("Note deleted.")
 			return true
 		}
@@ -1898,8 +1912,18 @@ func (s *uiDiffViewState) deleteReviewDraftAtTarget(rows []diff.Row, base []revi
 	s.deletedReviewDrafts[draft] = true
 	s.reviewDirty = true
 	s.clearLineSelection()
+	s.closeCommentEditorForDraft(rows, draft)
 	s.setStatusMessage("Note deleted.")
 	return true
+}
+
+func (s *uiDiffViewState) closeCommentEditorForDraft(rows []diff.Row, draft review.CommentDraft) {
+	if !s.commentEditorActive || s.commentEditorRow < 0 || s.commentEditorRow >= len(rows) {
+		return
+	}
+	if reviewDraftContains(draft, rows[s.commentEditorRow].Review) {
+		s.closeCommentEditor()
+	}
 }
 
 func (s *uiDiffViewState) findReviewDraftAtTarget(rows []diff.Row, base []review.CommentDraft) (review.CommentDraft, bool) {

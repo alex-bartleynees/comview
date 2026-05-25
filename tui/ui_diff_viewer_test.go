@@ -1818,6 +1818,54 @@ func TestUIDiffViewDDDeletesNoteAtCursor(t *testing.T) {
 	}
 }
 
+func TestUIDiffViewXDeletesFocusedNote(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowAdd, Gutter: "1 1 + ", Code: "line", Review: review.Anchor{Path: "main.go", Line: 12, Side: review.SideRight}}}
+	drafts := []review.CommentDraft{{Path: "main.go", Line: 12, Side: review.SideRight, Body: "comment"}}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, drafts, true)
+	size := vui.Size{Width: 60, Height: 6}
+	app.Pump(size)
+	app.Pump(size)
+
+	app.Send(vaxis.Key{Text: "j", Keycode: 'j'})
+	app.Pump(size)
+	app.Send(vaxis.Key{Text: "x", Keycode: 'x'})
+	app.Pump(size)
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	if uiDiffPainterRowContaining(p, "comment") != -1 {
+		t.Fatal("deleted focused note is still rendered")
+	}
+	if got := uiDiffPainterText(p, size.Height-1); !strings.Contains(got, "Note deleted.") {
+		t.Fatalf("status message = %q, want note deleted", got)
+	}
+}
+
+func TestUIDiffViewDDDeletesFocusedNote(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowAdd, Gutter: "1 1 + ", Code: "line", Review: review.Anchor{Path: "main.go", Line: 12, Side: review.SideRight}}}
+	drafts := []review.CommentDraft{{Path: "main.go", Line: 12, Side: review.SideRight, Body: "comment"}}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, drafts, true)
+	size := vui.Size{Width: 60, Height: 6}
+	app.Pump(size)
+	app.Pump(size)
+
+	app.Send(vaxis.Key{Text: "j", Keycode: 'j'})
+	app.Pump(size)
+	app.Send(vaxis.Key{Text: "d", Keycode: 'd'})
+	app.Pump(size)
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	if uiDiffPainterRowContaining(p, "comment") == -1 {
+		t.Fatal("first d deleted focused note")
+	}
+	app.Send(vaxis.Key{Text: "d", Keycode: 'd'})
+	app.Pump(size)
+	p = vui.NewPainter(size)
+	app.Paint(p)
+	if uiDiffPainterRowContaining(p, "comment") != -1 {
+		t.Fatal("dd did not delete focused note")
+	}
+}
+
 func TestUIDiffViewXDeletesNoteOverlappingSelection(t *testing.T) {
 	rows := []diff.Row{{Kind: diff.RowAdd, Gutter: "1 1 + ", Code: "hello", Review: review.Anchor{Path: "main.go", Line: 12, Side: review.SideRight}}}
 	drafts := []review.CommentDraft{{Path: "main.go", Line: 12, Side: review.SideRight, StartColumn: intPtr(2), EndColumn: intPtr(4), Body: "inline"}}
