@@ -1785,7 +1785,9 @@ func (s *uiDiffViewState) executeCommand(ctx vui.EventContext, rows []diff.Row, 
 			ctx.Quit()
 			return
 		case strings.HasPrefix(command, "w"):
-			s.writeReviewCommand(rows)
+			if !s.writeReviewCommand(rows) {
+				return
+			}
 			command = command[1:]
 		default:
 			return
@@ -1793,7 +1795,7 @@ func (s *uiDiffViewState) executeCommand(ctx vui.EventContext, rows []diff.Row, 
 	}
 }
 
-func (s *uiDiffViewState) writeReviewCommand(rows []diff.Row) {
+func (s *uiDiffViewState) writeReviewCommand(rows []diff.Row) bool {
 	s.submitActiveCommentEditor(rows)
 	w := s.Widget().(uiDiffView)
 	drafts := s.allReviewDrafts(w.ReviewDrafts)
@@ -1802,25 +1804,26 @@ func (s *uiDiffViewState) writeReviewCommand(rows []diff.Row) {
 			if w.ReviewFile != "" {
 				if err := review.SaveFile(w.ReviewFile, review.CommentFile{Version: 1}); err != nil {
 					s.setStatusMessage(fmt.Sprintf("Could not save comments: %v", err))
-					return
+					return false
 				}
 			}
 			s.reviewDirty = false
 			s.setStatusMessage("Comments saved.")
-			return
+			return true
 		}
 		s.reviewDirty = false
 		s.setStatusMessage("No comments to save.")
-		return
+		return true
 	}
 	if w.ReviewFile != "" {
 		if err := review.SaveFile(w.ReviewFile, review.CommentFile{Version: 1, Comments: drafts}); err != nil {
 			s.setStatusMessage(fmt.Sprintf("Could not save comments: %v", err))
-			return
+			return false
 		}
 	}
 	s.reviewDirty = false
 	s.setStatusMessage("Comments saved.")
+	return true
 }
 
 func (s *uiDiffViewState) setStatusMessage(message string) {

@@ -1740,6 +1740,81 @@ func TestUIDiffViewCommandWQWritesAndQuits(t *testing.T) {
 	}
 }
 
+func TestUIDiffViewCommandWQDoesNotQuitAfterSaveFailure(t *testing.T) {
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(blocker, []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(blocker, "comments.json")
+	rows := []diff.Row{{Kind: diff.RowAdd, Gutter: "1 1 + ", Code: "line", Review: review.Anchor{Path: "main.go", Line: 1, Side: review.SideRight}}}
+	app := newUIDiffTestAppWithReviewFile(rows, nil, path)
+	size := vui.Size{Width: 80, Height: 6}
+	app.Pump(size)
+	app.Pump(size)
+
+	app.Send(vaxis.Key{Text: "i", Keycode: 'i'})
+	app.Pump(size)
+	app.Send(vaxis.Key{Text: "unsaved"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEsc})
+	app.Pump(size)
+	app.Send(vaxis.Key{Text: ":", Keycode: ':'})
+	app.Send(vaxis.Key{Text: "wq"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEnter})
+	app.Pump(size)
+
+	if app.ShouldQuit() {
+		t.Fatal(":wq quit after failed save")
+	}
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	if got := uiDiffPainterText(p, size.Height-1); !strings.Contains(got, "Could not save comments") {
+		t.Fatalf("status message = %q, want save failure", got)
+	}
+
+	app.Send(vaxis.Key{Text: ":", Keycode: ':'})
+	app.Send(vaxis.Key{Text: "q"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEnter})
+	app.Pump(size)
+	if app.ShouldQuit() {
+		t.Fatal(":q quit after failed save cleared dirty state")
+	}
+	p = vui.NewPainter(size)
+	app.Paint(p)
+	if got := uiDiffPainterText(p, size.Height-1); !strings.Contains(got, "Unsaved comments") {
+		t.Fatalf("status message after :q = %q, want unsaved warning", got)
+	}
+}
+
+func TestUIDiffViewCommandWQAfterDeletionDoesNotQuitAfterSaveFailure(t *testing.T) {
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(blocker, []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(blocker, "comments.json")
+	draft := review.CommentDraft{Path: "main.go", Line: 1, Side: review.SideRight, Body: "delete me"}
+	rows := []diff.Row{{Kind: diff.RowAdd, Gutter: "1 1 + ", Code: "line", Review: review.Anchor{Path: "main.go", Line: 1, Side: review.SideRight}}}
+	app := newUIDiffTestAppWithReviewFile(rows, []review.CommentDraft{draft}, path)
+	size := vui.Size{Width: 80, Height: 5}
+	app.Pump(size)
+	app.Pump(size)
+
+	app.Send(vaxis.Key{Text: "x", Keycode: 'x'})
+	app.Pump(size)
+	app.Send(vaxis.Key{Text: ":", Keycode: ':'})
+	app.Send(vaxis.Key{Text: "wq"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEnter})
+	app.Pump(size)
+
+	if app.ShouldQuit() {
+		t.Fatal(":wq quit after failed deletion save")
+	}
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	if got := uiDiffPainterText(p, size.Height-1); !strings.Contains(got, "Could not save comments") {
+		t.Fatalf("status message = %q, want save failure", got)
+	}
+}
+
 func TestUIDiffViewCommandQBangQuitsWithUnsavedComments(t *testing.T) {
 	rows := []diff.Row{{Kind: diff.RowAdd, Gutter: "1 1 + ", Code: "line", Review: review.Anchor{Path: "main.go", Line: 1, Side: review.SideRight}}}
 	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
