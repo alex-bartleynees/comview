@@ -1337,7 +1337,10 @@ func (s *uiDiffViewState) commentCursorOffsetForMouse(rows []diff.Row, row int, 
 	if offset > 2 {
 		return len([]rune(body))
 	}
-	col := mouse.Col - uiDiffCodeOffset(rows)
+	col := mouse.Col
+	if uiDiffRowUsesGrid(rows[row]) {
+		col -= uiDiffCodeOffset(rows)
+	}
 	return clampUIDiffInt(col, 0, len([]rune(body)))
 }
 
@@ -1606,7 +1609,10 @@ func (s *uiDiffViewState) selectionPointForMouse(rows []diff.Row, mouse vaxis.Mo
 	if !ok || rowIndex < 0 || rowIndex >= len(rows) || !selectableDiffRow(rows[rowIndex].Kind) {
 		return selectionPoint{}, false
 	}
-	col := mouse.Col - uiDiffCodeOffset(rows)
+	col := mouse.Col
+	if uiDiffRowUsesGrid(rows[rowIndex]) {
+		col -= uiDiffCodeOffset(rows)
+	}
 	_, end, ok := uiDiffCodeRange(rows, rowIndex)
 	if !ok {
 		return selectionPoint{}, false
@@ -2589,6 +2595,11 @@ func (s *uiDiffViewState) selectionText(rows []diff.Row) string {
 			wroteRow = true
 			continue
 		}
+		rowCode := row.Code
+		if !uiDiffRowUsesGrid(row) {
+			rowCode = uiDiffRowCode(row)
+			rowEnd = textCellWidth(rowCode)
+		}
 		if !s.selectionLinewise {
 			if rowIndex == start.Row {
 				rowStart = maxInt(rowStart, start.Col)
@@ -2597,7 +2608,7 @@ func (s *uiDiffViewState) selectionText(rows []diff.Row) string {
 				rowEnd = minInt(rowEnd, end.Col+1)
 			}
 		}
-		rowText := cellTextRangeWithTabWidth(row.Code, rowStart, rowEnd, tabWidthForFile(row.FileName))
+		rowText := cellTextRangeWithTabWidth(rowCode, rowStart, rowEnd, tabWidthForFile(row.FileName))
 		if rowText == "" {
 			continue
 		}
@@ -2753,7 +2764,7 @@ func (s *uiDiffViewState) buildItem(rows []diff.Row, rowIndex int, theme vui.The
 	yanked := s.lineYanked(rowIndex)
 	var item vui.Widget
 	if !uiDiffRowUsesGrid(row) {
-		item = uiDiffFullWidthRow(row, rowIndex, uiDiffRowBackground(active, selected, yanked, theme), theme, s.searchMatches, wrap)
+		item = s.buildFullWidthRow(row, rowIndex, uiDiffRowBackground(active, selected, yanked, theme), selected, yanked, theme, wrap)
 	} else {
 		item = s.buildRow(rows, row, rowIndex, active, selected, yanked, s.cursor.Col, theme, highlightedRows, s.searchMatches, wrap)
 	}
@@ -3027,21 +3038,47 @@ func uiDiffRowBackground(active bool, selected bool, yanked bool, theme vui.Them
 	return 0
 }
 
-func uiDiffFullWidthRow(row diff.Row, rowIndex int, background vaxis.Color, theme vui.Theme, searchMatches []searchMatch, wrap bool) vui.Widget {
+func (s *uiDiffViewState) buildFullWidthRow(row diff.Row, rowIndex int, background vaxis.Color, selected bool, yanked bool, theme vui.Theme, wrap bool) vui.Widget {
 	if segments, ok := uiDiffStructuredSegments(row, theme); ok {
 		if background != 0 {
 			segments = uiDiffApplyBackground(segments, background)
 		}
-		segments = uiDiffSearchSegments(rowIndex, row, segments, searchMatches, theme)
-		return vui.RichText{Spans: uiTextSpans(segments), SoftWrap: wrap}
+		segments = uiDiffSearchSegments(rowIndex, row, segments, s.searchMatches, theme)
+		return uiDiffFullWidthRowBox(segments, background, wrap, row.Kind == diff.RowCommitMessage)
 	}
 	style := uiStyleForDiffRow(row.Kind, theme)
+	textBackground := background
+	if selected {
+		textBackground = theme.Selection
+	} else if yanked {
+		textBackground = uiDiffYankBackground(theme)
+	}
 	if background != 0 {
 		style.Background = background
 	}
 	segments := []vaxis.Segment{{Text: uiDiffRowCode(row), Style: style}}
-	segments = uiDiffSearchSegments(rowIndex, row, segments, searchMatches, theme)
-	return vui.RichText{Spans: uiTextSpans(segments), SoftWrap: wrap}
+	if textBackground != 0 {
+		segments = uiDiffApplyBackground(segments, textBackground)
+	}
+	if start, end, ok := s.charSelectionRange(rowIndex, row); ok {
+		segments = uiDiffApplySegmentBackgroundRange(segments, start, end, theme.Selection, tabWidthForFile(row.FileName))
+	}
+	if start, end, ok := s.charYankRange(rowIndex, row); ok {
+		segments = uiDiffApplySegmentBackgroundRange(segments, start, end, uiDiffYankBackground(theme), tabWidthForFile(row.FileName))
+	}
+	segments = uiDiffSearchSegments(rowIndex, row, segments, s.searchMatches, theme)
+	return uiDiffFullWidthRowBox(segments, background, wrap, row.Kind == diff.RowCommitMessage)
+}
+
+func uiDiffFullWidthRowBox(segments []vaxis.Segment, background vaxis.Color, wrap bool, fillRow bool) vui.Widget {
+	text := vui.RichText{Spans: uiTextSpans(segments), SoftWrap: wrap}
+	if background == 0 || !fillRow {
+		return text
+	}
+	return vui.DecoratedBox(
+		vui.Decoration{Style: vaxis.Style{Background: background}},
+		vui.SizedBox{Width: 10000, Child: text},
+	)
 }
 
 func uiDiffStructuredSegments(row diff.Row, theme vui.Theme) ([]vaxis.Segment, bool) {
@@ -3569,7 +3606,12 @@ func uiDiffSelectableTargetRow(rows []diff.Row, row int, direction int) int {
 }
 
 func uiDiffCursorableRow(row diff.Row) bool {
-	return row.Kind != diff.RowBlank
+	switch row.Kind {
+	case diff.RowBlank, diff.RowFile, diff.RowHunk:
+		return false
+	default:
+		return true
+	}
 }
 
 func signUIDiffInt(v int) int {
@@ -4002,6 +4044,9 @@ func uiDiffCodeRange(rows []diff.Row, rowIndex int) (int, int, bool) {
 
 func uiDiffCodeRangeForRow(row diff.Row) (int, int, bool) {
 	if !selectableDiffRow(row.Kind) {
+		return 0, textCellWidth(uiDiffRowCode(row)), true
+	}
+	if !uiDiffRowUsesGrid(row) {
 		return 0, textCellWidth(uiDiffRowCode(row)), true
 	}
 	return 0, codeCellWidth(row), true

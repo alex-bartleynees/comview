@@ -4092,7 +4092,7 @@ func (d *diffViewer) codeRange(row diff.Row) (int, int, bool) {
 
 func selectableDiffRow(kind diff.RowKind) bool {
 	switch kind {
-	case diff.RowContext, diff.RowAdd, diff.RowDelete:
+	case diff.RowContext, diff.RowAdd, diff.RowDelete, diff.RowCommitMessage:
 		return true
 	default:
 		return false

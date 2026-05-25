@@ -2492,6 +2492,24 @@ func TestUIDiffViewMouseDragSelectsCode(t *testing.T) {
 	}
 }
 
+func TestUIDiffViewMouseDragSelectsCommitMessage(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowCommitMessage, Text: "    hello world"}}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	size := vui.Size{Width: 30, Height: 3}
+	app.Pump(size)
+	app.Pump(size)
+
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventPress, Row: 0, Col: 4})
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventMotion, Row: 0, Col: 8})
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventRelease, Row: 0, Col: 8})
+	app.Pump(size)
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	if got := p.Cell(4, 0).Background; got != uiDiffTestTheme().Selection {
+		t.Fatalf("commit message selected background = %v, want selection", got)
+	}
+}
+
 func TestUIDiffViewMouseClickDoesNotSelect(t *testing.T) {
 	rows := []diff.Row{{Kind: diff.RowContext, Gutter: "1 1   ", Code: "abcde"}}
 	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
@@ -3660,19 +3678,49 @@ func TestUIDiffViewMouseSelectionAccountsForCommentRows(t *testing.T) {
 	}
 }
 
-func TestUIDiffViewSelectionTextSkipsCommitRows(t *testing.T) {
+func TestUIDiffViewSelectionTextIncludesCommitMessages(t *testing.T) {
 	rows := []diff.Row{
 		{Kind: diff.RowContext, Code: "selectable", Text: "selectable"},
 		{Kind: diff.RowCommitHeader, Text: "commit abc123"},
-		{Kind: diff.RowCommitMeta, Text: "Author: Example"},
+		{Kind: diff.RowCommitMessage, Text: "    message"},
 	}
 	state := &uiDiffViewState{
 		selectionActive: true,
 		selectionAnchor: selectionPoint{Row: 0, Col: 0},
 		cursor:          selectionPoint{Row: 2, Col: textCellWidth(rows[2].Text) - 1},
 	}
-	if got, want := state.selectionText(rows), "selectable"; got != want {
+	if got, want := state.selectionText(rows), "selectable\n    message"; got != want {
 		t.Fatalf("selection text = %q, want %q", got, want)
+	}
+}
+
+func TestUIDiffViewCursorSkipsFileAndHunkRows(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowFile, Text: "main.go"},
+		{Kind: diff.RowHunk, Text: "@@ -1 +1 @@"},
+		{Kind: diff.RowContext, Gutter: "1 1   ", Code: "one"},
+	}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	size := vui.Size{Width: 30, Height: 4}
+	app.Pump(size)
+	app.Pump(size)
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	if got := p.Cell(29, 2).Background; got != uiDiffCursorRowBackground(uiDiffTestTheme()) {
+		t.Fatalf("initial cursor background = %v, want code row", got)
+	}
+}
+
+func TestUIDiffViewCommitMessageCursorFillsRow(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowCommitMessage, Text: "    message"}}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	size := vui.Size{Width: 30, Height: 3}
+	app.Pump(size)
+	app.Pump(size)
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	if got := p.Cell(size.Width-1, 0).Background; got != uiDiffCursorRowBackground(uiDiffTestTheme()) {
+		t.Fatalf("commit message row edge background = %v, want cursor row", got)
 	}
 }
 
