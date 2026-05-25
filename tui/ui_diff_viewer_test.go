@@ -249,6 +249,7 @@ func TestUIDiffViewThemePickerSelectsTheme(t *testing.T) {
 
 	app.Send(vaxis.Key{Text: "latte"})
 	app.Pump(size)
+	app.Pump(size)
 	app.Send(vaxis.Key{Keycode: vaxis.KeyEnter})
 	app.Pump(size)
 	app.Pump(size)
@@ -271,6 +272,17 @@ func TestUIDiffViewThemePickerSelectsTheme(t *testing.T) {
 	}
 }
 
+func TestUIDiffViewThemePickerPreviewsTheme(t *testing.T) {
+	state := &uiDiffViewState{}
+	items := state.themePreviewFilter("latte", Themes, uiThemeSelectItem)
+	if len(items) == 0 {
+		t.Fatal("theme filter returned no matches")
+	}
+	if got, want := state.themeName, "Catppuccin Latte"; got != want {
+		t.Fatalf("preview theme = %q, want %q", got, want)
+	}
+}
+
 func TestUIDiffViewThemePickerEscapeKeepsTheme(t *testing.T) {
 	app := newUIDiffTestAppWithBaseDraftsAndStatus([]diff.Row{{Kind: diff.RowContext, Code: "line"}}, DefaultBaseColors(), false, nil, true)
 	size := vui.Size{Width: 80, Height: 12}
@@ -290,6 +302,65 @@ func TestUIDiffViewThemePickerEscapeKeepsTheme(t *testing.T) {
 	}
 	if got := p.Cell(0, 0).Background; got != uiDiffCursorRowBackground(uiDiffTestTheme()) {
 		t.Fatalf("cursor row background = %v, want original theme", got)
+	}
+}
+
+func TestUIDiffViewEmptyStateUsesCustomMessage(t *testing.T) {
+	root := uiDiffView{EmptyMessage: "No changes.", EmptyHint: "Watching: git diff", ShowStatus: true}
+	app := vui.NewApp(root, vui.WithTheme(uiDiffTestTheme()))
+	size := vui.Size{Width: 40, Height: 6}
+	app.Pump(size)
+	app.Pump(size)
+
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	if _, _, ok := uiDiffFindText(p, "No changes."); !ok {
+		t.Fatal("empty message did not render")
+	}
+	if _, _, ok := uiDiffFindText(p, "Watching: git diff"); !ok {
+		t.Fatal("empty hint did not render")
+	}
+}
+
+func TestUIDiffViewShowsExplicitScrollbars(t *testing.T) {
+	rows := make([]diff.Row, 20)
+	for i := range rows {
+		rows[i] = diff.Row{Kind: diff.RowContext, Gutter: "1 1   ", Code: strings.Repeat("x", 80)}
+	}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	size := vui.Size{Width: 20, Height: 6}
+	app.Pump(size)
+	app.Pump(size)
+
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	theme := uiDiffTestTheme()
+	if got := p.Cell(size.Width-1, 0).Background; got != theme.Border && got != theme.Surface && got != theme.AccentText && got != theme.SurfaceHovered {
+		t.Fatalf("vertical scrollbar background = %v, want scrollbar style", got)
+	}
+}
+
+func TestUIDiffViewCursorDoesNotShareHorizontalScrollbarRow(t *testing.T) {
+	rows := make([]diff.Row, 20)
+	for i := range rows {
+		rows[i] = diff.Row{Kind: diff.RowContext, Gutter: "1 1   ", Code: strings.Repeat("x", 80)}
+	}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	size := vui.Size{Width: 20, Height: 6}
+	app.Pump(size)
+	app.Pump(size)
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEnd})
+	app.Pump(size)
+	app.Pump(size)
+
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	highlightRow := uiDiffHighlightedScreenRow(p, uiDiffCursorRowBackground(uiDiffTestTheme()))
+	if highlightRow < 0 {
+		t.Fatal("cursor row is not visible")
+	}
+	if row := uiDiffPainterText(p, highlightRow); strings.Contains(row, "▄") {
+		t.Fatalf("cursor row = %q, want no horizontal scrollbar half cell", row)
 	}
 }
 
@@ -1420,6 +1491,19 @@ func TestUIDiffViewCommandQQuits(t *testing.T) {
 	app.Send(vaxis.Key{Keycode: vaxis.KeyEnter})
 	if !app.ShouldQuit() {
 		t.Fatal(":q did not quit")
+	}
+}
+
+func TestUIDiffViewCommandQQuitsEmptyInput(t *testing.T) {
+	app := vui.NewApp(uiDiffView{ShowStatus: true}, vui.WithTheme(uiDiffTestTheme()))
+	app.Pump(vui.Size{Width: 40, Height: 4})
+	app.Pump(vui.Size{Width: 40, Height: 4})
+
+	app.Send(vaxis.Key{Text: ":", Keycode: ':'})
+	app.Send(vaxis.Key{Text: "q"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEnter})
+	if !app.ShouldQuit() {
+		t.Fatal(":q did not quit with empty input")
 	}
 }
 

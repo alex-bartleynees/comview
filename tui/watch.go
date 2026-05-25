@@ -10,10 +10,11 @@ import (
 	"strings"
 	"time"
 
-	"go.rockorager.dev/vaxis"
+	vui "go.rockorager.dev/vaxis/ui"
 
 	"go.rockorager.dev/comview/diff"
 	"go.rockorager.dev/comview/internal/terminal"
+	"go.rockorager.dev/comview/review"
 )
 
 const defaultWatchInterval = 750 * time.Millisecond
@@ -29,83 +30,98 @@ func RunWatch(command []string) error {
 	if len(command) == 0 {
 		command = []string{"git", "diff"}
 	}
-
-	app, viewer, err := newDiffApp(nil)
-	if err != nil {
-		return err
-	}
-	viewer.emptyMessage = "No changes."
-	viewer.emptyHint = fmt.Sprintf("Watching: %s", strings.Join(command, " "))
-	viewer.setStatusMessage(fmt.Sprintf("Watching: %s", strings.Join(command, " ")))
-
-	ctx, cancel := context.WithCancel(context.Background())
-	app.OnClose(cancel)
-	go watchCommand(ctx, app.Vaxis(), command, defaultWatchInterval)
-
-	return app.Run()
+	return runUIWatch(command)
 }
 
-func watchCommand(ctx context.Context, vx *vaxis.Vaxis, command []string, interval time.Duration) {
+type uiWatchView struct {
+	Command []string
+	Config  Config
+	Review  review.CommentFile
+	File    string
+}
+
+func (w uiWatchView) CreateState() vui.State {
+	return &uiWatchViewState{}
+}
+
+type uiWatchViewState struct {
+	vui.StateBase
+	started bool
+	rows    []diff.Row
+	message string
+}
+
+func (s *uiWatchViewState) Build(ctx vui.BuildContext) vui.Widget {
+	w := s.Widget().(uiWatchView)
+	if !s.started {
+		s.started = true
+		s.message = fmt.Sprintf("Watching: %s", strings.Join(w.Command, " "))
+		runtime := ctx.Runtime()
+		go s.watch(runtime, w.Command, defaultWatchInterval)
+	}
+	root := uiDiffRootWithReviewFileAndBindings(s.rows, w.Config.Wrap, w.Review.Comments, w.File, true, newBindings(w.Config.Keybindings)).(uiDiffView)
+	root.EmptyMessage = "No changes."
+	root.EmptyHint = fmt.Sprintf("Watching: %s", strings.Join(w.Command, " "))
+	root.InitialStatus = s.message
+	return root
+}
+
+func (s *uiWatchViewState) watch(runtime vui.Runtime, command []string, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-
 	var lastHash [sha256.Size]byte
 	haveHash := false
 	for {
-		postCommandOutput(ctx, vx, command, &lastHash, &haveHash)
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
+		output, err := runWatchCommand(context.Background(), command)
+		message := ""
+		var rows []diff.Row
+		hashInput := ""
+		if err != nil {
+			message = fmt.Sprintf("Watch command failed: %v", err)
+			hashInput = "error:" + message
+		} else if parsed, parseErr := rowsForInput(output); parseErr != nil {
+			message = fmt.Sprintf("Could not parse diff: %v", parseErr)
+			hashInput = "parse:" + message
+		} else {
+			rows = parsed
+			message = fmt.Sprintf("Updated %s", time.Now().Format("15:04:05"))
+			if len(rows) == 0 {
+				message = fmt.Sprintf("No changes %s", time.Now().Format("15:04:05"))
+			}
+			hashInput = "output:" + output
 		}
+		hash := sha256.Sum256([]byte(hashInput))
+		if !haveHash || hash != lastHash {
+			lastHash = hash
+			haveHash = true
+			runtime.Dispatch(func() {
+				s.SetState(func() {
+					s.rows = rows
+					s.message = message
+				})
+			})
+		}
+		<-ticker.C
 	}
 }
 
-func postCommandOutput(ctx context.Context, vx *vaxis.Vaxis, command []string, lastHash *[sha256.Size]byte, haveHash *bool) {
-	output, err := runWatchCommand(ctx, command)
-	if ctx.Err() != nil {
-		return
+func runUIWatch(command []string) error {
+	cfg := loadConfig()
+	commentPath := cfg.CommentFile
+	if commentPath == "" {
+		commentPath = review.DefaultFilePath
 	}
+	commentFile, err := review.LoadFile(commentPath)
 	if err != nil {
-		message := fmt.Sprintf("Watch command failed: %v", err)
-		hash := sha256.Sum256([]byte("error:" + message))
-		if *haveHash && hash == *lastHash {
-			return
+		return err
+	}
+	root := uiWatchView{Command: command, Config: cfg, Review: commentFile, File: commentPath}
+	if cfg.Theme != "" {
+		if t, ok := ThemeByName(cfg.Theme); ok {
+			return vui.Run(root, vui.WithTheme(uiThemeFromBaseColors(t.Colors)))
 		}
-		*lastHash = hash
-		*haveHash = true
-		vx.PostEvent(watchUpdateEvent{
-			Message: message,
-		})
-		return
 	}
-
-	hash := sha256.Sum256([]byte("output:" + output))
-	if *haveHash && hash == *lastHash {
-		return
-	}
-	*lastHash = hash
-	*haveHash = true
-
-	rows, err := rowsForInput(output)
-	if ctx.Err() != nil {
-		return
-	}
-	if err != nil {
-		vx.PostEvent(watchUpdateEvent{
-			Message: fmt.Sprintf("Could not parse diff: %v", err),
-		})
-		return
-	}
-
-	message := fmt.Sprintf("Updated %s", time.Now().Format("15:04:05"))
-	if len(rows) == 0 {
-		message = fmt.Sprintf("No changes %s", time.Now().Format("15:04:05"))
-	}
-	vx.PostEvent(watchUpdateEvent{
-		Rows:    rows,
-		Message: message,
-	})
+	return vui.Run(root)
 }
 
 func runWatchCommand(ctx context.Context, command []string) (string, error) {

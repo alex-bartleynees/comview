@@ -16,12 +16,15 @@ import (
 )
 
 type uiDiffView struct {
-	Rows         []diff.Row
-	Wrap         bool
-	ReviewDrafts []review.CommentDraft
-	ReviewFile   string
-	ShowStatus   bool
-	Binds        Bindings
+	Rows          []diff.Row
+	Wrap          bool
+	ReviewDrafts  []review.CommentDraft
+	ReviewFile    string
+	ShowStatus    bool
+	Binds         Bindings
+	EmptyMessage  string
+	EmptyHint     string
+	InitialStatus string
 }
 
 func uiDiffRootWithStatus(rows []diff.Row, wrap bool, drafts []review.CommentDraft, showStatus bool) vui.Widget {
@@ -66,6 +69,7 @@ type uiDiffViewState struct {
 	fileFinder              bool
 	themeFinder             bool
 	themeName               string
+	themeNameBeforePick     string
 	helpVisible             bool
 	sideBySide              bool
 	xScroll                 int
@@ -120,6 +124,10 @@ type uiDiffCommentTarget struct {
 
 func (s *uiDiffViewState) Build(ctx vui.BuildContext) vui.Widget {
 	w := s.Widget().(uiDiffView)
+	if s.statusMessage == "" && w.InitialStatus != "" {
+		s.statusMessage = w.InitialStatus
+		s.statusMessageUntil = time.Now().Add(statusMessageTimeout)
+	}
 	s.clearExpiredYank(time.Now())
 	s.clearExpiredStatusMessage(time.Now())
 	s.clampCursor(w.Rows)
@@ -154,9 +162,31 @@ func (s *uiDiffViewState) Build(ctx vui.BuildContext) vui.Widget {
 			},
 		}
 	}
-	scrollView := vui.CustomScrollView{
+	scrollView := vui.Widget(vui.CustomScrollView{
 		Controller: &s.scroll,
 		Slivers:    []vui.Widget{sliver},
+	})
+	if len(w.Rows) > 0 && w.ShowStatus {
+		scrollView = vui.Scrollbar{Child: scrollView}
+	}
+	if len(w.Rows) == 0 {
+		message := w.EmptyMessage
+		if message == "" {
+			message = "Pipe git diff or git show into comview."
+		}
+		hint := w.EmptyHint
+		if hint == "" {
+			hint = "Run comview watch to refresh git diff as files change."
+		}
+		scrollView = vui.Padding(vui.All(1), vui.Flex{
+			Axis: vui.Vertical,
+			Children: []vui.Widget{
+				vui.Text{Value: message, Style: vui.Style{Foreground: theme.Foreground, Background: theme.Background}},
+				vui.SizedBox{Height: 1},
+				vui.Text{Value: hint, Style: vui.Style{Foreground: theme.MutedForeground, Background: theme.Background}},
+				vui.Text{Value: "Use :q to quit.", Style: vui.Style{Foreground: theme.MutedForeground, Background: theme.Background}},
+			},
+		})
 	}
 	content := vui.Widget(scrollView)
 	if w.ShowStatus {
@@ -235,20 +265,32 @@ func (s *uiDiffViewState) buildThemeFinder() vui.Widget {
 	return vui.FuzzySelect[Theme]{
 		Items:          Themes,
 		Item:           uiThemeSelectItem,
+		Filter:         s.themePreviewFilter,
 		Placeholder:    "Choose theme…",
 		EmptyText:      "No matching themes",
 		MaxVisibleRows: 8,
 		RowStyle:       vui.FuzzySelectOneLine,
 		OnDismiss: func(vui.EventContext) {
 			s.themeFinder = false
+			s.themeName = s.themeNameBeforePick
+			s.themeNameBeforePick = ""
 			s.SetState(func() {})
 		},
 		OnSelected: func(_ vui.EventContext, theme Theme) {
 			s.themeFinder = false
 			s.themeName = theme.Name
+			s.themeNameBeforePick = ""
 			s.setStatusMessage("Theme: " + theme.Name)
 		},
 	}
+}
+
+func (s *uiDiffViewState) themePreviewFilter(query string, items []Theme, item vui.FuzzySelectItemFunc[Theme]) []Theme {
+	filtered := vui.DefaultFuzzySelectFilter(query, items, item)
+	if len(filtered) > 0 {
+		s.themeName = filtered[0].Name
+	}
+	return filtered
 }
 
 func uiThemeSelectItem(theme Theme) vui.FuzzySelectItem {
@@ -763,15 +805,20 @@ func (s *uiDiffViewState) HandleEvent(ctx vui.EventContext, ev vui.Event) vui.Ev
 	}
 	w := s.Widget().(uiDiffView)
 	rows := w.Rows
-	if len(rows) == 0 {
-		return vui.EventIgnored
-	}
 	if key.MatchString("Ctrl+c") {
 		ctx.Quit()
 		return vui.EventHandled
 	}
 	if s.commandMode {
 		return s.handleCommandKey(ctx, rows, key)
+	}
+	if key.Matches(':') {
+		s.clearPendingKeys()
+		s.enterCommandMode()
+		return vui.EventHandled
+	}
+	if len(rows) == 0 {
+		return vui.EventIgnored
 	}
 	if s.commentEditorActive && s.commentEditorFocused && !s.commentEditorInsert && key.Matches(':') {
 		s.enterCommandMode()
@@ -799,13 +846,10 @@ func (s *uiDiffViewState) HandleEvent(ctx vui.EventContext, ev vui.Event) vui.Ev
 	case key.Matches('t'):
 		s.clearPendingKeys()
 		s.themeFinder = true
+		s.themeNameBeforePick = s.themeName
 		s.statusMessage = ""
 		s.statusMessageUntil = time.Time{}
 		s.SetState(func() {})
-		return vui.EventHandled
-	case key.Matches(':'):
-		s.clearPendingKeys()
-		s.enterCommandMode()
 		return vui.EventHandled
 	case key.Matches('x'):
 		s.clearPendingKeys()
