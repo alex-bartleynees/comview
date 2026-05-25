@@ -1083,6 +1083,32 @@ func TestUIDiffViewKeepsCursorVisibleWhenMovingDown(t *testing.T) {
 	}
 }
 
+func TestUIDiffViewRepeatedCursorDownKeepsTopPainted(t *testing.T) {
+	rows := make([]diff.Row, 40)
+	for i := range rows {
+		rows[i] = diff.Row{Kind: diff.RowContext, Gutter: "1 1   ", Code: fmt.Sprintf("line %02d", i+1)}
+	}
+	app := newUIDiffTestApp(rows, false)
+	size := vui.Size{Width: 20, Height: 5}
+	app.Pump(size)
+	app.Pump(size)
+
+	for i := 0; i < 20; i++ {
+		app.Send(vaxis.Key{Text: "j", Keycode: 'j'})
+	}
+	app.Pump(size)
+	app.Pump(size)
+
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	if got := strings.TrimSpace(uiDiffPainterText(p, 0)); got == "" {
+		t.Fatal("top visible row is blank after repeated cursor down")
+	}
+	if got := uiDiffHighlightedScreenRow(p, uiDiffCursorRowBackground(uiDiffTestTheme())); got == -1 {
+		t.Fatal("cursor row is not visible after repeated cursor down")
+	}
+}
+
 func TestUIDiffViewActiveCodeRowHighlightsToRightEdge(t *testing.T) {
 	rows := []diff.Row{{Kind: diff.RowContext, Gutter: "1 1   ", Code: "short"}}
 	app := newUIDiffTestApp(rows, false)
@@ -2513,6 +2539,27 @@ func TestUIDiffViewMouseDragSelectsCommitMessage(t *testing.T) {
 	}
 }
 
+func TestUIDiffViewMouseDragSelectsCommitHeader(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowCommitHeader, Text: "commit abc123", Prefix: "commit ", Code: "abc123"}}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	size := vui.Size{Width: 30, Height: 3}
+	app.Pump(size)
+	app.Pump(size)
+
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventPress, Row: 0, Col: 0})
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventMotion, Row: 0, Col: 6})
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventRelease, Row: 0, Col: 6})
+	app.Pump(size)
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	if got := p.Cell(0, 0).Background; got != uiDiffTestTheme().Selection {
+		t.Fatalf("commit header selected background = %v, want selection", got)
+	}
+	if got := p.Cell(6, 0).Background; got != uiDiffCursorBackground(uiDiffTestTheme()) {
+		t.Fatalf("commit header cursor background = %v, want cursor", got)
+	}
+}
+
 func TestUIDiffViewMouseClickDoesNotSelect(t *testing.T) {
 	rows := []diff.Row{{Kind: diff.RowContext, Gutter: "1 1   ", Code: "abcde"}}
 	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
@@ -3685,15 +3732,56 @@ func TestUIDiffViewSelectionTextIncludesCommitMessages(t *testing.T) {
 	rows := []diff.Row{
 		{Kind: diff.RowContext, Code: "selectable", Text: "selectable"},
 		{Kind: diff.RowCommitHeader, Text: "commit abc123"},
+		{Kind: diff.RowCommitMeta, Text: "Author: Example <example@example.com>"},
 		{Kind: diff.RowCommitMessage, Text: "    message"},
 	}
 	state := &uiDiffViewState{
 		selectionActive: true,
 		selectionAnchor: selectionPoint{Row: 0, Col: 0},
-		cursor:          selectionPoint{Row: 2, Col: textCellWidth(rows[2].Text) - 1},
+		cursor:          selectionPoint{Row: 3, Col: textCellWidth(rows[3].Text) - 1},
 	}
-	if got, want := state.selectionText(rows), "selectable\n    message"; got != want {
+	if got, want := state.selectionText(rows), "selectable\ncommit abc123\nAuthor: Example <example@example.com>\n    message"; got != want {
 		t.Fatalf("selection text = %q, want %q", got, want)
+	}
+}
+
+func TestUIDiffViewCanCursorToCommitHeaderRows(t *testing.T) {
+	doc, err := diff.Parse("commit abc123\nAuthor: Example <example@example.com>\nDate:   Thu May 14 12:00:00 2026 -0500\n\n    hello world\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := doc.Rows()
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	size := vui.Size{Width: 64, Height: 7}
+	app.Pump(size)
+	app.Pump(size)
+
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	for _, text := range []string{"commit abc123", "Author: Example", "Date:"} {
+		row := uiDiffPainterRowContaining(p, text)
+		if row == -1 {
+			t.Fatalf("%q was not rendered", text)
+		}
+	}
+	if row := uiDiffPainterRowContaining(p, "commit abc123"); p.Cell(size.Width-1, row).Background != uiDiffCursorRowBackground(uiDiffTestTheme()) {
+		t.Fatal("initial cursor is not on commit header")
+	}
+
+	app.Send(vaxis.Key{Text: "j", Keycode: 'j'})
+	app.Pump(size)
+	p = vui.NewPainter(size)
+	app.Paint(p)
+	if row := uiDiffPainterRowContaining(p, "Author: Example"); p.Cell(size.Width-1, row).Background != uiDiffCursorRowBackground(uiDiffTestTheme()) {
+		t.Fatal("cursor did not move to commit author row")
+	}
+
+	app.Send(vaxis.Key{Text: "j", Keycode: 'j'})
+	app.Pump(size)
+	p = vui.NewPainter(size)
+	app.Paint(p)
+	if row := uiDiffPainterRowContaining(p, "Date:"); p.Cell(size.Width-1, row).Background != uiDiffCursorRowBackground(uiDiffTestTheme()) {
+		t.Fatal("cursor did not move to commit date row")
 	}
 }
 
@@ -3753,6 +3841,23 @@ func TestUIDiffViewCommitMessageCursorFillsRow(t *testing.T) {
 	app.Paint(p)
 	if got := p.Cell(size.Width-1, 0).Background; got != uiDiffCursorRowBackground(uiDiffTestTheme()) {
 		t.Fatalf("commit message row edge background = %v, want cursor row", got)
+	}
+}
+
+func TestUIDiffViewCommitMessageWraps(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowCommitMessage, Text: "    this is a long commit message that should wrap"}}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	size := vui.Size{Width: 24, Height: 5}
+	app.Pump(size)
+	app.Pump(size)
+
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	if got := uiDiffPainterText(p, 0); !strings.Contains(got, "this is a long") {
+		t.Fatalf("first commit message row = %q, want wrapped prefix", got)
+	}
+	if got := uiDiffPainterText(p, 1); !strings.Contains(got, "commit message") {
+		t.Fatalf("second commit message row = %q, want wrapped continuation", got)
 	}
 }
 
