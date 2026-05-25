@@ -46,9 +46,11 @@ func (w uiWatchView) CreateState() vui.State {
 
 type uiWatchViewState struct {
 	vui.StateBase
-	started bool
-	rows    []diff.Row
-	message string
+	started  bool
+	rows     []diff.Row
+	message  string
+	lastHash [sha256.Size]byte
+	haveHash bool
 }
 
 func (s *uiWatchViewState) Build(ctx vui.BuildContext) vui.Widget {
@@ -59,6 +61,10 @@ func (s *uiWatchViewState) Build(ctx vui.BuildContext) vui.Widget {
 		runtime := ctx.Runtime()
 		go s.watch(runtime, w.Command, defaultWatchInterval)
 	}
+	return s.diffRoot(w)
+}
+
+func (s *uiWatchViewState) diffRoot(w uiWatchView) uiDiffView {
 	root := uiDiffRootWithReviewFileAndBindings(s.rows, w.Config.Wrap, w.Review.Comments, w.File, true, newBindings(w.Config.Keybindings)).(uiDiffView)
 	root.EmptyMessage = "No changes."
 	root.EmptyHint = fmt.Sprintf("Watching: %s", strings.Join(w.Command, " "))
@@ -69,40 +75,44 @@ func (s *uiWatchViewState) Build(ctx vui.BuildContext) vui.Widget {
 func (s *uiWatchViewState) watch(runtime vui.Runtime, command []string, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	var lastHash [sha256.Size]byte
-	haveHash := false
 	for {
 		output, err := runWatchCommand(context.Background(), command)
-		message := ""
-		var rows []diff.Row
-		hashInput := ""
-		if err != nil {
-			message = fmt.Sprintf("Watch command failed: %v", err)
-			hashInput = "error:" + message
-		} else if parsed, parseErr := rowsForInput(output); parseErr != nil {
-			message = fmt.Sprintf("Could not parse diff: %v", parseErr)
-			hashInput = "parse:" + message
-		} else {
-			rows = parsed
-			message = fmt.Sprintf("Updated %s", time.Now().Format("15:04:05"))
-			if len(rows) == 0 {
-				message = fmt.Sprintf("No changes %s", time.Now().Format("15:04:05"))
-			}
-			hashInput = "output:" + output
-		}
-		hash := sha256.Sum256([]byte(hashInput))
-		if !haveHash || hash != lastHash {
-			lastHash = hash
-			haveHash = true
+		if s.applyWatchResult(output, err, time.Now()) {
 			runtime.Dispatch(func() {
-				s.SetState(func() {
-					s.rows = rows
-					s.message = message
-				})
+				s.SetState(func() {})
 			})
 		}
 		<-ticker.C
 	}
+}
+
+func (s *uiWatchViewState) applyWatchResult(output string, err error, now time.Time) bool {
+	message := ""
+	rows := s.rows
+	hashInput := ""
+	if err != nil {
+		message = fmt.Sprintf("Watch command failed: %v", err)
+		hashInput = "error:" + message
+	} else if parsed, parseErr := rowsForInput(output); parseErr != nil {
+		message = fmt.Sprintf("Could not parse diff: %v", parseErr)
+		hashInput = "parse:" + message
+	} else {
+		rows = parsed
+		message = fmt.Sprintf("Updated %s", now.Format("15:04:05"))
+		if len(rows) == 0 {
+			message = fmt.Sprintf("No changes %s", now.Format("15:04:05"))
+		}
+		hashInput = "output:" + output
+	}
+	hash := sha256.Sum256([]byte(hashInput))
+	if s.haveHash && hash == s.lastHash {
+		return false
+	}
+	s.lastHash = hash
+	s.haveHash = true
+	s.rows = rows
+	s.message = message
+	return true
 }
 
 func runUIWatch(command []string) error {
