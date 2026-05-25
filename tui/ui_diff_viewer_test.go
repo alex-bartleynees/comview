@@ -331,12 +331,16 @@ func TestUIDiffViewShowsExplicitScrollbars(t *testing.T) {
 	size := vui.Size{Width: 20, Height: 6}
 	app.Pump(size)
 	app.Pump(size)
+	app.Pump(size)
 
 	p := vui.NewPainter(size)
 	app.Paint(p)
 	theme := uiDiffTestTheme()
 	if got := p.Cell(size.Width-1, 0).Background; got != theme.Border && got != theme.Surface && got != theme.AccentText && got != theme.SurfaceHovered {
 		t.Fatalf("vertical scrollbar background = %v, want scrollbar style", got)
+	}
+	if row := uiDiffPainterText(p, size.Height-2); !strings.Contains(row, horizontalScrollbarThumb) {
+		t.Fatalf("horizontal scrollbar row = %q, want thumb", row)
 	}
 }
 
@@ -361,6 +365,98 @@ func TestUIDiffViewCursorDoesNotShareHorizontalScrollbarRow(t *testing.T) {
 	}
 	if row := uiDiffPainterText(p, highlightRow); strings.Contains(row, "▄") {
 		t.Fatalf("cursor row = %q, want no horizontal scrollbar half cell", row)
+	}
+}
+
+func TestUIDiffViewHorizontalScrollbarMovesWithXScroll(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowContext, Gutter: "1 1   ", Code: strings.Repeat("x", 80)}}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	size := vui.Size{Width: 20, Height: 5}
+	app.Pump(size)
+	app.Pump(size)
+	app.Pump(size)
+
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	initial := uiDiffPainterText(p, size.Height-2)
+	if !strings.HasPrefix(initial, horizontalScrollbarThumb) {
+		t.Fatalf("initial horizontal scrollbar row = %q, want thumb at start", initial)
+	}
+
+	app.Send(vaxis.Key{Text: "$", Keycode: '$', ShiftedCode: '4'})
+	app.Pump(size)
+	app.Pump(size)
+	app.Pump(size)
+	p = vui.NewPainter(size)
+	app.Paint(p)
+	after := uiDiffPainterText(p, size.Height-2)
+	if strings.HasPrefix(after, horizontalScrollbarThumb) {
+		t.Fatalf("horizontal scrollbar row after end = %q, want thumb moved right", after)
+	}
+	if !strings.Contains(after, horizontalScrollbarThumb) {
+		t.Fatalf("horizontal scrollbar row after end = %q, want thumb", after)
+	}
+}
+
+func TestUIDiffViewHorizontalScrollRevealsLastCellBeforeVerticalScrollbar(t *testing.T) {
+	rows := make([]diff.Row, 20)
+	for i := range rows {
+		rows[i] = diff.Row{Kind: diff.RowContext, Gutter: "1 1   ", Code: strings.Repeat("x", 79) + "Z"}
+	}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	size := vui.Size{Width: 20, Height: 6}
+	app.Pump(size)
+	app.Pump(size)
+	app.Pump(size)
+
+	app.Send(vaxis.Key{Text: "$", Keycode: '$', ShiftedCode: '4'})
+	app.Pump(size)
+	app.Pump(size)
+	app.Pump(size)
+
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	if got := p.Cell(size.Width-2, 0).Grapheme; got != "Z" {
+		t.Fatalf("last visible code cell = %q, want final cell before vertical scrollbar", got)
+	}
+	if got := p.Cell(size.Width-1, 0).Grapheme; got == "Z" {
+		t.Fatal("final code cell rendered under vertical scrollbar")
+	}
+}
+
+func TestUIDiffViewHorizontalScrollbarHiddenInWrapMode(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowContext, Gutter: "1 1   ", Code: strings.Repeat("x", 80)}}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), true, nil, true)
+	size := vui.Size{Width: 20, Height: 5}
+	app.Pump(size)
+	app.Pump(size)
+	app.Pump(size)
+
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	if row := uiDiffPainterText(p, size.Height-2); strings.Contains(row, horizontalScrollbarThumb) {
+		t.Fatalf("wrapped view horizontal scrollbar row = %q, want no thumb", row)
+	}
+}
+
+func TestUIDiffViewSideBySideShowsHorizontalScrollbar(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowDelete, Gutter: "1   - ", Marker: "-", Code: strings.Repeat("old", 20)},
+		{Kind: diff.RowAdd, Gutter: "  1 + ", Marker: "+", Code: strings.Repeat("new", 20)},
+	}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	size := vui.Size{Width: 40, Height: 5}
+	app.Pump(size)
+	app.Pump(size)
+	app.Send(vaxis.Key{Text: "s", Keycode: 's'})
+	app.Pump(size)
+	app.Pump(size)
+	app.Pump(size)
+
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	if row := uiDiffPainterText(p, size.Height-2); !strings.Contains(row, horizontalScrollbarThumb) {
+		t.Fatalf("side-by-side horizontal scrollbar row = %q, want thumb", row)
 	}
 }
 

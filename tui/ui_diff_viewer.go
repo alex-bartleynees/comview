@@ -190,13 +190,15 @@ func (s *uiDiffViewState) Build(ctx vui.BuildContext) vui.Widget {
 	}
 	content := vui.Widget(scrollView)
 	if w.ShowStatus {
+		children := []vui.Widget{vui.Expanded(scrollView)}
+		if bar, ok := s.horizontalScrollbar(w.Rows, w.Wrap, theme); ok {
+			children = append(children, bar)
+		}
+		children = append(children, s.buildStatusBar(w.Rows, theme))
 		content = vui.Flex{
 			Axis:               vui.Vertical,
 			CrossAxisAlignment: vui.CrossAxisStretch,
-			Children: []vui.Widget{
-				vui.Expanded(scrollView),
-				s.buildStatusBar(w.Rows, theme),
-			},
+			Children:           children,
 		}
 	}
 	content = vui.DecoratedBox(
@@ -295,6 +297,143 @@ func (s *uiDiffViewState) themePreviewFilter(query string, items []Theme, item v
 
 func uiThemeSelectItem(theme Theme) vui.FuzzySelectItem {
 	return vui.FuzzySelectItem{Title: theme.Name, Aliases: []string{theme.Name}}
+}
+
+func (s *uiDiffViewState) horizontalScrollbar(rows []diff.Row, wrap bool, theme vui.Theme) (vui.Widget, bool) {
+	if wrap || len(rows) == 0 {
+		return nil, false
+	}
+	verticalVisible := false
+	if s.scroll.Attached() {
+		verticalVisible = s.scroll.Metrics().MaxScrollOffset > 0
+	}
+	contentWidth := s.horizontalContentWidth(rows)
+	if contentWidth == 0 {
+		return nil, false
+	}
+	return uiDiffHorizontalScrollbar{ContentWidth: contentWidth, XScroll: s.xScroll, SideBySide: s.sideBySide, VerticalVisible: verticalVisible, Theme: theme}, true
+}
+
+func (s *uiDiffViewState) horizontalContentWidth(rows []diff.Row) int {
+	width := 0
+	if s.sideBySide {
+		for _, row := range rows {
+			if selectableDiffRow(row.Kind) {
+				width = maxInt(width, textCellWidth(uiDiffSideBySideGutter(rows, row, sideForRow(row)))+codeCellWidth(row))
+			}
+		}
+		return width
+	}
+	codeOffset := uiDiffCodeOffset(rows)
+	for _, row := range rows {
+		rowWidth := textCellWidth(row.Text)
+		if selectableDiffRow(row.Kind) && (row.Code != "" || row.Gutter != "" || row.Marker != "") {
+			rowWidth = codeOffset + codeCellWidth(row)
+		}
+		width = maxInt(width, rowWidth)
+	}
+	return width
+}
+
+type uiDiffHorizontalScrollbar struct {
+	ContentWidth    int
+	XScroll         int
+	SideBySide      bool
+	VerticalVisible bool
+	Theme           vui.Theme
+}
+
+func (w uiDiffHorizontalScrollbar) CreateRenderObject(vui.BuildContext) vui.RenderObject {
+	return &uiDiffRenderHorizontalScrollbar{ContentWidth: w.ContentWidth, XScroll: w.XScroll, SideBySide: w.SideBySide, VerticalVisible: w.VerticalVisible, Theme: w.Theme}
+}
+
+func (w uiDiffHorizontalScrollbar) UpdateRenderObject(_ vui.BuildContext, ro vui.RenderObject) {
+	r := ro.(*uiDiffRenderHorizontalScrollbar)
+	if r.ContentWidth != w.ContentWidth || r.XScroll != w.XScroll || r.SideBySide != w.SideBySide || r.VerticalVisible != w.VerticalVisible || r.Theme != w.Theme {
+		r.ContentWidth = w.ContentWidth
+		r.XScroll = w.XScroll
+		r.SideBySide = w.SideBySide
+		r.VerticalVisible = w.VerticalVisible
+		r.Theme = w.Theme
+		r.MarkNeedsLayout()
+	}
+}
+
+type uiDiffRenderHorizontalScrollbar struct {
+	vui.LeafRenderObject
+	ContentWidth    int
+	XScroll         int
+	SideBySide      bool
+	VerticalVisible bool
+	Theme           vui.Theme
+}
+
+func (r *uiDiffRenderHorizontalScrollbar) Layout(_ vui.LayoutContext, c vui.Constraints) {
+	r.SetSize(r.size(c))
+}
+
+func (r *uiDiffRenderHorizontalScrollbar) DryLayout(_ vui.LayoutContext, c vui.Constraints) vui.Size {
+	return r.size(c)
+}
+
+func (r *uiDiffRenderHorizontalScrollbar) size(c vui.Constraints) vui.Size {
+	width := c.MaxWidth
+	if width < 0 || width == vui.Unbounded {
+		width = r.ContentWidth
+	}
+	if r.scrollbar(width).Length == 0 {
+		return c.Constrain(vui.Size{Width: width, Height: 0})
+	}
+	return c.Constrain(vui.Size{Width: width, Height: 1})
+}
+
+func (r *uiDiffRenderHorizontalScrollbar) Paint(p *vui.Painter, off vui.Offset) {
+	bar := r.scrollbar(r.Size().Width)
+	if bar.Length == 0 {
+		return
+	}
+	trackStyle := vui.Style{Foreground: r.Theme.MutedForeground, Background: r.Theme.Background}
+	thumbStyle := vui.Style{Foreground: r.Theme.MutedForeground, Background: r.Theme.Background}
+	for col := 0; col < bar.Length; col++ {
+		cell := vaxis.Cell{Character: vaxis.Character{Grapheme: " ", Width: 1}, Style: trackStyle}
+		if col >= bar.Thumb && col < bar.Thumb+bar.Size {
+			cell = vaxis.Cell{Character: vaxis.Character{Grapheme: horizontalScrollbarThumb, Width: 1}, Style: thumbStyle}
+		}
+		p.DrawCell(vui.Point{X: off.X + col, Y: off.Y}, cell)
+	}
+}
+
+func (r *uiDiffRenderHorizontalScrollbar) scrollbar(width int) uiDiffScrollbar {
+	if r.VerticalVisible {
+		width--
+	}
+	viewportWidth := width
+	if r.SideBySide {
+		leftWidth, _, rightWidth := uiDiffSideBySidePaneGeometry(width)
+		viewportWidth = maxInt(leftWidth, rightWidth)
+	}
+	if width <= 0 || viewportWidth <= 0 || r.ContentWidth <= viewportWidth {
+		return uiDiffScrollbar{}
+	}
+	thumbSize := (viewportWidth * width) / r.ContentWidth
+	if thumbSize < 1 {
+		thumbSize = 1
+	}
+	if thumbSize > width {
+		thumbSize = width
+	}
+	maxThumbLeft := width - thumbSize
+	thumbLeft := 0
+	if maxScroll := r.ContentWidth - viewportWidth; maxScroll > 0 {
+		thumbLeft = (minInt(r.XScroll, maxScroll) * maxThumbLeft) / maxScroll
+	}
+	return uiDiffScrollbar{Length: width, Thumb: thumbLeft, Size: thumbSize}
+}
+
+type uiDiffScrollbar struct {
+	Length int
+	Thumb  int
+	Size   int
 }
 
 func (s *uiDiffViewState) buildEditorTerminal(theme vui.Theme) vui.Widget {
@@ -3440,6 +3579,9 @@ func (s *uiDiffViewState) codeViewportWidth(rows []diff.Row) int {
 		return 0
 	}
 	viewportWidth := s.scroll.Metrics().ViewportWidth
+	if s.scroll.Metrics().MaxScrollOffset > 0 {
+		viewportWidth--
+	}
 	if s.sideBySide && s.cursor.Row >= 0 && s.cursor.Row < len(rows) {
 		leftWidth, rightStart, _ := uiDiffSideBySidePaneGeometry(viewportWidth)
 		paneWidth := leftWidth
