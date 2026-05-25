@@ -603,7 +603,7 @@ func (s *uiDiffViewState) buildStatusBar(rows []diff.Row, theme vui.Theme) vui.W
 	if s.statusMessage != "" {
 		return uiDiffStatusText(" "+s.statusMessage, style)
 	}
-	return uiDiffStatusSegments(s.statusSegments(rows, theme), style)
+	return uiDiffStatusSegments(s.statusSegments(rows, theme), s.statusRightSegments(rows, theme), style)
 }
 
 func (s *uiDiffViewState) statusSegments(rows []diff.Row, theme vui.Theme) []vaxis.Segment {
@@ -663,6 +663,17 @@ func (s *uiDiffViewState) statusLeftSegments(rows []diff.Row, theme vui.Theme) [
 	return segments
 }
 
+func (s *uiDiffViewState) statusRightSegments(rows []diff.Row, theme vui.Theme) []vaxis.Segment {
+	context := s.statusContext(rows)
+	if context.TotalStats.Adds == 0 && context.TotalStats.Deletes == 0 {
+		return nil
+	}
+	segments := []vaxis.Segment{{Text: " ", Style: uiDiffStatusStyle(theme)}}
+	segments = append(segments, uiDiffStatusStatsSegments(context.TotalStats, theme)...)
+	segments = append(segments, vaxis.Segment{Text: " ", Style: uiDiffStatusStyle(theme)})
+	return segments
+}
+
 type uiDiffStatusSection struct {
 	Text       string
 	Foreground vaxis.Color
@@ -678,10 +689,16 @@ func uiDiffStatusText(text string, style vaxis.Style) vui.Widget {
 	)
 }
 
-func uiDiffStatusSegments(segments []vaxis.Segment, fillStyle vaxis.Style) vui.Widget {
+func uiDiffStatusSegments(left []vaxis.Segment, right []vaxis.Segment, fillStyle vaxis.Style) vui.Widget {
+	children := []vui.Widget{
+		vui.Expanded(vui.RichText{Spans: uiTextSpans(left), MaxLines: 1, Overflow: vui.TextOverflowClip}),
+	}
+	if len(right) > 0 {
+		children = append(children, vui.RichText{Spans: uiTextSpans(right), MaxLines: 1, Overflow: vui.TextOverflowClip})
+	}
 	return vui.DecoratedBox(
 		vui.Decoration{Style: fillStyle},
-		vui.SizedBox{Height: 1, Child: vui.RichText{Spans: uiTextSpans(segments)}},
+		vui.SizedBox{Height: 1, Child: vui.Row(children...)},
 	)
 }
 

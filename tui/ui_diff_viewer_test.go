@@ -99,11 +99,14 @@ func TestUIDiffViewStatusBarShowsFileAndStats(t *testing.T) {
 
 	p := vui.NewPainter(vui.Size{Width: 40, Height: 3})
 	app.Paint(p)
-	if got := uiDiffPainterText(p, 2); got != " NORMAL  src/main.go  +1 -1" {
+	if got := uiDiffPainterText(p, 2); got != " NORMAL  src/main.go  +1 -1     +1 -1" {
 		t.Fatalf("status bar = %q, want file context", got)
 	}
 	if got := p.Cell(8, 2).Background; got != uiDiffStatusBackground(uiDiffTestTheme()) {
 		t.Fatalf("mode separator background = %v, want following status background", got)
+	}
+	if got := p.Cell(34, 2).Grapheme; got != "+" {
+		t.Fatalf("right diffstat start = %q, want +", got)
 	}
 }
 
