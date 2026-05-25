@@ -2739,6 +2739,7 @@ func (s *uiDiffViewState) buildItem(rows []diff.Row, rowIndex int, theme vui.The
 		showDrafts = false
 	} else if body := s.commentEditorBodies[rowIndex]; strings.TrimSpace(body) != "" {
 		children = append(children, uiDiffCommentEditorBox(body, nil, false, false, nil, theme))
+		showDrafts = false
 	}
 	if showDrafts {
 		for _, draft := range reviewDraftsForRow(row, drafts) {
@@ -2858,6 +2859,7 @@ func (s *uiDiffViewState) buildSideBySideCommentRows(rows []diff.Row, rowIndex i
 		showDrafts = false
 	} else if body := s.commentEditorBodies[rowIndex]; strings.TrimSpace(body) != "" {
 		addCommentWidget(uiDiffCommentEditorBox(body, nil, false, false, nil, theme))
+		showDrafts = false
 	}
 	if showDrafts {
 		for _, draft := range reviewDraftsForRow(rows[rowIndex], drafts) {

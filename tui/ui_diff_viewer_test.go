@@ -3132,6 +3132,16 @@ func uiDiffPainterRowContaining(p *vui.Painter, text string) int {
 	return -1
 }
 
+func uiDiffPainterRowCountContaining(p *vui.Painter, text string) int {
+	count := 0
+	for row := 0; row < p.Size().Height; row++ {
+		if strings.Contains(uiDiffPainterText(p, row), text) {
+			count++
+		}
+	}
+	return count
+}
+
 func TestUIDiffViewCommentEditorEscapeKeepsEditorOpen(t *testing.T) {
 	rows := []diff.Row{{Kind: diff.RowAdd, Gutter: "1 1 + ", Code: "new", Review: review.Anchor{Path: "main.go", Line: 12, Side: review.SideRight}}}
 	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
@@ -3308,6 +3318,31 @@ func TestUIDiffViewOpeningSecondCommentKeepsFirstDraft(t *testing.T) {
 	}
 	if uiDiffPainterRowContaining(p, "Add comment") == -1 {
 		t.Fatal("second comment editor was not opened")
+	}
+}
+
+func TestUIDiffViewOpeningCommentBelowSavedCommentDoesNotDuplicateSavedComment(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowAdd, Gutter: "1 1 + ", Code: "one", Review: review.Anchor{Path: "main.go", Line: 1, Side: review.SideRight}},
+		{Kind: diff.RowAdd, Gutter: "2 2 + ", Code: "two", Review: review.Anchor{Path: "main.go", Line: 2, Side: review.SideRight}},
+	}
+	drafts := []review.CommentDraft{{Path: "main.go", Line: 1, Side: review.SideRight, Body: "saved comment"}}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, drafts, true)
+	size := vui.Size{Width: 80, Height: 12}
+	app.Pump(size)
+	app.Pump(size)
+
+	app.Send(vaxis.Key{Text: "j", Keycode: 'j'})
+	app.Send(vaxis.Key{Text: "j", Keycode: 'j'})
+	app.Send(vaxis.Key{Text: "i", Keycode: 'i'})
+	app.Pump(size)
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	if got := uiDiffPainterRowCountContaining(p, "saved comment"); got != 1 {
+		t.Fatalf("saved comment render count = %d, want 1", got)
+	}
+	if uiDiffPainterRowContaining(p, "Add comment") == -1 {
+		t.Fatal("new comment editor was not opened below saved comment")
 	}
 }
 
