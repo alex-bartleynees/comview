@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -2419,6 +2420,107 @@ func TestUIDiffViewMouseClickDoesNotSelect(t *testing.T) {
 	}
 }
 
+func TestUIDiffViewMousePressIgnoresStatusAndScrollbarRows(t *testing.T) {
+	rows := make([]diff.Row, 12)
+	for i := range rows {
+		rows[i] = diff.Row{Kind: diff.RowContext, Gutter: "1 1   ", Code: strings.Repeat("x", 60)}
+	}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	size := vui.Size{Width: 30, Height: 6}
+	app.Pump(size)
+	app.Pump(size)
+	app.Pump(size)
+	codeOffset := uiDiffCodeOffset(rows)
+
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventPress, Row: size.Height - 2, Col: codeOffset})
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventMotion, Row: 1, Col: codeOffset + 2})
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventRelease, Row: 1, Col: codeOffset + 2})
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventPress, Row: size.Height - 1, Col: codeOffset})
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventMotion, Row: 1, Col: codeOffset + 2})
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventRelease, Row: 1, Col: codeOffset + 2})
+	app.Pump(size)
+
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	if got := uiDiffPainterText(p, size.Height-1); !strings.HasPrefix(got, " NORMAL ") {
+		t.Fatalf("status bar = %q, want NORMAL after ignored mouse rows", got)
+	}
+	if got := p.Cell(codeOffset+2, 1).Background; got == uiDiffTestTheme().Selection {
+		t.Fatal("mouse drag from scrollbar/status row created a selection")
+	}
+}
+
+func TestUIDiffViewMousePressIgnoresVerticalScrollbarColumn(t *testing.T) {
+	rows := make([]diff.Row, 12)
+	for i := range rows {
+		rows[i] = diff.Row{Kind: diff.RowContext, Gutter: "1 1   ", Code: "abcdef"}
+	}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	size := vui.Size{Width: 30, Height: 6}
+	app.Pump(size)
+	app.Pump(size)
+	app.Pump(size)
+	codeOffset := uiDiffCodeOffset(rows)
+
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventPress, Row: 0, Col: size.Width - 1})
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventMotion, Row: 1, Col: codeOffset + 2})
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventRelease, Row: 1, Col: codeOffset + 2})
+	app.Pump(size)
+
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	if got := uiDiffPainterText(p, size.Height-1); !strings.HasPrefix(got, " NORMAL ") {
+		t.Fatalf("status bar = %q, want NORMAL after scrollbar press", got)
+	}
+	if got := p.Cell(codeOffset+2, 1).Background; got == uiDiffTestTheme().Selection {
+		t.Fatal("mouse drag from vertical scrollbar created a selection")
+	}
+}
+
+func TestUIDiffViewVerticalScrollbarDragScrolls(t *testing.T) {
+	rows := make([]diff.Row, 12)
+	for i := range rows {
+		rows[i] = diff.Row{Kind: diff.RowContext, Gutter: "1 1   ", Code: fmt.Sprintf("line %02d", i+1)}
+	}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	size := vui.Size{Width: 30, Height: 6}
+	app.Pump(size)
+	app.Pump(size)
+	app.Pump(size)
+
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventPress, Row: 0, Col: size.Width - 1})
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventMotion, Row: 3, Col: size.Width - 1})
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventRelease, Row: 3, Col: size.Width - 1})
+	app.Pump(size)
+
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	if got := uiDiffPainterText(p, 0); strings.Contains(got, "line 01") {
+		t.Fatalf("first visible row = %q, want scrollbar drag to scroll down", got)
+	}
+}
+
+func TestUIDiffViewHorizontalScrollbarDragScrolls(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowContext, Gutter: "1 1   ", Code: strings.Repeat("x", 60) + "Z"}}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	size := vui.Size{Width: 30, Height: 5}
+	app.Pump(size)
+	app.Pump(size)
+	app.Pump(size)
+
+	barRow := size.Height - 2
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventPress, Row: barRow, Col: 0})
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventMotion, Row: barRow, Col: size.Width - 1})
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventRelease, Row: barRow, Col: size.Width - 1})
+	app.Pump(size)
+
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	if got := uiDiffPainterText(p, 0); !strings.Contains(got, "Z") {
+		t.Fatalf("visible row after horizontal scrollbar drag = %q, want line end", got)
+	}
+}
+
 func TestUIDiffViewDoubleClickSelectsToken(t *testing.T) {
 	rows := []diff.Row{{Kind: diff.RowContext, Gutter: "1 1   ", Code: "foo bar.baz"}}
 	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
@@ -2612,6 +2714,31 @@ func TestUIDiffViewMouseWheelDoesNotExtendFinishedSelection(t *testing.T) {
 	app.Paint(p)
 	if got := p.Cell(codeOffset+2, 1).Background; got == uiDiffCursorBackground(uiDiffTestTheme()) {
 		t.Fatal("finished selection cursor moved to mouse position after wheel")
+	}
+}
+
+func TestUIDiffViewMouseWheelDoesNotExtendSelectionOverStatusOrScrollbar(t *testing.T) {
+	rows := make([]diff.Row, 12)
+	for i := range rows {
+		rows[i] = diff.Row{Kind: diff.RowContext, Gutter: "1 1   ", Code: strings.Repeat("x", 60)}
+	}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	size := vui.Size{Width: 30, Height: 6}
+	app.Pump(size)
+	app.Pump(size)
+	app.Pump(size)
+	codeOffset := uiDiffCodeOffset(rows)
+
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventPress, Row: 0, Col: codeOffset})
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventMotion, Row: 1, Col: codeOffset})
+	app.Send(vaxis.Mouse{Button: vaxis.MouseWheelDown, EventType: vaxis.EventPress, Row: size.Height - 1, Col: codeOffset + 2})
+	app.Send(vaxis.Mouse{Button: vaxis.MouseWheelDown, EventType: vaxis.EventPress, Row: 1, Col: size.Width - 1})
+	app.Pump(size)
+
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	if got := p.Cell(codeOffset+2, 1).Background; got == uiDiffCursorBackground(uiDiffTestTheme()) {
+		t.Fatal("wheel over status/scrollbar moved drag cursor")
 	}
 }
 

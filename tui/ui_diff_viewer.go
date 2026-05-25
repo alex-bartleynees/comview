@@ -91,6 +91,8 @@ type uiDiffViewState struct {
 	selectionSideFiltered   bool
 	selectionSide           diffSide
 	mouseSelecting          bool
+	hScrollbarDragging      bool
+	hScrollbarGrab          int
 	mouseAnchor             selectionPoint
 	mouseHasAnchor          bool
 	mouseStartRow           int
@@ -429,13 +431,14 @@ func (r *uiDiffRenderHorizontalScrollbar) scrollbar(width int) uiDiffScrollbar {
 	if maxScroll := r.ContentWidth - viewportWidth; maxScroll > 0 {
 		thumbLeft = (minInt(r.XScroll, maxScroll) * maxThumbLeft) / maxScroll
 	}
-	return uiDiffScrollbar{Length: width, Thumb: thumbLeft, Size: thumbSize}
+	return uiDiffScrollbar{Length: width, Thumb: thumbLeft, Size: thumbSize, Viewport: viewportWidth}
 }
 
 type uiDiffScrollbar struct {
-	Length int
-	Thumb  int
-	Size   int
+	Length   int
+	Thumb    int
+	Size     int
+	Viewport int
 }
 
 func (s *uiDiffViewState) buildEditorTerminal(theme vui.Theme) vui.Widget {
@@ -1182,6 +1185,9 @@ func (s *uiDiffViewState) handleMouse(_ vui.EventContext, mouse vaxis.Mouse) vui
 	if len(rows) == 0 {
 		return vui.EventIgnored
 	}
+	if s.handleHorizontalScrollbarMouse(w, mouse) {
+		return vui.EventHandled
+	}
 	if mouseWheelButton(mouse.Button) {
 		return s.handleMouseWheel(mouse)
 	}
@@ -1192,6 +1198,9 @@ func (s *uiDiffViewState) handleMouse(_ vui.EventContext, mouse vaxis.Mouse) vui
 		}
 		point, ok := s.selectionPointForMouse(rows, mouse)
 		if !ok {
+			if !s.mouseInDiffViewport(mouse) {
+				return vui.EventIgnored
+			}
 			s.mouseSelecting = true
 			s.mouseHasAnchor = false
 			s.mouseStartRow = s.documentRowForMouse(mouse)
@@ -1261,6 +1270,74 @@ func (s *uiDiffViewState) handleMouse(_ vui.EventContext, mouse vaxis.Mouse) vui
 	}
 }
 
+func (s *uiDiffViewState) handleHorizontalScrollbarMouse(w uiDiffView, mouse vaxis.Mouse) bool {
+	if w.Wrap || !w.ShowStatus || !s.scroll.Attached() {
+		return false
+	}
+	metrics := s.scroll.Metrics()
+	barRow := metrics.ViewportHeight
+	verticalVisible := metrics.MaxScrollOffset > 0
+	bar := s.horizontalScrollbarModel(w.Rows, metrics.ViewportWidth, verticalVisible)
+	if bar.Length == 0 {
+		return false
+	}
+	switch mouse.EventType {
+	case vaxis.EventPress:
+		if mouse.Button != vaxis.MouseLeftButton || mouse.Row != barRow || mouse.Col < 0 || mouse.Col >= bar.Length {
+			return false
+		}
+		s.hScrollbarDragging = true
+		s.hScrollbarGrab = 0
+		if mouse.Col >= bar.Thumb && mouse.Col < bar.Thumb+bar.Size {
+			s.hScrollbarGrab = mouse.Col - bar.Thumb
+		}
+		s.scrollHorizontalScrollbarTo(w.Rows, metrics.ViewportWidth, mouse.Col-s.hScrollbarGrab, verticalVisible)
+		s.SetState(func() {})
+		return true
+	case vaxis.EventMotion:
+		if !s.hScrollbarDragging || mouse.Button == vaxis.MouseNoButton {
+			return false
+		}
+		s.scrollHorizontalScrollbarTo(w.Rows, metrics.ViewportWidth, mouse.Col-s.hScrollbarGrab, verticalVisible)
+		s.SetState(func() {})
+		return true
+	case vaxis.EventRelease:
+		if !s.hScrollbarDragging {
+			return false
+		}
+		s.hScrollbarDragging = false
+		s.scrollHorizontalScrollbarTo(w.Rows, metrics.ViewportWidth, mouse.Col-s.hScrollbarGrab, verticalVisible)
+		s.SetState(func() {})
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *uiDiffViewState) horizontalScrollbarModel(rows []diff.Row, width int, verticalVisible bool) uiDiffScrollbar {
+	return (&uiDiffRenderHorizontalScrollbar{
+		ContentWidth:    s.horizontalContentWidth(rows),
+		XScroll:         s.xScroll,
+		SideBySide:      s.sideBySide,
+		VerticalVisible: verticalVisible,
+	}).scrollbar(width)
+}
+
+func (s *uiDiffViewState) scrollHorizontalScrollbarTo(rows []diff.Row, width int, thumbLeft int, verticalVisible bool) {
+	bar := s.horizontalScrollbarModel(rows, width, verticalVisible)
+	if bar.Length == 0 {
+		return
+	}
+	maxScroll := s.horizontalContentWidth(rows) - bar.Viewport
+	maxThumbLeft := bar.Length - bar.Size
+	if maxScroll <= 0 || maxThumbLeft <= 0 {
+		s.xScroll = 0
+		return
+	}
+	thumbLeft = clampUIDiffInt(thumbLeft, 0, maxThumbLeft)
+	s.xScroll = (thumbLeft * maxScroll) / maxThumbLeft
+}
+
 func (s *uiDiffViewState) handleMouseWheel(mouse vaxis.Mouse) vui.EventResult {
 	switch mouse.Button {
 	case mouseWheelLeft:
@@ -1269,6 +1346,9 @@ func (s *uiDiffViewState) handleMouseWheel(mouse vaxis.Mouse) vui.EventResult {
 		return s.scrollHorizontallyBy(mouseWheelScrollColumns)
 	}
 	if !s.mouseSelecting || !s.selectionActive {
+		return vui.EventIgnored
+	}
+	if !s.mouseInDiffViewport(mouse) {
 		return vui.EventIgnored
 	}
 	var lines int
@@ -1290,6 +1370,23 @@ func (s *uiDiffViewState) handleMouseWheel(mouse vaxis.Mouse) vui.EventResult {
 	}
 	s.SetState(func() {})
 	return vui.EventHandled
+}
+
+func (s *uiDiffViewState) mouseInDiffViewport(mouse vaxis.Mouse) bool {
+	if mouse.Row < 0 || mouse.Col < 0 {
+		return false
+	}
+	if !s.scroll.Attached() {
+		return true
+	}
+	metrics := s.scroll.Metrics()
+	if mouse.Row >= metrics.ViewportHeight || mouse.Col >= metrics.ViewportWidth {
+		return false
+	}
+	if metrics.MaxScrollOffset > 0 && mouse.Col == metrics.ViewportWidth-1 {
+		return false
+	}
+	return true
 }
 
 func (s *uiDiffViewState) scrollHorizontallyBy(cols int) vui.EventResult {
@@ -1370,6 +1467,9 @@ func (s *uiDiffViewState) selectRowAt(rows []diff.Row, point selectionPoint) {
 }
 
 func (s *uiDiffViewState) selectionPointForMouse(rows []diff.Row, mouse vaxis.Mouse) (selectionPoint, bool) {
+	if !s.mouseInDiffViewport(mouse) {
+		return selectionPoint{}, false
+	}
 	if s.sideBySide {
 		return s.sideBySideSelectionPointForMouse(rows, mouse)
 	}
