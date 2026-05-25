@@ -1540,14 +1540,15 @@ func TestUIDiffViewBracketNJumpsBetweenNotes(t *testing.T) {
 		{Path: "main.go", Line: 3, Side: review.SideRight, Body: "three"},
 	}
 	app := newUIDiffTestAppWithBaseAndDrafts(rows, DefaultBaseColors(), false, drafts)
-	app.Pump(vui.Size{Width: 24, Height: 3})
-	app.Pump(vui.Size{Width: 24, Height: 3})
+	size := vui.Size{Width: 24, Height: 7}
+	app.Pump(size)
+	app.Pump(size)
 
 	app.Send(vaxis.Key{Text: "]", Keycode: ']'})
-	app.Pump(vui.Size{Width: 24, Height: 3})
+	app.Pump(size)
 	app.Send(vaxis.Key{Text: "n", Keycode: 'n'})
-	app.Pump(vui.Size{Width: 24, Height: 3})
-	p := vui.NewPainter(vui.Size{Width: 24, Height: 3})
+	app.Pump(size)
+	p := vui.NewPainter(size)
 	app.Paint(p)
 	if got := uiDiffHighlightedScreenRow(p, uiDiffCursorRowBackground(uiDiffTestTheme())); got != 1 {
 		t.Fatalf("]n highlight row = %d, want 1", got)
@@ -1555,17 +1556,17 @@ func TestUIDiffViewBracketNJumpsBetweenNotes(t *testing.T) {
 
 	app.Send(vaxis.Key{Text: "]", Keycode: ']'})
 	app.Send(vaxis.Key{Text: "n", Keycode: 'n'})
-	app.Pump(vui.Size{Width: 24, Height: 3})
-	p = vui.NewPainter(vui.Size{Width: 24, Height: 3})
+	app.Pump(size)
+	p = vui.NewPainter(size)
 	app.Paint(p)
-	if got := uiDiffHighlightedScreenRow(p, uiDiffCursorRowBackground(uiDiffTestTheme())); got != 2 {
-		t.Fatalf("second ]n highlight row = %d, want 2", got)
+	if got := uiDiffHighlightedScreenRow(p, uiDiffCursorRowBackground(uiDiffTestTheme())); got != 5 {
+		t.Fatalf("second ]n highlight row = %d, want 5", got)
 	}
 
 	app.Send(vaxis.Key{Text: "[", Keycode: '['})
 	app.Send(vaxis.Key{Text: "n", Keycode: 'n'})
-	app.Pump(vui.Size{Width: 24, Height: 3})
-	p = vui.NewPainter(vui.Size{Width: 24, Height: 3})
+	app.Pump(size)
+	p = vui.NewPainter(size)
 	app.Paint(p)
 	if got := uiDiffHighlightedScreenRow(p, uiDiffCursorRowBackground(uiDiffTestTheme())); got != 1 {
 		t.Fatalf("[n highlight row = %d, want 1", got)
@@ -1852,6 +1853,47 @@ func TestUIDiffViewCommandWQWritesAndQuits(t *testing.T) {
 	}
 	if len(file.Comments) != 1 || file.Comments[0].Body != "saved" {
 		t.Fatalf("comments file = %+v", file)
+	}
+}
+
+func TestUIDiffViewCommandWQAfterEditingSavedCommentWritesAndQuits(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".comview", "comments.json")
+	rows := []diff.Row{{Kind: diff.RowAdd, Gutter: "1 1 + ", Code: "line", Review: review.Anchor{Path: "main.go", Line: 1, Side: review.SideRight}}}
+	draft := review.CommentDraft{Path: "main.go", Line: 1, Side: review.SideRight, Body: "saved"}
+	if err := review.SaveFile(path, review.CommentFile{Version: 1, Comments: []review.CommentDraft{draft}}); err != nil {
+		t.Fatal(err)
+	}
+	app := newUIDiffTestAppWithReviewFile(rows, []review.CommentDraft{draft}, path)
+	size := vui.Size{Width: 60, Height: 6}
+	app.Pump(size)
+	app.Pump(size)
+
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	col, row, ok := uiDiffFindText(p, "saved")
+	if !ok {
+		t.Fatal("saved comment was not rendered")
+	}
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventPress, Row: row + 1, Col: col})
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventRelease, Row: row + 1, Col: col})
+	app.Pump(size)
+	app.Send(vaxis.Key{Text: "!"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEsc})
+	app.Pump(size)
+	app.Send(vaxis.Key{Text: ":", Keycode: ':'})
+	app.Send(vaxis.Key{Text: "wq"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEnter})
+	if !app.ShouldQuit() {
+		p = vui.NewPainter(size)
+		app.Paint(p)
+		t.Fatalf(":wq did not quit after editing saved comment; status = %q", uiDiffPainterText(p, size.Height-1))
+	}
+	file, err := review.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(file.Comments) != 1 || file.Comments[0].Body != "saved!" {
+		t.Fatalf("comments file = %+v, want one edited saved comment", file)
 	}
 }
 
@@ -3336,16 +3378,13 @@ func TestUIDiffViewCursorStopsAtSubmittedDraftComments(t *testing.T) {
 	app.Send(vaxis.Key{Text: "j", Keycode: 'j'})
 	app.Pump(vui.Size{Width: 80, Height: 14})
 
-	app.Send(vaxis.Key{Text: "k", Keycode: 'k'})
-	app.Send(vaxis.Key{Text: "k", Keycode: 'k'})
-	app.Send(vaxis.Key{Text: "k", Keycode: 'k'})
-	app.Send(vaxis.Key{Text: "i", Keycode: 'i'})
-	app.Pump(vui.Size{Width: 80, Height: 14})
-	app.Send(vaxis.Key{Text: "!"})
+	for range 5 {
+		app.Send(vaxis.Key{Text: "k", Keycode: 'k'})
+	}
 	app.Pump(vui.Size{Width: 80, Height: 14})
 	p := vui.NewPainter(vui.Size{Width: 80, Height: 14})
 	app.Paint(p)
-	if uiDiffPainterRowContaining(p, "!submitted 1") == -1 {
+	if uiDiffPainterRowContaining(p, "submitted 1") == -1 {
 		t.Fatal("moving up through submitted draft comments skipped the first draft")
 	}
 }
@@ -3402,6 +3441,105 @@ func TestUIDiffViewCursorStopsAtProvidedDraftComments(t *testing.T) {
 	app.Paint(p)
 	if uiDiffPainterRowContaining(p, "!provided 1") == -1 {
 		t.Fatal("moving up through provided draft comments skipped the first draft")
+	}
+}
+
+func TestUIDiffViewMouseClickSelectsProvidedDraftComment(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowAdd, Gutter: "1 1 + ", Code: "one", Review: review.Anchor{Path: "main.go", Line: 1, Side: review.SideRight}},
+		{Kind: diff.RowAdd, Gutter: "2 2 + ", Code: "two", Review: review.Anchor{Path: "main.go", Line: 2, Side: review.SideRight}},
+	}
+	drafts := []review.CommentDraft{{Path: "main.go", Line: 2, Side: review.SideRight, Body: "provided comment"}}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, drafts, true)
+	size := vui.Size{Width: 80, Height: 10}
+	app.Pump(size)
+	app.Pump(size)
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	col, row, ok := uiDiffFindText(p, "provided comment")
+	if !ok {
+		t.Fatal("provided comment was not rendered")
+	}
+
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventPress, Row: row, Col: col})
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventRelease, Row: row, Col: col})
+	app.Pump(size)
+	app.Pump(size)
+	app.Send(vaxis.Key{Text: "!"})
+	app.Pump(size)
+	p = vui.NewPainter(size)
+	app.Paint(p)
+	if uiDiffPainterRowContaining(p, "!provided comment") == -1 {
+		t.Fatalf("mouse-selected draft comment did not enter insert mode at click position; rendered row = %q", uiDiffPainterText(p, row))
+	}
+}
+
+func TestUIDiffViewCommentEditorChromeClickMovesCursor(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowAdd, Gutter: "1 1 + ", Code: "one", Review: review.Anchor{Path: "main.go", Line: 1, Side: review.SideRight}}}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	size := vui.Size{Width: 80, Height: 8}
+	app.Pump(size)
+	app.Pump(size)
+	app.Send(vaxis.Key{Text: "i", Keycode: 'i'})
+	app.Pump(size)
+	app.Send(vaxis.Key{Text: "hello"})
+	app.Pump(size)
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	col, row, ok := uiDiffFindText(p, "hello")
+	if !ok {
+		t.Fatal("comment editor body was not rendered")
+	}
+
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventPress, Row: row + 1, Col: col})
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventRelease, Row: row + 1, Col: col})
+	app.Pump(size)
+	app.Send(vaxis.Key{Text: "!"})
+	app.Pump(size)
+	p = vui.NewPainter(size)
+	app.Paint(p)
+	if uiDiffPainterRowContaining(p, "hello!") == -1 {
+		t.Fatal("clicking comment chrome did not move cursor to nearest text position")
+	}
+}
+
+func TestUIDiffViewCommentEditorSupportsMouseTextSelection(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowAdd, Gutter: "1 1 + ", Code: "one", Review: review.Anchor{Path: "main.go", Line: 1, Side: review.SideRight}}}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	size := vui.Size{Width: 80, Height: 8}
+	app.Pump(size)
+	app.Pump(size)
+	app.Send(vaxis.Key{Text: "i", Keycode: 'i'})
+	app.Pump(size)
+	app.Send(vaxis.Key{Text: "hello world"})
+	app.Pump(size)
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	col, row, ok := uiDiffFindText(p, "hello world")
+	if !ok {
+		t.Fatal("comment editor body was not rendered")
+	}
+
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventPress, Row: row, Col: col})
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventMotion, Row: row, Col: col + len("hello")})
+	app.Send(vaxis.Mouse{Button: vaxis.MouseLeftButton, EventType: vaxis.EventRelease, Row: row, Col: col + len("hello")})
+	app.Pump(size)
+	p = vui.NewPainter(size)
+	app.Paint(p)
+	selectedBackground := vaxis.Color(0)
+	for offset := range len("hello") {
+		if bg := p.Cell(col+offset, row).Background; bg != uiDiffTestTheme().SurfaceHovered {
+			selectedBackground = bg
+			break
+		}
+	}
+	if selectedBackground == 0 || selectedBackground == uiDiffTestTheme().SurfaceHovered {
+		t.Fatalf("selected comment background = %v, want text selection background", selectedBackground)
+	}
+	for offset := range len("hello") {
+		if got := p.Cell(col+offset, row).Background; got != selectedBackground {
+			t.Fatalf("selected comment char %d background = %v, want %v", offset, got, selectedBackground)
+		}
 	}
 }
 

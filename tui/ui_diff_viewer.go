@@ -80,6 +80,7 @@ type uiDiffViewState struct {
 	commentEditorRow        int
 	commentEditorTarget     uiDiffCommentTarget
 	commentEditorBody       string
+	commentEditorCursor     *int
 	commentEditorBodies     map[int]string
 	reviewDrafts            []review.CommentDraft
 	deletedReviewDrafts     map[review.CommentDraft]bool
@@ -144,7 +145,7 @@ func (s *uiDiffViewState) Build(ctx vui.BuildContext) vui.Widget {
 	sliver := vui.Widget(vui.SliverListBuilder{
 		Controller:          &s.list,
 		Count:               len(w.Rows),
-		ItemExtent:          uiDiffItemExtent(w.Wrap || s.commentEditorActive || len(s.reviewDrafts) > 0),
+		ItemExtent:          uiDiffItemExtent(w.Wrap || s.commentEditorActive || len(drafts) > 0),
 		EstimatedItemExtent: 1,
 		Overscan:            8,
 		Builder: func(ctx vui.BuildContext, row int) vui.Widget {
@@ -1185,6 +1186,12 @@ func (s *uiDiffViewState) handleMouse(_ vui.EventContext, mouse vaxis.Mouse) vui
 	if len(rows) == 0 {
 		return vui.EventIgnored
 	}
+	if s.handleActiveCommentEditorChromeMouse(rows, mouse) {
+		return vui.EventHandled
+	}
+	if s.mouseInActiveCommentTextField(mouse) {
+		return vui.EventIgnored
+	}
 	if s.handleHorizontalScrollbarMouse(w, mouse) {
 		return vui.EventHandled
 	}
@@ -1195,6 +1202,19 @@ func (s *uiDiffViewState) handleMouse(_ vui.EventContext, mouse vaxis.Mouse) vui
 	case vaxis.EventPress:
 		if mouse.Button != vaxis.MouseLeftButton {
 			return vui.EventIgnored
+		}
+		if row, ok := s.commentRowForMouse(rows, mouse); ok {
+			cursor := s.commentCursorOffsetForMouse(rows, row, mouse)
+			s.focusCommentEditorRow(rows, row)
+			s.commentEditorCursor = &cursor
+			s.commentEditorInsert = true
+			s.mouseSelecting = false
+			s.mouseHasAnchor = false
+			s.clearLineSelection()
+			s.yankActive = false
+			s.clearPendingKeys()
+			s.SetState(func() {})
+			return vui.EventHandled
 		}
 		point, ok := s.selectionPointForMouse(rows, mouse)
 		if !ok {
@@ -1268,6 +1288,115 @@ func (s *uiDiffViewState) handleMouse(_ vui.EventContext, mouse vaxis.Mouse) vui
 	default:
 		return vui.EventIgnored
 	}
+}
+
+func (s *uiDiffViewState) mouseInActiveCommentTextField(mouse vaxis.Mouse) bool {
+	if !s.commentEditorActive || !s.commentEditorInsert {
+		return false
+	}
+	row, offset, ok := s.commentItemRowAndOffsetForMouse(s.Widget().(uiDiffView).Rows, mouse)
+	return ok && row == s.commentEditorRow && offset == 2
+}
+
+func (s *uiDiffViewState) handleActiveCommentEditorChromeMouse(rows []diff.Row, mouse vaxis.Mouse) bool {
+	if !s.commentEditorActive || !s.commentEditorInsert || mouse.EventType != vaxis.EventPress || mouse.Button != vaxis.MouseLeftButton {
+		return false
+	}
+	row, offset, ok := s.commentItemRowAndOffsetForMouse(rows, mouse)
+	if !ok || row != s.commentEditorRow || offset <= 0 || offset == 2 {
+		return false
+	}
+	cursor := 0
+	if offset > 2 {
+		cursor = len([]rune(s.commentEditorBody))
+	}
+	s.commentEditorCursor = &cursor
+	s.focusCommentEditorRow(rows, row)
+	s.commentEditorInsert = true
+	s.SetState(func() {})
+	return true
+}
+
+func (s *uiDiffViewState) commentRowForMouse(rows []diff.Row, mouse vaxis.Mouse) (int, bool) {
+	row, offset, ok := s.commentItemRowAndOffsetForMouse(rows, mouse)
+	if !ok || row < 0 || row >= len(rows) || offset <= 0 {
+		return 0, false
+	}
+	if strings.TrimSpace(s.commentEditorBodyForRow(rows, row)) == "" {
+		return 0, false
+	}
+	return row, true
+}
+
+func (s *uiDiffViewState) commentCursorOffsetForMouse(rows []diff.Row, row int, mouse vaxis.Mouse) int {
+	body := s.commentEditorBodyForRow(rows, row)
+	_, offset, ok := s.commentItemRowAndOffsetForMouse(rows, mouse)
+	if !ok || offset <= 1 {
+		return 0
+	}
+	if offset > 2 {
+		return len([]rune(body))
+	}
+	col := mouse.Col - uiDiffCodeOffset(rows)
+	return clampUIDiffInt(col, 0, len([]rune(body)))
+}
+
+func (s *uiDiffViewState) commentItemRowAndOffsetForMouse(rows []diff.Row, mouse vaxis.Mouse) (int, int, bool) {
+	row, offset, ok := s.itemRowAndOffsetForMouse(mouse)
+	if ok && offset > 0 {
+		return row, offset, true
+	}
+	logicalY := mouse.Row
+	if s.scroll.Attached() {
+		metrics := s.scroll.Metrics()
+		if mouse.Row < 0 || mouse.Row >= metrics.ViewportHeight {
+			return 0, 0, false
+		}
+		logicalY = metrics.ScrollOffset + mouse.Row
+	}
+	visualY := 0
+	for rowIndex := range rows {
+		height := 1 + s.commentRowsForMouse(rows, rowIndex)
+		if logicalY >= visualY && logicalY < visualY+height {
+			return rowIndex, logicalY - visualY, true
+		}
+		visualY += height
+	}
+	return 0, 0, false
+}
+
+func (s *uiDiffViewState) commentRowsForMouse(rows []diff.Row, row int) int {
+	if row < 0 || row >= len(rows) {
+		return 0
+	}
+	if s.commentEditorActive && s.commentEditorRow == row {
+		return 3
+	}
+	if strings.TrimSpace(s.commentEditorBodies[row]) != "" {
+		return 3
+	}
+	w := s.Widget().(uiDiffView)
+	return 3 * len(reviewDraftsForRow(rows[row], s.allReviewDrafts(w.ReviewDrafts)))
+}
+
+func (s *uiDiffViewState) itemRowAndOffsetForMouse(mouse vaxis.Mouse) (int, int, bool) {
+	row, ok := s.rowForMouse(mouse)
+	if !ok {
+		return 0, 0, false
+	}
+	itemOffset, ok := s.list.OffsetForIndex(row)
+	if !ok {
+		return 0, 0, false
+	}
+	logicalY := mouse.Row
+	if s.scroll.Attached() {
+		metrics := s.scroll.Metrics()
+		if mouse.Row < 0 || mouse.Row >= metrics.ViewportHeight {
+			return 0, 0, false
+		}
+		logicalY = metrics.ScrollOffset + mouse.Row
+	}
+	return row, logicalY - itemOffset, true
 }
 
 func (s *uiDiffViewState) handleHorizontalScrollbarMouse(w uiDiffView, mouse vaxis.Mouse) bool {
@@ -1555,34 +1684,43 @@ func (s *uiDiffViewState) rowForMouse(mouse vaxis.Mouse) (int, bool) {
 	if !ok || mouse.Row < 0 {
 		return 0, false
 	}
+	w := s.Widget().(uiDiffView)
+	count := len(w.Rows)
+	if s.sideBySide {
+		count = len(uiDiffSideBySideRows(w.Rows))
+	}
+	if count <= 0 {
+		return 0, false
+	}
+	logicalY := mouse.Row
 	if s.scroll.Attached() {
 		metrics := s.scroll.Metrics()
 		if mouse.Row >= metrics.ViewportHeight {
 			return 0, false
 		}
-		logicalY := metrics.ScrollOffset + mouse.Row
-		for row := first; row < last; row++ {
-			offset, ok := s.list.OffsetForIndex(row)
-			if !ok {
-				continue
-			}
-			nextOffset := offset + 1
-			if row+1 < last {
-				if next, ok := s.list.OffsetForIndex(row + 1); ok {
-					nextOffset = next
-				}
-			}
-			if logicalY >= offset && logicalY < nextOffset {
-				return row, true
-			}
+		logicalY = metrics.ScrollOffset + mouse.Row
+	}
+	last = count
+	for row := first; row < last; row++ {
+		offset, ok := s.list.OffsetForIndex(row)
+		if !ok {
+			continue
 		}
-		return 0, false
+		nextOffset := offset + 1
+		if row+1 < count {
+			if next, ok := s.list.OffsetForIndex(row + 1); ok {
+				nextOffset = next
+			}
+		} else if s.scroll.Attached() {
+			nextOffset = maxInt(offset+1, s.scroll.Metrics().ContentHeight)
+		} else {
+			nextOffset = 1 << 30
+		}
+		if logicalY >= offset && logicalY < nextOffset {
+			return row, true
+		}
 	}
-	row := first + mouse.Row
-	if row < first || row >= last {
-		return 0, false
-	}
-	return row, true
+	return 0, false
 }
 
 func (s *uiDiffViewState) documentRowForMouse(mouse vaxis.Mouse) int {
@@ -1766,6 +1904,8 @@ func (s *uiDiffViewState) handleCommentEditorKey(rows []diff.Row, key vaxis.Key)
 			return vui.EventHandled
 		case key.Matches('i'):
 			s.clearPendingKeys()
+			cursor := 0
+			s.commentEditorCursor = &cursor
 			s.commentEditorInsert = true
 			s.SetState(func() {})
 			return vui.EventHandled
@@ -1808,6 +1948,9 @@ func (s *uiDiffViewState) submitCommentEditor(rows []diff.Row) {
 	body := strings.TrimSpace(s.commentEditorBody)
 	if body != "" {
 		draft := s.commentEditorTarget.Draft
+		if draft.Path != "" {
+			s.removeReviewDraft(draft)
+		}
 		if draft.Path == "" {
 			draft = commentDraftForAnchor(rows[s.commentEditorRow].Review)
 		}
@@ -1818,6 +1961,19 @@ func (s *uiDiffViewState) submitCommentEditor(rows []diff.Row) {
 	delete(s.commentEditorBodies, s.commentEditorRow)
 	s.commentEditorActive = false
 	s.closeCommentEditor()
+}
+
+func (s *uiDiffViewState) removeReviewDraft(draft review.CommentDraft) {
+	for index, local := range s.reviewDrafts {
+		if local == draft {
+			s.reviewDrafts = append(s.reviewDrafts[:index], s.reviewDrafts[index+1:]...)
+			return
+		}
+	}
+	if s.deletedReviewDrafts == nil {
+		s.deletedReviewDrafts = make(map[review.CommentDraft]bool)
+	}
+	s.deletedReviewDrafts[draft] = true
 }
 
 func (s *uiDiffViewState) submitActiveCommentEditor(rows []diff.Row) {
@@ -2086,6 +2242,7 @@ func (s *uiDiffViewState) closeCommentEditor() {
 	s.commentEditorInsert = false
 	s.commentEditorTarget = uiDiffCommentTarget{}
 	s.commentEditorBody = ""
+	s.commentEditorCursor = nil
 }
 
 func (s *uiDiffViewState) storeCommentEditorBody() {
@@ -2154,6 +2311,14 @@ func (s *uiDiffViewState) focusCommentEditorRow(rows []diff.Row, row int) {
 	s.commentEditorFocused = true
 	s.commentEditorInsert = false
 	s.commentEditorRow = row
+	s.commentEditorCursor = nil
+	s.commentEditorTarget = uiDiffCommentTarget{Row: row}
+	if row >= 0 && row < len(rows) {
+		w := s.Widget().(uiDiffView)
+		if drafts := reviewDraftsForRow(rows[row], s.allReviewDrafts(w.ReviewDrafts)); len(drafts) > 0 {
+			s.commentEditorTarget.Draft = drafts[0]
+		}
+	}
 	s.commentEditorBody = body
 	s.revealCursorRow()
 	s.SetState(func() {})
@@ -2573,11 +2738,14 @@ func (s *uiDiffViewState) buildItem(rows []diff.Row, rowIndex int, theme vui.The
 		children = append(children, s.buildCommentEditor(theme))
 		showDrafts = false
 	} else if body := s.commentEditorBodies[rowIndex]; strings.TrimSpace(body) != "" {
-		children = append(children, uiDiffCommentEditorBox(body, false, false, nil, theme))
+		children = append(children, uiDiffCommentEditorBox(body, nil, false, false, nil, theme))
 	}
 	if showDrafts {
 		for _, draft := range reviewDraftsForRow(row, drafts) {
-			children = append(children, uiDiffReviewDraft(draft, theme))
+			children = append(children, uiDiffReviewDraft(draft, theme, func(vui.EventContext) {
+				s.focusCommentEditorRow(rows, rowIndex)
+				s.commentEditorInsert = true
+			}))
 		}
 	}
 	if len(children) == 1 {
@@ -2689,11 +2857,14 @@ func (s *uiDiffViewState) buildSideBySideCommentRows(rows []diff.Row, rowIndex i
 		addCommentWidget(s.buildCommentEditor(theme))
 		showDrafts = false
 	} else if body := s.commentEditorBodies[rowIndex]; strings.TrimSpace(body) != "" {
-		addCommentWidget(uiDiffCommentEditorBox(body, false, false, nil, theme))
+		addCommentWidget(uiDiffCommentEditorBox(body, nil, false, false, nil, theme))
 	}
 	if showDrafts {
 		for _, draft := range reviewDraftsForRow(rows[rowIndex], drafts) {
-			addCommentWidget(uiDiffReviewDraft(draft, theme))
+			addCommentWidget(uiDiffReviewDraft(draft, theme, func(vui.EventContext) {
+				s.focusCommentEditorRow(rows, rowIndex)
+				s.commentEditorInsert = true
+			}))
 		}
 	}
 	return widgets
@@ -2727,14 +2898,16 @@ func uiDiffCommentSideForRow(row diff.Row) diffSide {
 }
 
 func (s *uiDiffViewState) buildCommentEditor(theme vui.Theme) vui.Widget {
-	return uiDiffCommentEditorBox(s.commentEditorBody, s.commentEditorFocused, s.commentEditorInsert, func(_ vui.EventContext, value string) {
+	cursor := s.commentEditorCursor
+	s.commentEditorCursor = nil
+	return uiDiffCommentEditorBox(s.commentEditorBody, cursor, s.commentEditorFocused, s.commentEditorInsert, func(_ vui.EventContext, value string) {
 		s.commentEditorBody = value
 		s.storeCommentEditorBody()
 		s.SetState(func() {})
 	}, theme)
 }
 
-func uiDiffCommentEditorBox(body string, focused bool, insert bool, onChanged func(vui.EventContext, string), theme vui.Theme) vui.Widget {
+func uiDiffCommentEditorBox(body string, cursorOffset *int, focused bool, insert bool, onChanged func(vui.EventContext, string), theme vui.Theme) vui.Widget {
 	background := theme.Surface
 	if focused || insert {
 		background = theme.SurfaceHovered
@@ -2758,12 +2931,13 @@ func uiDiffCommentEditorBox(body string, focused bool, insert bool, onChanged fu
 		vui.DecoratedBox(
 			vui.Decoration{Style: boxStyle},
 			vui.FocusScope{AutoFocus: true, Child: vui.TextArea{
-				Value:       body,
-				Placeholder: "Add comment…",
-				MinHeight:   1,
-				SoftWrap:    true,
-				Padding:     vui.Symmetric(2, 0),
-				OnChanged:   onChanged,
+				Value:        body,
+				CursorOffset: cursorOffset,
+				Placeholder:  "Add comment…",
+				MinHeight:    1,
+				SoftWrap:     true,
+				Padding:      vui.Symmetric(2, 0),
+				OnChanged:    onChanged,
 			}},
 		),
 		uiDiffCommentHalfBlock("▀", background, theme),
@@ -2779,8 +2953,21 @@ func uiDiffCommentHalfBlock(block string, foreground vaxis.Color, theme vui.Them
 	return vui.Text{Value: strings.Repeat(block, 72), Style: style, Overflow: vui.TextOverflowClip}
 }
 
-func uiDiffReviewDraft(draft review.CommentDraft, theme vui.Theme) vui.Widget {
-	return uiDiffCommentEditorBox(draft.Body, false, false, nil, theme)
+func uiDiffReviewDraft(draft review.CommentDraft, theme vui.Theme, _ func(vui.EventContext)) vui.Widget {
+	background := theme.Surface
+	boxStyle := vaxis.Style{Foreground: theme.Foreground, Background: background}
+	body := draft.Body
+	if body == "" {
+		body = "Add comment…"
+	}
+	return uiDiffCommentBox(uiDiffCommentColumn(
+		uiDiffCommentHalfBlock("▄", background, theme),
+		vui.DecoratedBox(
+			vui.Decoration{Style: boxStyle},
+			vui.Padding(vui.Symmetric(2, 0), vui.RichText{Spans: []vui.TextSpan{{Text: body, Style: boxStyle}}, SoftWrap: true}),
+		),
+		uiDiffCommentHalfBlock("▀", background, theme),
+	))
 }
 
 func uiDiffCommentBox(child vui.Widget) vui.Widget {
@@ -3576,6 +3763,19 @@ func (s *uiDiffViewState) revealCursorRow() {
 	}
 	if cursorRow >= last {
 		s.list.ScrollToIndex(cursorRow, vui.ScrollAlignEnd)
+		return
+	}
+	if s.scroll.Attached() {
+		metrics := s.scroll.Metrics()
+		if offset, ok := s.list.OffsetForIndex(cursorRow); ok {
+			if offset < metrics.ScrollOffset {
+				s.list.ScrollToIndex(cursorRow, vui.ScrollAlignStart)
+				return
+			}
+			if offset >= metrics.ScrollOffset+metrics.ViewportHeight {
+				s.list.ScrollToIndex(cursorRow, vui.ScrollAlignEnd)
+			}
+		}
 	}
 }
 
