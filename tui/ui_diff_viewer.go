@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -20,6 +21,7 @@ type uiDiffView struct {
 	Wrap          bool
 	ReviewDrafts  []review.CommentDraft
 	ReviewFile    string
+	WorkTreeRoot  string
 	ShowStatus    bool
 	Binds         Bindings
 	EmptyMessage  string
@@ -2259,6 +2261,7 @@ func (s *uiDiffViewState) editorTarget() (EditorTarget, bool) {
 		s.setStatusMessage("No file.")
 		return EditorTarget{}, false
 	}
+	target.Path = editorPathInRoot(target.Path, w.WorkTreeRoot)
 	return target, true
 }
 
@@ -2279,6 +2282,13 @@ func uiDiffEditorTarget(rows []diff.Row, cursor selectionPoint) (EditorTarget, b
 		column = editorColumnAtCell(row.Code, cursor.Col, tabWidthForFile(row.FileName))
 	}
 	return EditorTarget{Path: row.FileName, Line: line, Column: column}, true
+}
+
+func editorPathInRoot(path string, root string) string {
+	if path == "" || root == "" || filepath.IsAbs(path) {
+		return path
+	}
+	return filepath.Join(root, path)
 }
 
 func (s *uiDiffViewState) deleteReviewDraftCommand(rows []diff.Row, base []review.CommentDraft) {
