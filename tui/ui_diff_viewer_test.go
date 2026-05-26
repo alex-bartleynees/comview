@@ -3206,8 +3206,210 @@ func TestUIDiffViewCommentEditorEscapeReturnsToNormal(t *testing.T) {
 	if _, ok := p.Cursor(); ok {
 		t.Fatal("textarea cursor is still visible after escape returned focus to diff")
 	}
-	if got := p.Cell(0, 0).Background; got != uiDiffCursorRowBackground(uiDiffTestTheme()) {
-		t.Fatalf("diff cursor row background = %v, want cursor row", got)
+	if got := p.Cell(0, 0).Background; got == uiDiffCursorRowBackground(uiDiffTestTheme()) {
+		t.Fatal("diff cursor row is highlighted while comment editor is in normal mode")
+	}
+}
+
+func TestUIDiffViewCommentEditorNormalModeAppendAfterCursor(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowAdd, Gutter: "1 1 + ", Code: "new", Review: review.Anchor{Path: "main.go", Line: 12, Side: review.SideRight}}}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	app.Pump(vui.Size{Width: 40, Height: 6})
+	app.Pump(vui.Size{Width: 40, Height: 6})
+
+	app.Send(vaxis.Key{Text: "i", Keycode: 'i'})
+	app.Pump(vui.Size{Width: 40, Height: 6})
+	app.Send(vaxis.Key{Text: "abc"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEsc})
+	app.Send(vaxis.Key{Text: "h", Keycode: 'h'})
+	app.Send(vaxis.Key{Text: "a", Keycode: 'a'})
+	app.Pump(vui.Size{Width: 40, Height: 6})
+	app.Send(vaxis.Key{Text: "X"})
+	app.Pump(vui.Size{Width: 40, Height: 6})
+	p := vui.NewPainter(vui.Size{Width: 40, Height: 6})
+	app.Paint(p)
+	if got := uiDiffPainterText(p, 2); !strings.Contains(got, "abXc") {
+		t.Fatalf("editor body = %q, want append after normal cursor", got)
+	}
+}
+
+func TestUIDiffViewCommentEditorNormalModeMovesBetweenLines(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowAdd, Gutter: "1 1 + ", Code: "new", Review: review.Anchor{Path: "main.go", Line: 12, Side: review.SideRight}}}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	app.Pump(vui.Size{Width: 40, Height: 8})
+	app.Pump(vui.Size{Width: 40, Height: 8})
+
+	app.Send(vaxis.Key{Text: "i", Keycode: 'i'})
+	app.Pump(vui.Size{Width: 40, Height: 8})
+	app.Send(vaxis.Key{Text: "ab\ncd"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEsc})
+	app.Send(vaxis.Key{Text: "k", Keycode: 'k'})
+	app.Send(vaxis.Key{Text: "a", Keycode: 'a'})
+	app.Pump(vui.Size{Width: 40, Height: 8})
+	app.Send(vaxis.Key{Text: "X"})
+	app.Pump(vui.Size{Width: 40, Height: 8})
+	p := vui.NewPainter(vui.Size{Width: 40, Height: 8})
+	app.Paint(p)
+	if got := uiDiffPainterText(p, 2); !strings.Contains(got, "abX") {
+		t.Fatalf("first editor line = %q, want normal-mode k to move up", got)
+	}
+}
+
+func TestUIDiffViewCursorUpIntoCommentStartsAtLastLine(t *testing.T) {
+	rows := []diff.Row{
+		{Kind: diff.RowAdd, Gutter: "1 1 + ", Code: "one", Review: review.Anchor{Path: "main.go", Line: 1, Side: review.SideRight}},
+		{Kind: diff.RowAdd, Gutter: "2 2 + ", Code: "two", Review: review.Anchor{Path: "main.go", Line: 2, Side: review.SideRight}},
+	}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	size := vui.Size{Width: 40, Height: 10}
+	app.Pump(size)
+	app.Pump(size)
+
+	app.Send(vaxis.Key{Text: "i", Keycode: 'i'})
+	app.Pump(size)
+	app.Send(vaxis.Key{Text: "first\nsecond"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEsc})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEsc})
+	app.Send(vaxis.Key{Text: "j", Keycode: 'j'})
+	app.Send(vaxis.Key{Text: "j", Keycode: 'j'})
+	app.Send(vaxis.Key{Text: "j", Keycode: 'j'})
+	app.Send(vaxis.Key{Text: "k", Keycode: 'k'})
+	app.Pump(size)
+	p := vui.NewPainter(size)
+	app.Paint(p)
+	secondRow := uiDiffPainterRowContaining(p, "second")
+	if secondRow == -1 {
+		t.Fatal("second comment line was not rendered")
+	}
+	if cell := p.Cell(2, secondRow); cell.Background != uiDiffCursorBackground(uiDiffTestTheme()) {
+		t.Fatalf("cursor after moving up into comment = %v, want last comment line cursor", cell.Background)
+	}
+
+	app.Send(vaxis.Key{Text: "k", Keycode: 'k'})
+	app.Pump(size)
+	p = vui.NewPainter(size)
+	app.Paint(p)
+	firstRow := uiDiffPainterRowContaining(p, "first")
+	if firstRow == -1 {
+		t.Fatal("first comment line was not rendered")
+	}
+	if cell := p.Cell(2, firstRow); cell.Background != uiDiffCursorBackground(uiDiffTestTheme()) {
+		t.Fatalf("cursor after moving within comment = %v, want first comment line cursor", cell.Background)
+	}
+}
+
+func TestUIDiffViewCommentEditorNormalModeOpenLineBelow(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowAdd, Gutter: "1 1 + ", Code: "new", Review: review.Anchor{Path: "main.go", Line: 12, Side: review.SideRight}}}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	app.Pump(vui.Size{Width: 40, Height: 8})
+	app.Pump(vui.Size{Width: 40, Height: 8})
+
+	app.Send(vaxis.Key{Text: "i", Keycode: 'i'})
+	app.Pump(vui.Size{Width: 40, Height: 8})
+	app.Send(vaxis.Key{Text: "one"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEsc})
+	app.Send(vaxis.Key{Text: "o", Keycode: 'o'})
+	app.Pump(vui.Size{Width: 40, Height: 8})
+	app.Send(vaxis.Key{Text: "two"})
+	app.Pump(vui.Size{Width: 40, Height: 8})
+	p := vui.NewPainter(vui.Size{Width: 40, Height: 8})
+	app.Paint(p)
+	if got := uiDiffPainterText(p, 2); !strings.Contains(got, "one") {
+		t.Fatalf("first editor line = %q, want one", got)
+	}
+	if got := uiDiffPainterText(p, 3); !strings.Contains(got, "two") {
+		t.Fatalf("opened editor line = %q, want two", got)
+	}
+}
+
+func TestUIDiffViewCommentEditorNormalModeOpenLineAbove(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowAdd, Gutter: "1 1 + ", Code: "new", Review: review.Anchor{Path: "main.go", Line: 12, Side: review.SideRight}}}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	app.Pump(vui.Size{Width: 40, Height: 8})
+	app.Pump(vui.Size{Width: 40, Height: 8})
+
+	app.Send(vaxis.Key{Text: "i", Keycode: 'i'})
+	app.Pump(vui.Size{Width: 40, Height: 8})
+	app.Send(vaxis.Key{Text: "two"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEsc})
+	app.Send(vaxis.Key{Text: "O", Keycode: 'O'})
+	app.Pump(vui.Size{Width: 40, Height: 8})
+	app.Send(vaxis.Key{Text: "one"})
+	app.Pump(vui.Size{Width: 40, Height: 8})
+	p := vui.NewPainter(vui.Size{Width: 40, Height: 8})
+	app.Paint(p)
+	if got := uiDiffPainterText(p, 2); !strings.Contains(got, "one") {
+		t.Fatalf("opened editor line = %q, want one", got)
+	}
+	if got := uiDiffPainterText(p, 3); !strings.Contains(got, "two") {
+		t.Fatalf("second editor line = %q, want two", got)
+	}
+}
+
+func TestUIDiffViewCommentEditorNormalModeLineStartAndEnd(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowAdd, Gutter: "1 1 + ", Code: "new", Review: review.Anchor{Path: "main.go", Line: 12, Side: review.SideRight}}}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	app.Pump(vui.Size{Width: 40, Height: 6})
+	app.Pump(vui.Size{Width: 40, Height: 6})
+
+	app.Send(vaxis.Key{Text: "i", Keycode: 'i'})
+	app.Pump(vui.Size{Width: 40, Height: 6})
+	app.Send(vaxis.Key{Text: "abc"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEsc})
+	app.Send(vaxis.Key{Text: "0", Keycode: '0'})
+	app.Send(vaxis.Key{Text: "i", Keycode: 'i'})
+	app.Pump(vui.Size{Width: 40, Height: 6})
+	app.Send(vaxis.Key{Text: "X"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEsc})
+	app.Send(vaxis.Key{Text: "$", Keycode: '$'})
+	app.Send(vaxis.Key{Text: "a", Keycode: 'a'})
+	app.Pump(vui.Size{Width: 40, Height: 6})
+	app.Send(vaxis.Key{Text: "Y"})
+	app.Pump(vui.Size{Width: 40, Height: 6})
+	p := vui.NewPainter(vui.Size{Width: 40, Height: 6})
+	app.Paint(p)
+	if got := uiDiffPainterText(p, 2); !strings.Contains(got, "XabcY") {
+		t.Fatalf("editor body = %q, want line start/end edits", got)
+	}
+}
+
+func TestUIDiffViewCommentEditorNormalModeShowsCursorOnEmptyLine(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowAdd, Gutter: "1 1 + ", Code: "new", Review: review.Anchor{Path: "main.go", Line: 12, Side: review.SideRight}}}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	app.Pump(vui.Size{Width: 40, Height: 8})
+	app.Pump(vui.Size{Width: 40, Height: 8})
+
+	app.Send(vaxis.Key{Text: "i", Keycode: 'i'})
+	app.Pump(vui.Size{Width: 40, Height: 8})
+	app.Send(vaxis.Key{Text: "ab\n"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEsc})
+	app.Send(vaxis.Key{Text: "j", Keycode: 'j'})
+	app.Pump(vui.Size{Width: 40, Height: 8})
+	p := vui.NewPainter(vui.Size{Width: 40, Height: 8})
+	app.Paint(p)
+	if cell := p.Cell(2, 3); cell.Background != uiDiffCursorBackground(uiDiffTestTheme()) {
+		t.Fatalf("empty line cursor background = %v, want cursor background", cell.Background)
+	}
+}
+
+func TestUIDiffViewCommentEditorNormalModeHidesCursorWhenUnfocused(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowAdd, Gutter: "1 1 + ", Code: "new", Review: review.Anchor{Path: "main.go", Line: 12, Side: review.SideRight}}}
+	app := newUIDiffTestAppWithBaseDraftsAndStatus(rows, DefaultBaseColors(), false, nil, true)
+	app.Pump(vui.Size{Width: 40, Height: 6})
+	app.Pump(vui.Size{Width: 40, Height: 6})
+
+	app.Send(vaxis.Key{Text: "i", Keycode: 'i'})
+	app.Pump(vui.Size{Width: 40, Height: 6})
+	app.Send(vaxis.Key{Text: "abc"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEsc})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEsc})
+	app.Pump(vui.Size{Width: 40, Height: 6})
+	p := vui.NewPainter(vui.Size{Width: 40, Height: 6})
+	app.Paint(p)
+	for col := 2; col < 5; col++ {
+		if cell := p.Cell(col, 2); cell.Background == uiDiffCursorBackground(uiDiffTestTheme()) {
+			t.Fatalf("unfocused comment cursor still visible at col %d", col)
+		}
 	}
 }
 
@@ -3246,6 +3448,7 @@ func TestUIDiffViewCommentEditorCanCursorInAndOut(t *testing.T) {
 	app.Send(vaxis.Key{Text: "i", Keycode: 'i'})
 	app.Pump(vui.Size{Width: 40, Height: 8})
 	app.Send(vaxis.Key{Text: "draft"})
+	app.Send(vaxis.Key{Keycode: vaxis.KeyEsc})
 	app.Send(vaxis.Key{Keycode: vaxis.KeyEsc})
 	app.Pump(vui.Size{Width: 40, Height: 8})
 
@@ -3339,7 +3542,7 @@ func TestUIDiffViewCommentEditorNormalIReentersInsert(t *testing.T) {
 	app.Pump(vui.Size{Width: 40, Height: 6})
 	app.Send(vaxis.Key{Text: "a"})
 	app.Send(vaxis.Key{Keycode: vaxis.KeyEsc})
-	app.Send(vaxis.Key{Text: "i", Keycode: 'i'})
+	app.Send(vaxis.Key{Text: "a", Keycode: 'a'})
 	app.Pump(vui.Size{Width: 40, Height: 6})
 	app.Send(vaxis.Key{Text: "b"})
 	app.Send(vaxis.Key{Text: "s", Keycode: 's', Modifiers: vaxis.ModCtrl})

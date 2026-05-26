@@ -58,66 +58,67 @@ func (w uiDiffView) CreateState() vui.State {
 
 type uiDiffViewState struct {
 	vui.StateBase
-	scroll                  vui.ScrollController
-	list                    vui.SliverListController
-	cursor                  selectionPoint
-	cursorCol               int
-	pendingG                bool
-	pendingBracket          rune
-	pendingSpace            bool
-	pendingD                bool
-	fileFinder              bool
-	themeFinder             bool
-	themeName               string
-	themeNameBeforePick     string
-	helpVisible             bool
-	sideBySide              bool
-	xScroll                 int
-	textObject              textObjectState
-	commentEditorActive     bool
-	commentEditorFocused    bool
-	commentEditorInsert     bool
-	commentEditorRow        int
-	commentEditorTarget     uiDiffCommentTarget
-	commentEditorBody       string
-	commentEditorCursor     *int
-	commentEditorBodies     map[int]string
-	reviewDrafts            []review.CommentDraft
-	deletedReviewDrafts     map[review.CommentDraft]bool
-	selectionAnchor         selectionPoint
-	selectionActive         bool
-	selectionLinewise       bool
-	selectionInitialNewline bool
-	selectionFinalNewline   bool
-	selectionSideFiltered   bool
-	selectionSide           diffSide
-	mouseSelecting          bool
-	hScrollbarDragging      bool
-	hScrollbarGrab          int
-	mouseAnchor             selectionPoint
-	mouseHasAnchor          bool
-	mouseStartRow           int
-	clicks                  clickState
-	yankAnchor              selectionPoint
-	yankCursor              selectionPoint
-	yankActive              bool
-	yankLinewise            bool
-	yankUntil               time.Time
-	searchMode              bool
-	searchQuery             string
-	searchMatches           []searchMatch
-	searchIndex             int
-	searchStart             selectionPoint
-	commandMode             bool
-	commandLine             string
-	reviewDirty             bool
-	statusMessage           string
-	statusMessageUntil      time.Time
-	editorCommand           *exec.Cmd
-	syntaxTheme             vui.Theme
-	highlighter             *SyntaxHighlighter
-	highlightedTheme        vui.Theme
-	highlightedRows         map[int][]vaxis.Segment
+	scroll                    vui.ScrollController
+	list                      vui.SliverListController
+	cursor                    selectionPoint
+	cursorCol                 int
+	pendingG                  bool
+	pendingBracket            rune
+	pendingSpace              bool
+	pendingD                  bool
+	fileFinder                bool
+	themeFinder               bool
+	themeName                 string
+	themeNameBeforePick       string
+	helpVisible               bool
+	sideBySide                bool
+	xScroll                   int
+	textObject                textObjectState
+	commentEditorActive       bool
+	commentEditorFocused      bool
+	commentEditorInsert       bool
+	commentEditorRow          int
+	commentEditorTarget       uiDiffCommentTarget
+	commentEditorBody         string
+	commentEditorCursor       *int
+	commentEditorNormalCursor int
+	commentEditorBodies       map[int]string
+	reviewDrafts              []review.CommentDraft
+	deletedReviewDrafts       map[review.CommentDraft]bool
+	selectionAnchor           selectionPoint
+	selectionActive           bool
+	selectionLinewise         bool
+	selectionInitialNewline   bool
+	selectionFinalNewline     bool
+	selectionSideFiltered     bool
+	selectionSide             diffSide
+	mouseSelecting            bool
+	hScrollbarDragging        bool
+	hScrollbarGrab            int
+	mouseAnchor               selectionPoint
+	mouseHasAnchor            bool
+	mouseStartRow             int
+	clicks                    clickState
+	yankAnchor                selectionPoint
+	yankCursor                selectionPoint
+	yankActive                bool
+	yankLinewise              bool
+	yankUntil                 time.Time
+	searchMode                bool
+	searchQuery               string
+	searchMatches             []searchMatch
+	searchIndex               int
+	searchStart               selectionPoint
+	commandMode               bool
+	commandLine               string
+	reviewDirty               bool
+	statusMessage             string
+	statusMessageUntil        time.Time
+	editorCommand             *exec.Cmd
+	syntaxTheme               vui.Theme
+	highlighter               *SyntaxHighlighter
+	highlightedTheme          vui.Theme
+	highlightedRows           map[int][]vaxis.Segment
 }
 
 type uiDiffCommentTarget struct {
@@ -1936,18 +1937,97 @@ func (s *uiDiffViewState) handleCommentEditorKey(rows []diff.Row, key vaxis.Key)
 			return vui.EventHandled
 		case key.Matches('i'):
 			s.clearPendingKeys()
-			cursor := 0
+			cursor := s.commentEditorNormalCursor
 			s.commentEditorCursor = &cursor
 			s.commentEditorInsert = true
 			s.SetState(func() {})
 			return vui.EventHandled
+		case key.Matches('I'):
+			s.clearPendingKeys()
+			cursor := commentEditorLineStart(s.commentEditorBody, s.commentEditorNormalCursor)
+			s.commentEditorCursor = &cursor
+			s.commentEditorNormalCursor = cursor
+			s.commentEditorInsert = true
+			s.SetState(func() {})
+			return vui.EventHandled
+		case key.Matches('a'):
+			s.clearPendingKeys()
+			cursor := minInt(s.commentEditorNormalCursor+1, len([]rune(s.commentEditorBody)))
+			s.commentEditorCursor = &cursor
+			s.commentEditorNormalCursor = cursor
+			s.commentEditorInsert = true
+			s.SetState(func() {})
+			return vui.EventHandled
+		case key.Matches('A'):
+			s.clearPendingKeys()
+			cursor := commentEditorLineEnd(s.commentEditorBody, s.commentEditorNormalCursor)
+			s.commentEditorCursor = &cursor
+			s.commentEditorNormalCursor = cursor
+			s.commentEditorInsert = true
+			s.SetState(func() {})
+			return vui.EventHandled
+		case key.Matches('o'):
+			s.clearPendingKeys()
+			cursor := commentEditorLineEnd(s.commentEditorBody, s.commentEditorNormalCursor)
+			s.commentEditorBody = commentEditorInsertRunes(s.commentEditorBody, cursor, "\n")
+			cursor++
+			s.commentEditorCursor = &cursor
+			s.commentEditorNormalCursor = cursor
+			s.commentEditorInsert = true
+			s.storeCommentEditorBody()
+			s.SetState(func() {})
+			return vui.EventHandled
+		case key.Matches('O'):
+			s.clearPendingKeys()
+			cursor := commentEditorLineStart(s.commentEditorBody, s.commentEditorNormalCursor)
+			s.commentEditorBody = commentEditorInsertRunes(s.commentEditorBody, cursor, "\n")
+			s.commentEditorCursor = &cursor
+			s.commentEditorNormalCursor = cursor
+			s.commentEditorInsert = true
+			s.storeCommentEditorBody()
+			s.SetState(func() {})
+			return vui.EventHandled
+		case key.Matches('0'):
+			s.clearPendingKeys()
+			s.commentEditorNormalCursor = commentEditorLineStart(s.commentEditorBody, s.commentEditorNormalCursor)
+			s.SetState(func() {})
+			return vui.EventHandled
+		case key.Matches('$'):
+			s.clearPendingKeys()
+			s.commentEditorNormalCursor = maxInt(commentEditorLineStart(s.commentEditorBody, s.commentEditorNormalCursor), commentEditorLineEnd(s.commentEditorBody, s.commentEditorNormalCursor)-1)
+			s.SetState(func() {})
+			return vui.EventHandled
+		case key.Matches('h'), key.Matches(vaxis.KeyLeft), key.MatchString("Left"):
+			s.clearPendingKeys()
+			s.commentEditorNormalCursor = maxInt(0, s.commentEditorNormalCursor-1)
+			s.SetState(func() {})
+			return vui.EventHandled
+		case key.Matches('l'), key.Matches(vaxis.KeyRight), key.MatchString("Right"):
+			s.clearPendingKeys()
+			s.commentEditorNormalCursor = minInt(s.commentEditorNormalCursor+1, maxInt(0, len([]rune(s.commentEditorBody))-1))
+			s.SetState(func() {})
+			return vui.EventHandled
 		case key.Matches('j'), key.Matches(vaxis.KeyDown), key.MatchString("Down"):
-			s.commentEditorFocused = false
-			s.setCursorRow(rows, s.commentEditorRow+1)
+			s.clearPendingKeys()
+			cursor := commentEditorMoveLine(s.commentEditorBody, s.commentEditorNormalCursor, 1)
+			if cursor == s.commentEditorNormalCursor {
+				s.commentEditorFocused = false
+				s.setCursorRow(rows, s.commentEditorRow+1)
+				return vui.EventHandled
+			}
+			s.commentEditorNormalCursor = cursor
+			s.SetState(func() {})
 			return vui.EventHandled
 		case key.Matches('k'), key.Matches(vaxis.KeyUp), key.MatchString("Up"):
-			s.commentEditorFocused = false
-			s.setCursorRow(rows, s.commentEditorRow)
+			s.clearPendingKeys()
+			cursor := commentEditorMoveLine(s.commentEditorBody, s.commentEditorNormalCursor, -1)
+			if cursor == s.commentEditorNormalCursor {
+				s.commentEditorFocused = false
+				s.setCursorRow(rows, s.commentEditorRow)
+				return vui.EventHandled
+			}
+			s.commentEditorNormalCursor = cursor
+			s.SetState(func() {})
 			return vui.EventHandled
 		default:
 			return vui.EventIgnored
@@ -1960,8 +2040,9 @@ func (s *uiDiffViewState) handleCommentEditorKey(rows []diff.Row, key vaxis.Key)
 			s.SetState(func() {})
 			return vui.EventHandled
 		}
-		s.commentEditorFocused = false
+		s.commentEditorFocused = true
 		s.commentEditorInsert = false
+		s.commentEditorNormalCursor = maxInt(0, len([]rune(s.commentEditorBody))-1)
 		s.SetState(func() {})
 		return vui.EventHandled
 	case key.MatchString("Ctrl+s"):
@@ -2300,6 +2381,7 @@ func (s *uiDiffViewState) closeCommentEditor() {
 	s.commentEditorTarget = uiDiffCommentTarget{}
 	s.commentEditorBody = ""
 	s.commentEditorCursor = nil
+	s.commentEditorNormalCursor = 0
 }
 
 func (s *uiDiffViewState) storeCommentEditorBody() {
@@ -2337,6 +2419,7 @@ func (s *uiDiffViewState) moveIntoCommentEditor(rows []diff.Row, delta int) bool
 			s.cursor.Col = s.clampCursorCol(rows, s.cursor.Row, s.cursorCol)
 			s.cursorCol = s.cursor.Col
 			s.focusCommentEditorRow(rows, row)
+			s.commentEditorNormalCursor = commentEditorLastLineCursor(s.commentEditorBody)
 			return true
 		}
 	}
@@ -2377,6 +2460,7 @@ func (s *uiDiffViewState) focusCommentEditorRow(rows []diff.Row, row int) {
 		}
 	}
 	s.commentEditorBody = body
+	s.commentEditorNormalCursor = 0
 	s.revealCursorRow()
 	s.SetState(func() {})
 }
@@ -2798,7 +2882,7 @@ func (s *uiDiffViewState) buildItem(rows []diff.Row, rowIndex int, theme vui.The
 		children = append(children, s.buildCommentEditor(theme))
 		showDrafts = false
 	} else if body := s.commentEditorBodies[rowIndex]; strings.TrimSpace(body) != "" {
-		children = append(children, uiDiffCommentEditorBox(body, nil, false, false, nil, theme))
+		children = append(children, uiDiffCommentEditorBox(body, nil, false, false, nil, 0, theme))
 		showDrafts = false
 	}
 	if showDrafts {
@@ -2916,7 +3000,7 @@ func (s *uiDiffViewState) buildSideBySideCommentRows(rows []diff.Row, rowIndex i
 		addCommentWidget(s.buildCommentEditor(theme))
 		showDrafts = false
 	} else if body := s.commentEditorBodies[rowIndex]; strings.TrimSpace(body) != "" {
-		addCommentWidget(uiDiffCommentEditorBox(body, nil, false, false, nil, theme))
+		addCommentWidget(uiDiffCommentEditorBox(body, nil, false, false, nil, 0, theme))
 		showDrafts = false
 	}
 	if showDrafts {
@@ -2961,13 +3045,17 @@ func (s *uiDiffViewState) buildCommentEditor(theme vui.Theme) vui.Widget {
 	cursor := s.commentEditorCursor
 	s.commentEditorCursor = nil
 	return uiDiffCommentEditorBox(s.commentEditorBody, cursor, s.commentEditorFocused, s.commentEditorInsert, func(_ vui.EventContext, value string) {
+		delta := len([]rune(value)) - len([]rune(s.commentEditorBody))
 		s.commentEditorBody = value
+		if s.commentEditorInsert {
+			s.commentEditorNormalCursor = maxInt(0, minInt(s.commentEditorNormalCursor+delta, len([]rune(s.commentEditorBody))))
+		}
 		s.storeCommentEditorBody()
 		s.SetState(func() {})
-	}, theme)
+	}, s.commentEditorNormalCursor, theme)
 }
 
-func uiDiffCommentEditorBox(body string, cursorOffset *int, focused bool, insert bool, onChanged func(vui.EventContext, string), theme vui.Theme) vui.Widget {
+func uiDiffCommentEditorBox(body string, cursorOffset *int, focused bool, insert bool, onChanged func(vui.EventContext, string), normalCursor int, theme vui.Theme) vui.Widget {
 	background := theme.Surface
 	if focused || insert {
 		background = theme.SurfaceHovered
@@ -2981,7 +3069,7 @@ func uiDiffCommentEditorBox(body string, cursorOffset *int, focused bool, insert
 			uiDiffCommentHalfBlock("▄", background, theme),
 			vui.DecoratedBox(
 				vui.Decoration{Style: boxStyle},
-				vui.Padding(vui.Symmetric(2, 0), vui.RichText{Spans: []vui.TextSpan{{Text: body, Style: boxStyle}}, SoftWrap: true}),
+				vui.Padding(vui.Symmetric(2, 0), vui.RichText{Spans: commentEditorNormalSpans(body, normalCursor, focused, boxStyle, theme), SoftWrap: true}),
 			),
 			uiDiffCommentHalfBlock("▀", background, theme),
 		))
@@ -3002,6 +3090,104 @@ func uiDiffCommentEditorBox(body string, cursorOffset *int, focused bool, insert
 		),
 		uiDiffCommentHalfBlock("▀", background, theme),
 	))
+}
+
+func commentEditorNormalSpans(body string, cursor int, focused bool, style vaxis.Style, theme vui.Theme) []vui.TextSpan {
+	runes := []rune(body)
+	if len(runes) == 0 || !focused {
+		return []vui.TextSpan{{Text: body, Style: style}}
+	}
+	cursor = minInt(maxInt(0, cursor), len(runes))
+	spans := make([]vui.TextSpan, 0, 3)
+	if cursor > 0 {
+		spans = append(spans, vui.TextSpan{Text: string(runes[:cursor]), Style: style})
+	}
+	cursorStyle := vaxis.Style{Foreground: uiDiffCursorForeground(theme), Background: uiDiffCursorBackground(theme)}
+	if cursor == len(runes) || runes[cursor] == '\n' {
+		spans = append(spans, vui.TextSpan{Text: " ", Style: cursorStyle})
+		if cursor < len(runes) {
+			spans = append(spans, vui.TextSpan{Text: string(runes[cursor:]), Style: style})
+		}
+		return spans
+	}
+	spans = append(spans, vui.TextSpan{Text: string(runes[cursor : cursor+1]), Style: cursorStyle})
+	if cursor+1 < len(runes) {
+		spans = append(spans, vui.TextSpan{Text: string(runes[cursor+1:]), Style: style})
+	}
+	return spans
+}
+
+func commentEditorLineEnd(body string, cursor int) int {
+	runes := []rune(body)
+	cursor = minInt(maxInt(0, cursor), len(runes))
+	for cursor < len(runes) && runes[cursor] != '\n' {
+		cursor++
+	}
+	return cursor
+}
+
+func commentEditorLineStart(body string, cursor int) int {
+	runes := []rune(body)
+	cursor = minInt(maxInt(0, cursor), len(runes))
+	for cursor > 0 && runes[cursor-1] != '\n' {
+		cursor--
+	}
+	return cursor
+}
+
+func commentEditorInsertRunes(body string, cursor int, insert string) string {
+	runes := []rune(body)
+	cursor = minInt(maxInt(0, cursor), len(runes))
+	return string(runes[:cursor]) + insert + string(runes[cursor:])
+}
+
+func commentEditorLastLineCursor(body string) int {
+	runes := []rune(body)
+	if len(runes) == 0 {
+		return 0
+	}
+	cursor := len(runes) - 1
+	for cursor > 0 && runes[cursor-1] != '\n' {
+		cursor--
+	}
+	return cursor
+}
+
+func commentEditorMoveLine(body string, cursor int, delta int) int {
+	runes := []rune(body)
+	if len(runes) == 0 {
+		return 0
+	}
+	cursor = minInt(maxInt(0, cursor), len(runes)-1)
+	start := cursor
+	for start > 0 && runes[start-1] != '\n' {
+		start--
+	}
+	col := cursor - start
+	if delta < 0 {
+		if start == 0 {
+			return cursor
+		}
+		prevEnd := start - 1
+		prevStart := prevEnd
+		for prevStart > 0 && runes[prevStart-1] != '\n' {
+			prevStart--
+		}
+		return minInt(prevStart+col, prevEnd)
+	}
+	end := start
+	for end < len(runes) && runes[end] != '\n' {
+		end++
+	}
+	if end >= len(runes) {
+		return cursor
+	}
+	nextStart := end + 1
+	nextEnd := nextStart
+	for nextEnd < len(runes) && runes[nextEnd] != '\n' {
+		nextEnd++
+	}
+	return minInt(nextStart+col, maxInt(nextStart, nextEnd-1))
 }
 
 func uiDiffCommentColumn(children ...vui.Widget) vui.Widget {
