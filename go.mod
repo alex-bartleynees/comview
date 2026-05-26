@@ -5,7 +5,7 @@ go 1.26.1
 require (
 	github.com/alecthomas/chroma/v2 v2.24.1
 	github.com/rockorager/go-uucode v1.2.0
-	go.rockorager.dev/vaxis v0.9.3-0.20260525191838-6a2244596634
+	go.rockorager.dev/vaxis v0.16.1-0.20260526190652-9b57ecb4fead
 )
 
 require (
@@ -13,5 +13,3 @@ require (
 	golang.org/x/sys v0.10.0 // indirect
 	golang.org/x/term v0.10.0 // indirect
 )
-
-replace go.rockorager.dev/vaxis => github.com/rockorager/vaxis v0.9.3-0.20260525191838-6a2244596634

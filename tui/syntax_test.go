@@ -153,3 +153,36 @@ func TestSyntaxHighlighterPreservesMultilineRawStringStateAcrossRows(t *testing.
 		t.Fatalf("raw string line background = %v, want %v", rawStringLine[0].Style.Background, base.Background)
 	}
 }
+
+func TestDiffViewSkipsSyntaxHighlightingForVeryLargeDiffs(t *testing.T) {
+	rows := make([]diff.Row, uiDiffSyntaxHighlightRowLimit+1)
+	for i := range rows {
+		rows[i] = diff.Row{Kind: diff.RowAdd, FileName: "main.go", Code: "package main"}
+	}
+
+	state := &uiDiffViewState{}
+	segments := state.highlightedCodeRows(rows, uiDiffTestTheme())
+
+	if segments != nil {
+		t.Fatalf("highlighted rows = %d, want nil", len(segments))
+	}
+	if state.highlightedRows != nil {
+		t.Fatalf("cached highlighted rows = %d, want nil", len(state.highlightedRows))
+	}
+}
+
+func TestDiffRowsShareBacking(t *testing.T) {
+	rows := []diff.Row{{Kind: diff.RowAdd, Code: "one"}}
+	if !uiDiffRowsShareBacking(rows, rows) {
+		t.Fatal("same rows slice should share backing")
+	}
+	if !uiDiffRowsShareBacking(nil, nil) {
+		t.Fatal("empty rows should share backing")
+	}
+	if uiDiffRowsShareBacking(rows, append([]diff.Row(nil), rows...)) {
+		t.Fatal("copied rows should not share backing")
+	}
+	if uiDiffRowsShareBacking(rows, rows[:0]) {
+		t.Fatal("different lengths should not share backing")
+	}
+}

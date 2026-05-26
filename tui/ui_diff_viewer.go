@@ -29,6 +29,8 @@ type uiDiffView struct {
 	InitialStatus string
 }
 
+const uiDiffSyntaxHighlightRowLimit = 5000
+
 func uiDiffRootWithStatus(rows []diff.Row, wrap bool, drafts []review.CommentDraft, showStatus bool) vui.Widget {
 	return uiDiffRootWithReviewFile(rows, wrap, drafts, "", showStatus)
 }
@@ -121,6 +123,17 @@ type uiDiffViewState struct {
 	highlighter               *SyntaxHighlighter
 	highlightedTheme          vui.Theme
 	highlightedRows           map[int][]vaxis.Segment
+	metricsRows               []diff.Row
+	metrics                   uiDiffDocumentMetrics
+	sideRowsRows              []diff.Row
+	sideRows                  []sideBySideRow
+}
+
+type uiDiffDocumentMetrics struct {
+	HasCommitMessage bool
+	OldGutterWidth   int
+	NewGutterWidth   int
+	ContentWidth     int
 }
 
 type uiDiffCommentTarget struct {
@@ -144,19 +157,20 @@ func (s *uiDiffViewState) Build(ctx vui.BuildContext) vui.Widget {
 		}
 	}
 	highlightedRows := s.highlightedCodeRows(w.Rows, theme)
+	metrics := s.documentMetrics(w.Rows)
 	drafts := s.allReviewDrafts(w.ReviewDrafts)
 	sliver := vui.Widget(vui.SliverListBuilder{
 		Controller:          &s.list,
 		Count:               len(w.Rows),
-		ItemExtent:          uiDiffItemExtent(w.Wrap || uiDiffRowsIncludeCommitMessage(w.Rows) || s.commentEditorActive || len(drafts) > 0),
+		ItemExtent:          uiDiffItemExtent(w.Wrap || metrics.HasCommitMessage || s.commentEditorActive || len(drafts) > 0),
 		EstimatedItemExtent: 1,
 		Overscan:            8,
 		Builder: func(ctx vui.BuildContext, row int) vui.Widget {
-			return s.buildItem(w.Rows, row, theme, highlightedRows, drafts, w.Wrap)
+			return s.buildItem(w.Rows, row, theme, highlightedRows, drafts, w.Wrap, metrics)
 		},
 	})
 	if s.sideBySide {
-		sideRows := uiDiffSideBySideRows(w.Rows)
+		sideRows := s.sideBySideRows(w.Rows)
 		sliver = vui.SliverListBuilder{
 			Controller:          &s.list,
 			Count:               len(sideRows),
@@ -164,7 +178,7 @@ func (s *uiDiffViewState) Build(ctx vui.BuildContext) vui.Widget {
 			EstimatedItemExtent: 1,
 			Overscan:            8,
 			Builder: func(ctx vui.BuildContext, row int) vui.Widget {
-				return s.buildSideBySideItem(w.Rows, sideRows[row], theme, highlightedRows, drafts, w.Wrap)
+				return s.buildSideBySideItem(w.Rows, sideRows[row], theme, highlightedRows, drafts, w.Wrap, metrics)
 			},
 		}
 	}
@@ -197,7 +211,7 @@ func (s *uiDiffViewState) Build(ctx vui.BuildContext) vui.Widget {
 	content := vui.Widget(scrollView)
 	if w.ShowStatus {
 		children := []vui.Widget{vui.Expanded(scrollView)}
-		if bar, ok := s.horizontalScrollbar(w.Rows, w.Wrap, theme); ok {
+		if bar, ok := s.horizontalScrollbar(w.Rows, w.Wrap, theme, metrics); ok {
 			children = append(children, bar)
 		}
 		children = append(children, s.buildStatusBar(w.Rows, theme))
@@ -307,7 +321,7 @@ func uiThemeSelectItem(theme Theme) vui.FuzzySelectItem {
 	return vui.FuzzySelectItem{Title: theme.Name, Aliases: []string{theme.Name}}
 }
 
-func (s *uiDiffViewState) horizontalScrollbar(rows []diff.Row, wrap bool, theme vui.Theme) (vui.Widget, bool) {
+func (s *uiDiffViewState) horizontalScrollbar(rows []diff.Row, wrap bool, theme vui.Theme, metrics uiDiffDocumentMetrics) (vui.Widget, bool) {
 	if wrap || len(rows) == 0 {
 		return nil, false
 	}
@@ -315,24 +329,28 @@ func (s *uiDiffViewState) horizontalScrollbar(rows []diff.Row, wrap bool, theme 
 	if s.scroll.Attached() {
 		verticalVisible = s.scroll.Metrics().MaxScrollOffset > 0
 	}
-	contentWidth := s.horizontalContentWidth(rows)
+	contentWidth := metrics.ContentWidth
 	if contentWidth == 0 {
 		return nil, false
 	}
 	return uiDiffHorizontalScrollbar{ContentWidth: contentWidth, XScroll: s.xScroll, SideBySide: s.sideBySide, VerticalVisible: verticalVisible, Theme: theme}, true
 }
 
-func (s *uiDiffViewState) horizontalContentWidth(rows []diff.Row) int {
+func (s *uiDiffViewState) horizontalContentWidthForGutterWidths(rows []diff.Row, oldWidth int, newWidth int) int {
 	width := 0
 	if s.sideBySide {
+		gutterWidth := maxInt(oldWidth, newWidth)
+		if gutterWidth < 1 {
+			gutterWidth = 1
+		}
 		for _, row := range rows {
 			if selectableDiffRow(row.Kind) {
-				width = maxInt(width, textCellWidth(uiDiffSideBySideGutter(rows, row, sideForRow(row)))+codeCellWidth(row))
+				width = maxInt(width, gutterWidth+3+codeCellWidth(row))
 			}
 		}
 		return width
 	}
-	codeOffset := uiDiffCodeOffset(rows)
+	codeOffset := uiDiffCodeOffsetForGutterWidths(oldWidth, newWidth)
 	for _, row := range rows {
 		rowWidth := textCellWidth(row.Text)
 		if selectableDiffRow(row.Kind) && (row.Code != "" || row.Gutter != "" || row.Marker != "") {
@@ -893,7 +911,49 @@ func uiDiffRowsIncludeCommitMessage(rows []diff.Row) bool {
 }
 
 func (s *uiDiffViewState) DidUpdateWidget(old vui.Widget) {
-	s.highlightedRows = nil
+	oldView, ok := old.(uiDiffView)
+	if !ok {
+		s.highlightedRows = nil
+		return
+	}
+	view := s.Widget().(uiDiffView)
+	if !uiDiffRowsShareBacking(oldView.Rows, view.Rows) {
+		s.highlightedRows = nil
+	}
+}
+
+func uiDiffRowsShareBacking(a []diff.Row, b []diff.Row) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	if len(a) == 0 {
+		return true
+	}
+	return &a[0] == &b[0]
+}
+
+func (s *uiDiffViewState) documentMetrics(rows []diff.Row) uiDiffDocumentMetrics {
+	if uiDiffRowsShareBacking(s.metricsRows, rows) {
+		return s.metrics
+	}
+	oldWidth, newWidth := uiDiffGutterWidths(rows)
+	s.metricsRows = rows
+	s.metrics = uiDiffDocumentMetrics{
+		HasCommitMessage: uiDiffRowsIncludeCommitMessage(rows),
+		OldGutterWidth:   oldWidth,
+		NewGutterWidth:   newWidth,
+		ContentWidth:     s.horizontalContentWidthForGutterWidths(rows, oldWidth, newWidth),
+	}
+	return s.metrics
+}
+
+func (s *uiDiffViewState) sideBySideRows(rows []diff.Row) []sideBySideRow {
+	if uiDiffRowsShareBacking(s.sideRowsRows, rows) {
+		return s.sideRows
+	}
+	s.sideRowsRows = rows
+	s.sideRows = uiDiffSideBySideRowsForRows(rows)
+	return s.sideRows
 }
 
 func (s *uiDiffViewState) syntaxHighlighter(theme vui.Theme) *SyntaxHighlighter {
@@ -905,6 +965,10 @@ func (s *uiDiffViewState) syntaxHighlighter(theme vui.Theme) *SyntaxHighlighter 
 }
 
 func (s *uiDiffViewState) highlightedCodeRows(rows []diff.Row, theme vui.Theme) map[int][]vaxis.Segment {
+	if uiDiffHighlightableRowCount(rows) > uiDiffSyntaxHighlightRowLimit {
+		s.highlightedRows = nil
+		return nil
+	}
 	if s.highlightedRows != nil && s.highlightedTheme == theme {
 		return s.highlightedRows
 	}
@@ -914,6 +978,19 @@ func (s *uiDiffViewState) highlightedCodeRows(rows []diff.Row, theme vui.Theme) 
 		return uiStyleForDiffRow(kind, theme)
 	})
 	return s.highlightedRows
+}
+
+func uiDiffHighlightableRowCount(rows []diff.Row) int {
+	count := 0
+	for _, row := range rows {
+		switch row.Kind {
+		case diff.RowContext, diff.RowAdd, diff.RowDelete:
+			if row.Code != "" {
+				count++
+			}
+		}
+	}
+	return count
 }
 
 type uiSyntaxTheme struct {
@@ -1215,13 +1292,14 @@ func (s *uiDiffViewState) handleMouse(_ vui.EventContext, mouse vaxis.Mouse) vui
 	if len(rows) == 0 {
 		return vui.EventIgnored
 	}
+	metrics := s.documentMetrics(rows)
 	if s.handleActiveCommentEditorChromeMouse(rows, mouse) {
 		return vui.EventHandled
 	}
 	if s.mouseInActiveCommentTextField(mouse) {
 		return vui.EventIgnored
 	}
-	if s.handleHorizontalScrollbarMouse(w, mouse) {
+	if s.handleHorizontalScrollbarMouse(w, mouse, metrics) {
 		return vui.EventHandled
 	}
 	if mouseWheelButton(mouse.Button) {
@@ -1245,7 +1323,7 @@ func (s *uiDiffViewState) handleMouse(_ vui.EventContext, mouse vaxis.Mouse) vui
 			s.SetState(func() {})
 			return vui.EventHandled
 		}
-		point, ok := s.selectionPointForMouse(rows, mouse)
+		point, ok := s.selectionPointForMouse(rows, mouse, metrics)
 		if !ok {
 			if !s.mouseInDiffViewport(mouse) {
 				return vui.EventIgnored
@@ -1284,7 +1362,7 @@ func (s *uiDiffViewState) handleMouse(_ vui.EventContext, mouse vaxis.Mouse) vui
 		if !s.mouseSelecting || mouse.Button == vaxis.MouseNoButton {
 			return vui.EventIgnored
 		}
-		point, ok := s.selectionPointForMouse(rows, mouse)
+		point, ok := s.selectionPointForMouse(rows, mouse, metrics)
 		if !ok {
 			return vui.EventIgnored
 		}
@@ -1309,7 +1387,7 @@ func (s *uiDiffViewState) handleMouse(_ vui.EventContext, mouse vaxis.Mouse) vui
 		}
 		s.mouseSelecting = false
 		s.mouseHasAnchor = false
-		if point, ok := s.selectionPointForMouse(rows, mouse); ok {
+		if point, ok := s.selectionPointForMouse(rows, mouse, metrics); ok {
 			s.setCursorPointWithoutReveal(rows, point)
 		}
 		s.SetState(func() {})
@@ -1431,14 +1509,14 @@ func (s *uiDiffViewState) itemRowAndOffsetForMouse(mouse vaxis.Mouse) (int, int,
 	return row, logicalY - itemOffset, true
 }
 
-func (s *uiDiffViewState) handleHorizontalScrollbarMouse(w uiDiffView, mouse vaxis.Mouse) bool {
+func (s *uiDiffViewState) handleHorizontalScrollbarMouse(w uiDiffView, mouse vaxis.Mouse, metrics uiDiffDocumentMetrics) bool {
 	if w.Wrap || !w.ShowStatus || !s.scroll.Attached() {
 		return false
 	}
-	metrics := s.scroll.Metrics()
-	barRow := metrics.ViewportHeight
-	verticalVisible := metrics.MaxScrollOffset > 0
-	bar := s.horizontalScrollbarModel(w.Rows, metrics.ViewportWidth, verticalVisible)
+	scrollMetrics := s.scroll.Metrics()
+	barRow := scrollMetrics.ViewportHeight
+	verticalVisible := scrollMetrics.MaxScrollOffset > 0
+	bar := s.horizontalScrollbarModelForContentWidth(metrics.ContentWidth, scrollMetrics.ViewportWidth, verticalVisible)
 	if bar.Length == 0 {
 		return false
 	}
@@ -1452,14 +1530,14 @@ func (s *uiDiffViewState) handleHorizontalScrollbarMouse(w uiDiffView, mouse vax
 		if mouse.Col >= bar.Thumb && mouse.Col < bar.Thumb+bar.Size {
 			s.hScrollbarGrab = mouse.Col - bar.Thumb
 		}
-		s.scrollHorizontalScrollbarTo(w.Rows, metrics.ViewportWidth, mouse.Col-s.hScrollbarGrab, verticalVisible)
+		s.scrollHorizontalScrollbarToContentWidth(metrics.ContentWidth, scrollMetrics.ViewportWidth, mouse.Col-s.hScrollbarGrab, verticalVisible)
 		s.SetState(func() {})
 		return true
 	case vaxis.EventMotion:
 		if !s.hScrollbarDragging || mouse.Button == vaxis.MouseNoButton {
 			return false
 		}
-		s.scrollHorizontalScrollbarTo(w.Rows, metrics.ViewportWidth, mouse.Col-s.hScrollbarGrab, verticalVisible)
+		s.scrollHorizontalScrollbarToContentWidth(metrics.ContentWidth, scrollMetrics.ViewportWidth, mouse.Col-s.hScrollbarGrab, verticalVisible)
 		s.SetState(func() {})
 		return true
 	case vaxis.EventRelease:
@@ -1467,7 +1545,7 @@ func (s *uiDiffViewState) handleHorizontalScrollbarMouse(w uiDiffView, mouse vax
 			return false
 		}
 		s.hScrollbarDragging = false
-		s.scrollHorizontalScrollbarTo(w.Rows, metrics.ViewportWidth, mouse.Col-s.hScrollbarGrab, verticalVisible)
+		s.scrollHorizontalScrollbarToContentWidth(metrics.ContentWidth, scrollMetrics.ViewportWidth, mouse.Col-s.hScrollbarGrab, verticalVisible)
 		s.SetState(func() {})
 		return true
 	default:
@@ -1475,21 +1553,21 @@ func (s *uiDiffViewState) handleHorizontalScrollbarMouse(w uiDiffView, mouse vax
 	}
 }
 
-func (s *uiDiffViewState) horizontalScrollbarModel(rows []diff.Row, width int, verticalVisible bool) uiDiffScrollbar {
+func (s *uiDiffViewState) horizontalScrollbarModelForContentWidth(contentWidth int, width int, verticalVisible bool) uiDiffScrollbar {
 	return (&uiDiffRenderHorizontalScrollbar{
-		ContentWidth:    s.horizontalContentWidth(rows),
+		ContentWidth:    contentWidth,
 		XScroll:         s.xScroll,
 		SideBySide:      s.sideBySide,
 		VerticalVisible: verticalVisible,
 	}).scrollbar(width)
 }
 
-func (s *uiDiffViewState) scrollHorizontalScrollbarTo(rows []diff.Row, width int, thumbLeft int, verticalVisible bool) {
-	bar := s.horizontalScrollbarModel(rows, width, verticalVisible)
+func (s *uiDiffViewState) scrollHorizontalScrollbarToContentWidth(contentWidth int, width int, thumbLeft int, verticalVisible bool) {
+	bar := s.horizontalScrollbarModelForContentWidth(contentWidth, width, verticalVisible)
 	if bar.Length == 0 {
 		return
 	}
-	maxScroll := s.horizontalContentWidth(rows) - bar.Viewport
+	maxScroll := contentWidth - bar.Viewport
 	maxThumbLeft := bar.Length - bar.Size
 	if maxScroll <= 0 || maxThumbLeft <= 0 {
 		s.xScroll = 0
@@ -1526,7 +1604,7 @@ func (s *uiDiffViewState) handleMouseWheel(mouse vaxis.Mouse) vui.EventResult {
 	}
 	s.scroll.ScrollByLines(lines)
 	w := s.Widget().(uiDiffView)
-	if point, ok := s.selectionPointForMouse(w.Rows, mouse); ok {
+	if point, ok := s.selectionPointForMouse(w.Rows, mouse, s.documentMetrics(w.Rows)); ok {
 		s.setCursorPointWithoutReveal(w.Rows, point)
 	}
 	s.SetState(func() {})
@@ -1627,12 +1705,12 @@ func (s *uiDiffViewState) selectRowAt(rows []diff.Row, point selectionPoint) {
 	s.setCursorPointWithoutReveal(rows, selectionPoint{Row: point.Row, Col: maxInt(0, end-1)})
 }
 
-func (s *uiDiffViewState) selectionPointForMouse(rows []diff.Row, mouse vaxis.Mouse) (selectionPoint, bool) {
+func (s *uiDiffViewState) selectionPointForMouse(rows []diff.Row, mouse vaxis.Mouse, metrics uiDiffDocumentMetrics) (selectionPoint, bool) {
 	if !s.mouseInDiffViewport(mouse) {
 		return selectionPoint{}, false
 	}
 	if s.sideBySide {
-		return s.sideBySideSelectionPointForMouse(rows, mouse)
+		return s.sideBySideSelectionPointForMouse(rows, mouse, metrics)
 	}
 	rowIndex, ok := s.rowForMouse(mouse)
 	if !ok || rowIndex < 0 || rowIndex >= len(rows) || !selectableDiffRow(rows[rowIndex].Kind) {
@@ -1640,7 +1718,7 @@ func (s *uiDiffViewState) selectionPointForMouse(rows []diff.Row, mouse vaxis.Mo
 	}
 	col := mouse.Col
 	if uiDiffRowUsesGrid(rows[rowIndex]) {
-		col -= uiDiffCodeOffset(rows)
+		col -= uiDiffCodeOffsetForGutterWidths(metrics.OldGutterWidth, metrics.NewGutterWidth)
 	}
 	_, end, ok := uiDiffCodeRange(rows, rowIndex)
 	if !ok {
@@ -1650,12 +1728,12 @@ func (s *uiDiffViewState) selectionPointForMouse(rows []diff.Row, mouse vaxis.Mo
 	return selectionPoint{Row: rowIndex, Col: col}, true
 }
 
-func (s *uiDiffViewState) sideBySideSelectionPointForMouse(rows []diff.Row, mouse vaxis.Mouse) (selectionPoint, bool) {
+func (s *uiDiffViewState) sideBySideSelectionPointForMouse(rows []diff.Row, mouse vaxis.Mouse, metrics uiDiffDocumentMetrics) (selectionPoint, bool) {
 	visualRow, ok := s.rowForMouse(mouse)
 	if !ok {
 		return selectionPoint{}, false
 	}
-	sideRows := uiDiffSideBySideRows(rows)
+	sideRows := s.sideBySideRows(rows)
 	if visualRow < 0 || visualRow >= len(sideRows) {
 		return selectionPoint{}, false
 	}
@@ -1688,7 +1766,7 @@ func (s *uiDiffViewState) sideBySideSelectionPointForMouse(rows []diff.Row, mous
 	if rowIndex < 0 || rowIndex >= len(rows) || !selectableDiffRow(rows[rowIndex].Kind) {
 		return selectionPoint{}, false
 	}
-	gutterWidth := textCellWidth(uiDiffSideBySideGutter(rows, rows[rowIndex], side))
+	gutterWidth := metrics.SideBySideGutterWidth() + 3
 	col := localCol - gutterWidth + s.xScroll
 	_, end, ok := uiDiffCodeRange(rows, rowIndex)
 	if !ok {
@@ -1722,7 +1800,7 @@ func (s *uiDiffViewState) rowForMouse(mouse vaxis.Mouse) (int, bool) {
 	w := s.Widget().(uiDiffView)
 	count := len(w.Rows)
 	if s.sideBySide {
-		count = len(uiDiffSideBySideRows(w.Rows))
+		count = len(s.sideBySideRows(w.Rows))
 	}
 	if count <= 0 {
 		return 0, false
@@ -1768,6 +1846,10 @@ func (s *uiDiffViewState) documentRowForMouse(mouse vaxis.Mouse) int {
 
 func uiDiffCodeOffset(rows []diff.Row) int {
 	oldWidth, newWidth := uiDiffGutterWidths(rows)
+	return uiDiffCodeOffsetForGutterWidths(oldWidth, newWidth)
+}
+
+func uiDiffCodeOffsetForGutterWidths(oldWidth int, newWidth int) int {
 	if oldWidth == 0 && newWidth == 0 {
 		return 0
 	}
@@ -2875,7 +2957,7 @@ func (s *uiDiffViewState) clearSearch() {
 	s.searchIndex = -1
 }
 
-func (s *uiDiffViewState) buildItem(rows []diff.Row, rowIndex int, theme vui.Theme, highlightedRows map[int][]vaxis.Segment, drafts []review.CommentDraft, wrap bool) vui.Widget {
+func (s *uiDiffViewState) buildItem(rows []diff.Row, rowIndex int, theme vui.Theme, highlightedRows map[int][]vaxis.Segment, drafts []review.CommentDraft, wrap bool, metrics uiDiffDocumentMetrics) vui.Widget {
 	row := rows[rowIndex]
 	active := rowIndex == s.cursor.Row && !s.commentEditorInsert && !s.commentEditorFocused
 	selected := s.lineSelected(rowIndex)
@@ -2884,7 +2966,7 @@ func (s *uiDiffViewState) buildItem(rows []diff.Row, rowIndex int, theme vui.The
 	if !uiDiffRowUsesGrid(row) {
 		item = s.buildFullWidthRow(row, rowIndex, uiDiffRowBackground(active, selected, yanked, theme), active, s.cursor.Col, selected, yanked, theme, wrap)
 	} else {
-		item = s.buildRow(rows, row, rowIndex, active, selected, yanked, s.cursor.Col, theme, highlightedRows, s.searchMatches, wrap)
+		item = s.buildRow(row, rowIndex, active, selected, yanked, s.cursor.Col, theme, highlightedRows, s.searchMatches, wrap, metrics)
 	}
 	children := []vui.Widget{item}
 	showDrafts := true
@@ -2909,15 +2991,15 @@ func (s *uiDiffViewState) buildItem(rows []diff.Row, rowIndex int, theme vui.The
 	return vui.Column(children...)
 }
 
-func (s *uiDiffViewState) buildSideBySideItem(rows []diff.Row, sideRow sideBySideRow, theme vui.Theme, highlightedRows map[int][]vaxis.Segment, drafts []review.CommentDraft, wrap bool) vui.Widget {
+func (s *uiDiffViewState) buildSideBySideItem(rows []diff.Row, sideRow sideBySideRow, theme vui.Theme, highlightedRows map[int][]vaxis.Segment, drafts []review.CommentDraft, wrap bool, metrics uiDiffDocumentMetrics) vui.Widget {
 	if sideRow.Full >= 0 {
-		return s.buildItem(rows, sideRow.Full, theme, highlightedRows, drafts, wrap)
+		return s.buildItem(rows, sideRow.Full, theme, highlightedRows, drafts, wrap, metrics)
 	}
 	separatorStyle := vaxis.Style{Foreground: theme.MutedForeground, Background: theme.Background}
 	row := vui.Row(
-		vui.Expanded(s.buildSideBySideCell(rows, sideRow.Left, sideLeft, theme, highlightedRows, wrap)),
+		vui.Expanded(s.buildSideBySideCell(rows, sideRow.Left, sideLeft, theme, highlightedRows, wrap, metrics)),
 		uiDiffFixedCell(1, separatorStyle, vui.Text{Value: " ", Style: separatorStyle}),
-		vui.Expanded(s.buildSideBySideCell(rows, sideRow.Right, sideRight, theme, highlightedRows, wrap)),
+		vui.Expanded(s.buildSideBySideCell(rows, sideRow.Right, sideRight, theme, highlightedRows, wrap, metrics)),
 	)
 	children := []vui.Widget{row}
 	for _, docRow := range sideBySideRowCommentDocRows(sideRow) {
@@ -2929,7 +3011,7 @@ func (s *uiDiffViewState) buildSideBySideItem(rows []diff.Row, sideRow sideBySid
 	return vui.Column(children...)
 }
 
-func (s *uiDiffViewState) buildSideBySideCell(rows []diff.Row, rowIndex int, side diffSide, theme vui.Theme, highlightedRows map[int][]vaxis.Segment, wrap bool) vui.Widget {
+func (s *uiDiffViewState) buildSideBySideCell(rows []diff.Row, rowIndex int, side diffSide, theme vui.Theme, highlightedRows map[int][]vaxis.Segment, wrap bool, metrics uiDiffDocumentMetrics) vui.Widget {
 	if rowIndex < 0 || rowIndex >= len(rows) {
 		return vui.DecoratedBox(vui.Decoration{Style: vaxis.Style{Background: theme.Background}}, vui.SizedBox{Height: 1})
 	}
@@ -2972,7 +3054,7 @@ func (s *uiDiffViewState) buildSideBySideCell(rows []diff.Row, rowIndex int, sid
 	codeSegments = uiDiffSearchSegments(rowIndex, row, codeSegments, s.searchMatches, theme)
 	gutterStyle := uiGutterStyle(row.Kind, rowBackground, theme)
 	lineNumberStyle := uiLineNumberGutterStyle(row.Kind, rowBackground, theme)
-	gutter := uiDiffSideBySideGutter(rows, row, side)
+	gutter := uiDiffSideBySideGutterForWidth(row, side, metrics.SideBySideGutterWidth())
 	lineNumber, marker := uiDiffSplitSideBySideGutter(gutter)
 	return vui.Row(
 		uiDiffFixedCell(len(lineNumber), lineNumberStyle, vui.Text{Value: lineNumber, Style: lineNumberStyle, Align: vui.TextAlignRight}),
@@ -2987,6 +3069,32 @@ func uiDiffSideBySideRows(rows []diff.Row) []sideBySideRow {
 
 func uiDiffSideBySideGutter(rows []diff.Row, row diff.Row, side diffSide) string {
 	return uiDiffSideBySideGutterForRows(rows, row, side)
+}
+
+func (m uiDiffDocumentMetrics) SideBySideGutterWidth() int {
+	width := maxInt(m.OldGutterWidth, m.NewGutterWidth)
+	if width < 1 {
+		return 1
+	}
+	return width
+}
+
+func uiDiffSideBySideGutterForWidth(row diff.Row, side diffSide, width int) string {
+	oldNumber, newNumber := splitGutterNumbers(row)
+	number := ""
+	marker := " "
+	if side == sideLeft {
+		number = oldNumber
+		if row.Kind == diff.RowDelete {
+			marker = "-"
+		}
+	} else {
+		number = newNumber
+		if row.Kind == diff.RowAdd {
+			marker = "+"
+		}
+	}
+	return fmt.Sprintf("%*s %s ", width, number, marker)
 }
 
 func uiDiffSplitSideBySideGutter(gutter string) (string, string) {
@@ -3503,7 +3611,7 @@ func uiCommitTrailerValueStyle(theme vui.Theme) vaxis.Style {
 	return vaxis.Style{Foreground: theme.DisabledForeground, Background: theme.Background}
 }
 
-func (s *uiDiffViewState) buildRow(rows []diff.Row, row diff.Row, rowIndex int, active bool, selected bool, yanked bool, cursorCol int, theme vui.Theme, highlightedRows map[int][]vaxis.Segment, searchMatches []searchMatch, wrap bool) vui.Widget {
+func (s *uiDiffViewState) buildRow(row diff.Row, rowIndex int, active bool, selected bool, yanked bool, cursorCol int, theme vui.Theme, highlightedRows map[int][]vaxis.Segment, searchMatches []searchMatch, wrap bool, metrics uiDiffDocumentMetrics) vui.Widget {
 	style := uiStyleForDiffRow(row.Kind, theme)
 	rowBackground := vaxis.Color(0)
 	if active {
@@ -3539,7 +3647,7 @@ func (s *uiDiffViewState) buildRow(rows []diff.Row, row diff.Row, rowIndex int, 
 	}
 	codeSegments = uiDiffSearchSegments(rowIndex, row, codeSegments, searchMatches, theme)
 	oldLine, newLine, marker := splitDiffGutter(row)
-	oldWidth, newWidth := uiDiffGutterWidths(rows)
+	oldWidth, newWidth := metrics.OldGutterWidth, metrics.NewGutterWidth
 	gutterStyle := uiGutterStyle(row.Kind, rowBackground, theme)
 	lineNumberStyle := uiLineNumberGutterStyle(row.Kind, rowBackground, theme)
 	return vui.Row(
