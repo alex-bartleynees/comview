@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/rockorager/comview/internal/terminal"
-	"github.com/rockorager/comview/tui"
+	"go.rockorager.dev/comview/internal/terminal"
+	"go.rockorager.dev/comview/tui"
 )
 
 func main() {

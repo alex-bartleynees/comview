@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"git.sr.ht/~rockorager/vaxis"
+	"go.rockorager.dev/vaxis"
 )
 
 // Config holds user configuration loaded from ~/.config/comview/config.json.

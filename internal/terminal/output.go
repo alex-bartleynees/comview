@@ -4,7 +4,7 @@ import (
 	"io"
 	"strings"
 
-	"git.sr.ht/~rockorager/vaxis/ansi"
+	"go.rockorager.dev/vaxis/ansi"
 )
 
 // PrintableANSIOutput returns the printable graphemes from terminal output,

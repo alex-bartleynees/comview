@@ -8,14 +8,14 @@ GOFLAGS = "-ldflags=-linkmode=external"
 
 [tasks.build]
 description = "Build comview"
-run = "go build -o comview ./cmd/comview"
+run = "go build -o ./out/comview ./cmd/comview"
 
 [tasks.install]
 description = "Install comview"
 depends = ["build"]
 run = [
   "install -d ${DESTDIR}${BINDIR:-${PREFIX:-/usr/local}/bin}",
-  "install -m 0755 comview ${DESTDIR}${BINDIR:-${PREFIX:-/usr/local}/bin}/comview",
+  "install -m 0755 ./out/comview ${DESTDIR}${BINDIR:-${PREFIX:-/usr/local}/bin}/comview",
 ]
 
 [tasks.uninstall]
@@ -24,24 +24,46 @@ run = "rm -f ${DESTDIR}${BINDIR:-${PREFIX:-/usr/local}/bin}/comview"
 
 [tasks.clean]
 description = "Remove build artifacts"
-run = "rm -f comview"
+run = "rm -rf out"
 
 [tasks.test]
 description = "Run tests"
 run = "go test ./..."
 
+[tasks.custom-golangci-lint]
+description = "Build the custom golangci-lint binary"
+sources = [".custom-gcl.yml", "mise.toml"]
+outputs = ["out/custom-golangci-lint"]
+run = "golangci-lint custom"
+
+[tasks.lint]
+description = "Run golangci-lint"
+depends = ["custom-golangci-lint"]
+run = "./out/custom-golangci-lint run ./..."
+
+[tasks.format]
+description = "Format Go files"
+run = "gofumpt -w $(find . -name '*.go' -not -path './.git/*')"
+
 [tasks.check]
 description = "Run formatting checks and tests"
+depends = ["custom-golangci-lint"]
 run = [
-  "scripts/check-multiline-functions.sh",
   "scripts/gofumpt.sh",
-  "golangci-lint run ./...",
+  "./out/custom-golangci-lint run ./...",
   "go test ./...",
+  "go build -o ./out/comview ./cmd/comview",
 ]
 
 [tasks.fix]
 description = "Apply automatic lint fixes and format Go files"
+depends = ["custom-golangci-lint"]
 run = [
-  "golangci-lint run --fix ./... || true",
+  "./out/custom-golangci-lint run --fix ./... || true",
   "gofumpt -w $(find . -name '*.go' -not -path './.git/*')",
 ]
+
+[tasks.app]
+description = "Build and run the comview app"
+depends = ["build"]
+run = "./out/comview"

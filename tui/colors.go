@@ -5,7 +5,7 @@ import (
 	"math"
 	"time"
 
-	"git.sr.ht/~rockorager/vaxis"
+	"go.rockorager.dev/vaxis"
 )
 
 const colorQueryTimeout = 150 * time.Millisecond

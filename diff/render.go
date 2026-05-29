@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/rockorager/comview/review"
+	"go.rockorager.dev/comview/review"
 )
 
 var (
