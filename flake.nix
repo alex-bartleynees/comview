@@ -15,7 +15,10 @@
 
       devShells = forAllSystems (system: {
         default = nixpkgs.legacyPackages.${system}.mkShell {
-          packages = [ self.packages.${system}.default ];
+          packages = [
+            self.packages.${system}.default
+            nixpkgs.legacyPackages.${system}.gh
+          ];
         };
       });
     };
