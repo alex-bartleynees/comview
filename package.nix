@@ -5,7 +5,7 @@ buildGoModule {
 
   src = ./.;
 
-  vendorHash = "sha256-K3mCrhC97/faCPAsuiexwd663H6xMdEWR7DZiafYWAA=";
+  vendorHash = "sha256-f7Q4+Bd22xnxkOWjgv4TzPmgZTNHhYvMtoVyl9anGzc=";
 
   meta = {
     description = "Terminal UI for viewing GitHub pull request reviews";
