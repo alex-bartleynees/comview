@@ -34,13 +34,26 @@ gh pr diff 123 | comview
 comview watch
 comview watch --staged
 comview watch -- git show HEAD
+comview pr <pr-number>
+comview pr <owner/repo> <pr-number>
 ```
 
 `comview watch` reruns `git diff` and refreshes the view whenever the diff
 output changes. Arguments after `watch` are passed to `git diff`; use `--` to
 watch another diff-producing command.
 
-Comments are saved to `.comview/comments.json`.
+`comview pr` fetches a pull request diff and its existing review comments from
+GitHub, then opens them in the TUI. Requires the [`gh`](https://cli.github.com)
+CLI to be installed and authenticated. The owner/repo is inferred from `git
+remote origin` when omitted.
+
+```sh
+comview pr 42
+comview pr rockorager/comview 42
+```
+
+Comments are saved to `.comview/comments.json`. Use `:submit` to push new,
+edited, or deleted comments back to GitHub.
 
 ## Keybinds
 
@@ -64,7 +77,8 @@ Comments are saved to `.comview/comments.json`.
 | `y` | Copy selection |
 | `i` or `I` | Add/edit comment |
 | `x` / `dd` | Delete note under cursor |
-| `:w` | Save comments |
+| `:w` | Save comments locally |
+| `:submit` | Push comments to GitHub (PR mode only) |
 | `:q` / `:q!` | Quit / force quit |
 | `?` | Show this help |
 | `Esc` | Cancel |

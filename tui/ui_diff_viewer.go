@@ -21,6 +21,7 @@ type uiDiffView struct {
 	Wrap          bool
 	ReviewDrafts  []review.CommentDraft
 	ReviewFile    string
+	CommentSource review.CommentSource
 	WorkTreeRoot  string
 	ShowStatus    bool
 	Binds         Bindings
@@ -92,6 +93,7 @@ type uiDiffViewState struct {
 	commentEditorBodies       map[int]string
 	reviewDrafts              []review.CommentDraft
 	deletedReviewDrafts       map[review.CommentDraft]bool
+	deletedGitHubIDs          map[int64]bool
 	selectionAnchor           selectionPoint
 	selectionActive           bool
 	selectionLinewise         bool
@@ -1500,7 +1502,11 @@ func (s *uiDiffViewState) commentRowsForMouse(rows []diff.Row, row int) int {
 	w := s.Widget().(uiDiffView)
 	count := 0
 	for _, draft := range reviewDraftsForRow(rows[row], s.allReviewDrafts(w.ReviewDrafts)) {
-		count += uiDiffCommentEditorRows(draft.Body)
+		n := uiDiffCommentEditorRows(draft.Body)
+		if draft.Author != "" {
+			n++
+		}
+		count += n
 	}
 	return count
 }
@@ -1900,8 +1906,19 @@ func (s *uiDiffViewState) openCommentEditor(rows []diff.Row) {
 	s.commentEditorFocused = true
 	s.commentEditorInsert = true
 	s.commentEditorRow = s.cursor.Row
-	s.commentEditorTarget = uiDiffCommentTarget{Draft: commentDraftForAnchor(rows[s.cursor.Row].Review), Row: s.cursor.Row}
-	s.commentEditorBody = s.commentEditorBodies[s.cursor.Row]
+	target := uiDiffCommentTarget{Row: s.cursor.Row}
+	w := s.Widget().(uiDiffView)
+	if existingDrafts := reviewDraftsForRow(rows[s.cursor.Row], s.allReviewDrafts(w.ReviewDrafts)); len(existingDrafts) > 0 {
+		target.Draft = existingDrafts[0]
+	} else {
+		target.Draft = commentDraftForAnchor(rows[s.cursor.Row].Review)
+	}
+	s.commentEditorTarget = target
+	body := s.commentEditorBodies[s.cursor.Row]
+	if strings.TrimSpace(body) == "" {
+		body = target.Draft.Body
+	}
+	s.commentEditorBody = body
 	s.clearLineSelection()
 	s.revealCommentEditor(rows)
 	s.SetState(func() {})
@@ -2023,7 +2040,7 @@ func (s *uiDiffViewState) handleCommentEditorKey(rows []diff.Row, key vaxis.Key)
 				s.SetState(func() {})
 				return vui.EventHandled
 			}
-			if strings.TrimSpace(s.commentEditorBody) == "" {
+			if strings.TrimSpace(s.commentEditorBody) == "" || s.commentEditorBody == s.commentEditorTarget.Draft.Body {
 				s.closeCommentEditor()
 				s.SetState(func() {})
 				return vui.EventHandled
@@ -2184,7 +2201,7 @@ func (s *uiDiffViewState) handleCommentEditorKey(rows []diff.Row, key vaxis.Key)
 	}
 	switch {
 	case key.Matches(vaxis.KeyEsc):
-		if strings.TrimSpace(s.commentEditorBody) == "" {
+		if strings.TrimSpace(s.commentEditorBody) == "" || s.commentEditorBody == s.commentEditorTarget.Draft.Body {
 			s.closeCommentEditor()
 			s.SetState(func() {})
 			return vui.EventHandled
@@ -2331,6 +2348,9 @@ func (s *uiDiffViewState) executeCommand(ctx vui.EventContext, rows []diff.Row, 
 				return
 			}
 			command = command[1:]
+		case strings.HasPrefix(command, "submit"):
+			s.submitCommand(rows)
+			return
 		default:
 			return
 		}
@@ -2369,7 +2389,7 @@ func (s *uiDiffViewState) writeReviewCommand(rows []diff.Row) bool {
 	if len(drafts) == 0 {
 		if s.reviewDirty {
 			if w.ReviewFile != "" {
-				if err := review.SaveFile(w.ReviewFile, review.CommentFile{Version: 1}); err != nil {
+				if err := review.SaveFile(w.ReviewFile, review.CommentFile{Version: 1, Source: w.CommentSource}); err != nil {
 					s.setStatusMessage(fmt.Sprintf("Could not save comments: %v", err))
 					return false
 				}
@@ -2383,7 +2403,7 @@ func (s *uiDiffViewState) writeReviewCommand(rows []diff.Row) bool {
 		return true
 	}
 	if w.ReviewFile != "" {
-		if err := review.SaveFile(w.ReviewFile, review.CommentFile{Version: 1, Comments: drafts}); err != nil {
+		if err := review.SaveFile(w.ReviewFile, review.CommentFile{Version: 1, Source: w.CommentSource, Comments: drafts}); err != nil {
 			s.setStatusMessage(fmt.Sprintf("Could not save comments: %v", err))
 			return false
 		}
@@ -2391,6 +2411,88 @@ func (s *uiDiffViewState) writeReviewCommand(rows []diff.Row) bool {
 	s.reviewDirty = false
 	s.setStatusMessage("Comments saved.")
 	return true
+}
+
+func (s *uiDiffViewState) submitCommand(rows []diff.Row) {
+	w := s.Widget().(uiDiffView)
+	if w.CommentSource.Provider == "" {
+		s.setStatusMessage("No PR source. Use 'comview pr' to open a pull request.")
+		return
+	}
+	s.submitActiveCommentEditor(rows)
+
+	owner := w.CommentSource.Owner
+	repo := w.CommentSource.Repo
+	prNumber := w.CommentSource.PullNumber
+	headSHA := w.CommentSource.HeadSHA
+
+	// Build set of GitHubIDs present in s.reviewDrafts (edits, not pure deletes).
+	editedGHIDs := make(map[int64]bool)
+	for _, d := range s.reviewDrafts {
+		if d.GitHubID != 0 {
+			editedGHIDs[d.GitHubID] = true
+		}
+	}
+
+	var errs []string
+
+	// Delete comments that were removed and not re-added as edits.
+	deleted := 0
+	for draft := range s.deletedReviewDrafts {
+		if draft.GitHubID == 0 || editedGHIDs[draft.GitHubID] || s.deletedGitHubIDs[draft.GitHubID] {
+			continue
+		}
+		if err := review.DeleteComment(owner, repo, draft.GitHubID); err != nil {
+			errs = append(errs, err.Error())
+		} else {
+			if s.deletedGitHubIDs == nil {
+				s.deletedGitHubIDs = make(map[int64]bool)
+			}
+			s.deletedGitHubIDs[draft.GitHubID] = true
+			deleted++
+		}
+	}
+
+	// Create or update comments.
+	submitted := 0
+	for i, draft := range s.reviewDrafts {
+		if draft.GitHubID == 0 {
+			created, err := review.CreateComment(owner, repo, prNumber, draft, headSHA)
+			if err != nil {
+				errs = append(errs, err.Error())
+				continue
+			}
+			s.reviewDrafts[i].GitHubID = created.ID
+			s.reviewDrafts[i].ID = fmt.Sprintf("%d", created.ID)
+			submitted++
+		} else {
+			if err := review.UpdateComment(owner, repo, draft.GitHubID, draft.Body); err != nil {
+				errs = append(errs, err.Error())
+				continue
+			}
+			submitted++
+		}
+	}
+
+	// Save locally so GitHubIDs are persisted.
+	if w.ReviewFile != "" {
+		allDrafts := s.allReviewDrafts(w.ReviewDrafts)
+		_ = review.SaveFile(w.ReviewFile, review.CommentFile{Version: 1, Source: w.CommentSource, Comments: allDrafts})
+	}
+	s.reviewDirty = false
+
+	if len(errs) > 0 {
+		s.setStatusMessage(fmt.Sprintf("Submit errors: %s", strings.Join(errs, "; ")))
+		return
+	}
+	switch {
+	case submitted > 0 && deleted > 0:
+		s.setStatusMessage(fmt.Sprintf("Submitted %d, deleted %d comment(s).", submitted, deleted))
+	case deleted > 0:
+		s.setStatusMessage(fmt.Sprintf("Deleted %d comment(s).", deleted))
+	default:
+		s.setStatusMessage(fmt.Sprintf("Submitted %d comment(s).", submitted))
+	}
 }
 
 func (s *uiDiffViewState) setStatusMessage(message string) {
@@ -3471,12 +3573,18 @@ func uiDiffReviewDraft(draft review.CommentDraft, theme vui.Theme, _ func(vui.Ev
 	if body == "" {
 		body = "Add comment…"
 	}
+	var content vui.Widget
+	if draft.Author != "" {
+		content = vui.Column(
+			vui.Padding(vui.Symmetric(2, 0), vui.RichText{Spans: []vui.TextSpan{{Text: body, Style: boxStyle}}, SoftWrap: true}),
+			vui.Padding(vui.Symmetric(2, 0), vui.Text{Value: draft.Author, Style: vui.Style{Foreground: theme.MutedForeground, Background: background}}),
+		)
+	} else {
+		content = vui.Padding(vui.Symmetric(2, 0), vui.RichText{Spans: []vui.TextSpan{{Text: body, Style: boxStyle}}, SoftWrap: true})
+	}
 	return uiDiffCommentBox(uiDiffCommentColumn(
 		uiDiffCommentHalfBlock("▄", background, theme),
-		vui.DecoratedBox(
-			vui.Decoration{Style: boxStyle},
-			vui.Padding(vui.Symmetric(2, 0), vui.RichText{Spans: []vui.TextSpan{{Text: body, Style: boxStyle}}, SoftWrap: true}),
-		),
+		vui.DecoratedBox(vui.Decoration{Style: boxStyle}, content),
 		uiDiffCommentHalfBlock("▀", background, theme),
 	))
 }

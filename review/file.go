@@ -20,6 +20,7 @@ type CommentSource struct {
 	Owner      string `json:"owner,omitempty"`
 	Repo       string `json:"repo,omitempty"`
 	PullNumber int    `json:"pull_number,omitempty"`
+	HeadSHA    string `json:"head_sha,omitempty"`
 }
 
 func LoadFile(path string) (CommentFile, error) {

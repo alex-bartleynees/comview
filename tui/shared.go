@@ -544,17 +544,27 @@ func optionalIntEqual(a *int, b *int) bool {
 }
 
 func reviewDraftEndsAt(draft review.CommentDraft, anchor review.Anchor) bool {
-	return draft.Path == anchor.Path &&
-		draft.Line == anchor.Line &&
-		draft.Side == anchor.Side &&
-		draft.CommitID == anchor.CommitID &&
+	if draft.Path != anchor.Path ||
+		draft.Line != anchor.Line ||
+		draft.Side != anchor.Side {
+		return false
+	}
+	// When the anchor has no commit context (e.g. gh pr diff, plain git diff),
+	// match on path/line/side alone so GitHub comments are still displayed.
+	if anchor.CommitID == "" {
+		return true
+	}
+	return draft.CommitID == anchor.CommitID &&
 		draft.OriginalCommitID == anchor.OriginalCommitID
 }
 
 func reviewDraftContains(draft review.CommentDraft, anchor review.Anchor) bool {
-	if draft.Path != anchor.Path ||
-		draft.CommitID != anchor.CommitID ||
-		draft.OriginalCommitID != anchor.OriginalCommitID {
+	if draft.Path != anchor.Path {
+		return false
+	}
+	// When the anchor has no commit context, skip commit ID comparison.
+	if anchor.CommitID != "" &&
+		(draft.CommitID != anchor.CommitID || draft.OriginalCommitID != anchor.OriginalCommitID) {
 		return false
 	}
 	if draft.StartLine == 0 {

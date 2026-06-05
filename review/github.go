@@ -2,13 +2,18 @@ package review
 
 import "strconv"
 
+type GitHubUser struct {
+	Login string `json:"login"`
+}
+
 type GitHubComment struct {
-	ID               int64  `json:"id,omitempty"`
-	DiffHunk         string `json:"diff_hunk,omitempty"`
-	Path             string `json:"path"`
-	Body             string `json:"body"`
-	CommitID         string `json:"commit_id,omitempty"`
-	OriginalCommitID string `json:"original_commit_id,omitempty"`
+	ID               int64      `json:"id,omitempty"`
+	User             GitHubUser `json:"user"`
+	DiffHunk         string     `json:"diff_hunk,omitempty"`
+	Path             string     `json:"path"`
+	Body             string     `json:"body"`
+	CommitID         string     `json:"commit_id,omitempty"`
+	OriginalCommitID string     `json:"original_commit_id,omitempty"`
 
 	StartLine int  `json:"start_line,omitempty"`
 	StartSide Side `json:"start_side,omitempty"`
@@ -27,6 +32,7 @@ func FromGitHubComment(comment GitHubComment) CommentDraft {
 	return CommentDraft{
 		ID:               id,
 		GitHubID:         comment.ID,
+		Author:           comment.User.Login,
 		Path:             comment.Path,
 		Body:             comment.Body,
 		DiffHunk:         comment.DiffHunk,

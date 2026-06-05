@@ -18,6 +18,7 @@ type Anchor struct {
 type CommentDraft struct {
 	ID               string `json:"id,omitempty"`
 	GitHubID         int64  `json:"github_id,omitempty"`
+	Author           string `json:"author,omitempty"`
 	Path             string `json:"path"`
 	Body             string `json:"body"`
 	DiffHunk         string `json:"diff_hunk,omitempty"`
