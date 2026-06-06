@@ -640,11 +640,16 @@ func isStatusCountPrefix(text string) bool {
 }
 
 func textCellWidth(text string) int {
-	width := 0
-	for _, char := range vaxis.Characters(text) {
-		width += char.Width
+	for i := 0; i < len(text); i++ {
+		if text[i] >= utf8.RuneSelf || text[i] < ' ' {
+			width := i
+			for _, char := range vaxis.Characters(text[i:]) {
+				width += char.Width
+			}
+			return width
+		}
 	}
-	return width
+	return len(text)
 }
 
 func editorColumnAtCell(text string, target int, tabWidth int) int {
