@@ -27,6 +27,7 @@ type uiDiffView struct {
 	Binds         Bindings
 	EmptyMessage  string
 	EmptyHint     string
+	Theme         string
 	InitialStatus string
 }
 
@@ -155,6 +156,9 @@ func (s *uiDiffViewState) Build(ctx vui.BuildContext) vui.Widget {
 	s.clearExpiredYank(time.Now())
 	s.clearExpiredStatusMessage(time.Now())
 	s.clampCursor(w.Rows)
+	if s.themeName == "" && w.Theme != "" {
+		s.themeName = w.Theme
+	}
 	theme := vui.MustDepend[vui.Theme](ctx)
 	if s.themeName != "" {
 		if selected, ok := ThemeByName(s.themeName); ok {
@@ -307,6 +311,7 @@ func (s *uiDiffViewState) buildThemeFinder() vui.Widget {
 			s.themeFinder = false
 			s.themeName = theme.Name
 			s.themeNameBeforePick = ""
+			saveThemeFile(theme.Name)
 			s.setStatusMessage("Theme: " + theme.Name)
 		},
 	}

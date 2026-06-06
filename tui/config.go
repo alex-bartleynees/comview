@@ -2,7 +2,6 @@ package tui
 
 import (
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 
@@ -24,16 +23,15 @@ type Config struct {
 }
 
 func loadConfig() Config {
-	data, err := os.ReadFile(configFilePath())
-	if errors.Is(err, os.ErrNotExist) {
-		return Config{}
-	}
-	if err != nil {
-		return Config{}
-	}
 	var cfg Config
-	_ = json.Unmarshal(data, &cfg)
-	cfg.CommentFile = expandHomePath(cfg.CommentFile)
+	data, err := os.ReadFile(configFilePath())
+	if err == nil {
+		_ = json.Unmarshal(data, &cfg)
+		cfg.CommentFile = expandHomePath(cfg.CommentFile)
+	}
+	if t := loadThemeFile(); t != "" {
+		cfg.Theme = t
+	}
 	return cfg
 }
 
@@ -43,6 +41,38 @@ func configFilePath() string {
 	}
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".config", "comview", "config.json")
+}
+
+func themeFilePath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".comview", "theme.json")
+}
+
+type themeFile struct {
+	Theme string `json:"theme"`
+}
+
+func loadThemeFile() string {
+	data, err := os.ReadFile(themeFilePath())
+	if err != nil {
+		return ""
+	}
+	var f themeFile
+	if err := json.Unmarshal(data, &f); err != nil {
+		return ""
+	}
+	return f.Theme
+}
+
+func saveThemeFile(name string) {
+	path := themeFilePath()
+	_ = os.MkdirAll(filepath.Dir(path), 0o755)
+	data, err := json.MarshalIndent(themeFile{Theme: name}, "", "  ")
+	if err != nil {
+		return
+	}
+	data = append(data, '\n')
+	_ = os.WriteFile(path, data, 0o644)
 }
 
 func expandHomePath(path string) string {

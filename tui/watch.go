@@ -66,6 +66,7 @@ func (s *uiWatchViewState) diffRoot(w uiWatchView) uiDiffView {
 	root.EmptyMessage = "No changes."
 	root.EmptyHint = fmt.Sprintf("Watching: %s", strings.Join(w.Command, " "))
 	root.InitialStatus = s.message
+	root.Theme = w.Config.Theme
 	return root
 }
 

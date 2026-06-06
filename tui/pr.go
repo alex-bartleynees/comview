@@ -56,6 +56,7 @@ func RunPR(owner, repo string, prNumber int) error {
 		WorkTreeRoot:  gitWorkTreeRoot(),
 		ShowStatus:    true,
 		Binds:         newBindings(cfg.Keybindings),
+		Theme:         cfg.Theme,
 	}
 
 	if cfg.Theme != "" {

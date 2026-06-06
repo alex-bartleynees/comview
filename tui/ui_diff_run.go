@@ -19,6 +19,7 @@ func runUIDiff(rows []diff.Row) error {
 	}
 	root := uiDiffRootWithReviewFileAndBindings(rows, cfg.Wrap, commentFile.Comments, commentPath, true, newBindings(cfg.Keybindings)).(uiDiffView)
 	root.WorkTreeRoot = gitWorkTreeRoot()
+	root.Theme = cfg.Theme
 	if cfg.Theme != "" {
 		if t, ok := ThemeByName(cfg.Theme); ok {
 			theme := uiThemeFromBaseColors(t.Colors)
